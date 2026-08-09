@@ -1,0 +1,6 @@
+@MokaCo.HRMS.API_HostAddress = http://localhost:5078
+
+GET {{MokaCo.HRMS.API_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
