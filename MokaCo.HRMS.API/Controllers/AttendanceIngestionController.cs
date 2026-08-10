@@ -20,7 +20,13 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class AttendanceIngestionController : ControllerBase
 {
     private readonly IImportService _import;
-    public AttendanceIngestionController(IImportService import) => _import = import;
+    private readonly ILiveNotifier _live;
+
+    public AttendanceIngestionController(IImportService import, ILiveNotifier live)
+    {
+        _import = import;
+        _live = live;
+    }
 
     private int CurrentUserId =>
         int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub")!);
@@ -41,6 +47,8 @@ public class AttendanceIngestionController : ControllerBase
         var device = (Device)HttpContext.Items[DeviceApiKeyAttribute.DeviceItemKey]!;
 
         var result = await _import.PunchAsync(device.DeviceId, request);
+        // A punch is raw attendance arriving; the unresolved-PIN queue may have grown too.
+        await _live.NotifyAsync("attendance", "dashboard");
         return Ok(result);
     }
 
@@ -48,6 +56,9 @@ public class AttendanceIngestionController : ControllerBase
     /// Says what an upload WOULD do, writing NOTHING. Same parse and same dedup hash as the real
     /// import, so the preview cannot disagree with the thing it is previewing.
     /// </summary>
+    /* DELIBERATELY SILENT: a preview WRITES NOTHING, so there is nothing for anyone to be stale
+       about. It is a POST only because it carries a file. Recorded so the "which mutating actions do
+       not notify?" sweep stops flagging it. */
     [HttpPost("import/preview")]
     [HasPermission("ATTENDANCE_IMPORT")]
     public async Task<IActionResult> Preview(IFormFile file)
@@ -76,6 +87,9 @@ public class AttendanceIngestionController : ControllerBase
         await using var stream = file.OpenReadStream();
         var result = await _import.ImportAsync(stream, file.FileName, CurrentUserId);
 
+        // The batch list and the unresolved-PIN queue are both open on the import screen.
+        // (Preview above deliberately does NOT signal — it writes nothing.)
+        await _live.NotifyAsync("attendance", "dashboard");
         return Ok(result);
     }
 

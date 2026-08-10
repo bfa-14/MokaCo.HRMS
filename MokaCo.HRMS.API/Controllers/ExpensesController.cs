@@ -22,11 +22,14 @@ public class ExpensesController : ControllerBase
 {
     private readonly IExpenseService _expenses;
     private readonly IWorkflowSupportService _support;
+    private readonly ILiveNotifier _live;
 
-    public ExpensesController(IExpenseService expenses, IWorkflowSupportService support)
+    public ExpensesController(
+        IExpenseService expenses, IWorkflowSupportService support, ILiveNotifier live)
     {
         _expenses = expenses;
         _support = support;
+        _live = live;
     }
 
     /// <summary>
@@ -49,7 +52,11 @@ public class ExpensesController : ControllerBase
         try
         {
             var created = await _expenses.CreateAsync(request, caller);
-            return created is null ? BadRequest(new { error = "The request could not be created." }) : Ok(created);
+            if (created is null)
+                return BadRequest(new { error = "The request could not be created." });
+
+            await _live.NotifyAsync("workflow", "dashboard");
+            return Ok(created);
         }
         catch (WorkflowException ex)
         {
@@ -70,7 +77,13 @@ public class ExpensesController : ControllerBase
         try
         {
             var result = await _expenses.DecideAsync(id, User.UserId(), request);
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            // The granted figure ROUTES the request — it may skip the remaining steps and close it,
+            // or stand it up in front of the Owner. Either way the chain other people are looking at
+            // has just changed shape, not only advanced.
+            await _live.NotifyAsync("workflow", "dashboard");
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {

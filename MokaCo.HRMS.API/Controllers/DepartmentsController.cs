@@ -10,7 +10,13 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class DepartmentsController : ControllerBase
 {
     private readonly IDepartmentService _departments;
-    public DepartmentsController(IDepartmentService departments) => _departments = departments;
+    private readonly ILiveNotifier _live;
+
+    public DepartmentsController(IDepartmentService departments, ILiveNotifier live)
+    {
+        _departments = departments;
+        _live = live;
+    }
 
     [HttpGet]
     [HasPermission("EMP_VIEW")]
@@ -21,6 +27,7 @@ public class DepartmentsController : ControllerBase
     public async Task<IActionResult> Create([FromBody] DepartmentCreateRequest request)
     {
         var id = await _departments.CreateAsync(request.Name);
+        await _live.NotifyAsync("hr", "dashboard");
         return CreatedAtAction(nameof(GetAll), new { id }, new { departmentId = id });
     }
 
@@ -29,6 +36,7 @@ public class DepartmentsController : ControllerBase
     public async Task<IActionResult> Update(int id, [FromBody] DepartmentUpdateRequest request)
     {
         await _departments.UpdateAsync(id, request.Name, request.IsActive);
+        await _live.NotifyAsync("hr", "dashboard");
         return NoContent();
     }
 }

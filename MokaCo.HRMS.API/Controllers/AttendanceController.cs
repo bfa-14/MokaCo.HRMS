@@ -25,7 +25,19 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class AttendanceController : ControllerBase
 {
     private readonly IAttendanceService _attendance;
-    public AttendanceController(IAttendanceService attendance) => _attendance = attendance;
+    private readonly ILiveNotifier _live;
+
+    public AttendanceController(IAttendanceService attendance, ILiveNotifier live)
+    {
+        _attendance = attendance;
+        _live = live;
+    }
+
+    /// <summary>
+    /// Every write here rewrites a day the attendance screens are drawing, and the same days feed
+    /// the dashboard's staffing and coverage tiles. Named once so the pair cannot drift.
+    /// </summary>
+    private Task NotifyAttendanceAsync() => _live.NotifyAsync("attendance", "dashboard");
 
     private int CurrentUserId =>
         int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub")!);
@@ -78,7 +90,11 @@ public class AttendanceController : ControllerBase
     [HttpPost("process")]
     [HasPermission("ATTENDANCE_MANAGE")]
     public async Task<IActionResult> Process([FromQuery] DateTime? workDate)
-        => Ok(await _attendance.ProcessAsync(workDate));
+    {
+        var result = await _attendance.ProcessAsync(workDate);
+        await NotifyAttendanceAsync();
+        return Ok(result);
+    }
 
     /// <summary>
     /// Writes records for people who were rostered but never punched at all. Run AFTER the processor:
@@ -88,7 +104,11 @@ public class AttendanceController : ControllerBase
     [HttpPost("mark-absentees")]
     [HasPermission("ATTENDANCE_MANAGE")]
     public async Task<IActionResult> MarkAbsentees([FromQuery] DateTime workDate)
-        => Ok(await _attendance.MarkAbsenteesAsync(workDate));
+    {
+        var result = await _attendance.MarkAbsenteesAsync(workDate);
+        await NotifyAttendanceAsync();
+        return Ok(result);
+    }
 
     /* ---- HR overrides (ATTENDANCE_CORRECT) ---- */
 
@@ -96,7 +116,11 @@ public class AttendanceController : ControllerBase
     [HttpPost("manual")]
     [HasPermission("ATTENDANCE_CORRECT")]
     public async Task<IActionResult> Manual([FromBody] ManualAttendanceRequest request)
-        => Ok(await _attendance.ManualUpsertAsync(request));
+    {
+        var result = await _attendance.ManualUpsertAsync(request);
+        await NotifyAttendanceAsync();
+        return Ok(result);
+    }
 
     /// <summary>
     /// Records what was AUTHORISED for a mid-day exit. It does NOT overwrite what the punches
@@ -108,7 +132,10 @@ public class AttendanceController : ControllerBase
     public async Task<IActionResult> SetExitApproval(long id, [FromBody] ExitApprovalRequest request)
     {
         var record = await _attendance.SetExitApprovalAsync(id, request);
-        return record is null ? NotFound() : Ok(record);
+        if (record is null) return NotFound();
+
+        await NotifyAttendanceAsync();
+        return Ok(record);
     }
 
     /// <summary>
@@ -124,7 +151,11 @@ public class AttendanceController : ControllerBase
             return BadRequest(new { error = "Disposition must be UnpaidAbsence, Overtime, or Ignore." });
 
         var record = await _attendance.SetExitDispositionAsync(id, request);
-        return record is null ? NotFound() : Ok(record);
+        if (record is null) return NotFound();
+
+        // This is what payroll is blocked on, so the readiness figures move with it too.
+        await _live.NotifyAsync("attendance", "payroll", "dashboard");
+        return Ok(record);
     }
 
     /// <summary>Adds or removes working time on a day. The note is mandatory: this changes pay, and somebody will ask why.</summary>
@@ -139,7 +170,11 @@ public class AttendanceController : ControllerBase
             return BadRequest(new { error = "Provide either worked minutes or a day fraction." });
 
         var record = await _attendance.AdjustDayAsync(id, request, CurrentUserId);
-        return record is null ? NotFound() : Ok(record);
+        if (record is null) return NotFound();
+
+        // Changing somebody's hours changes what they will be paid.
+        await _live.NotifyAsync("attendance", "payroll", "dashboard");
+        return Ok(record);
     }
 
     /// <summary>The HR decision queue: days where what happened differs from what was approved, and nobody has said what that means.</summary>

@@ -10,7 +10,13 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class ComponentTypesController : ControllerBase
 {
     private readonly IComponentTypeService _componentTypes;
-    public ComponentTypesController(IComponentTypeService componentTypes) => _componentTypes = componentTypes;
+    private readonly ILiveNotifier _live;
+
+    public ComponentTypesController(IComponentTypeService componentTypes, ILiveNotifier live)
+    {
+        _componentTypes = componentTypes;
+        _live = live;
+    }
 
     [HttpGet]
     [HasPermission("EMP_VIEW")]
@@ -21,6 +27,7 @@ public class ComponentTypesController : ControllerBase
     public async Task<IActionResult> Create([FromBody] ComponentTypeCreateRequest request)
     {
         var id = await _componentTypes.CreateAsync(request.Name, request.Category, request.Sign);
+        await _live.NotifyAsync("payroll");
         return CreatedAtAction(nameof(GetAll), new { id }, new { componentTypeId = id });
     }
 
@@ -29,6 +36,8 @@ public class ComponentTypesController : ControllerBase
     public async Task<IActionResult> Update(int id, [FromBody] ComponentTypeUpdateRequest request)
     {
         await _componentTypes.UpdateAsync(id, request.Name, request.Category, request.Sign);
+        // The SIGN decides whether an amount is paid or deducted — never a cosmetic edit.
+        await _live.NotifyAsync("payroll");
         return NoContent();
     }
 }

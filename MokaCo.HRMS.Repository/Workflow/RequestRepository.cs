@@ -19,9 +19,10 @@ public class RequestRepository : IRequestRepository
     public RequestRepository(IDbConnectionFactory factory) => _factory = factory;
 
     /// <summary>
-    /// Reads all THREE result sets: the header, the materialised chain, and the append-only history.
-    /// Reading only the first would give a request with no chain; only the first two would drop its
-    /// audit trail. All three are the record.
+    /// Reads all FOUR result sets: the header, the materialised chain, the append-only history, and
+    /// any reversals. Reading only the first would give a request with no chain; stopping at the
+    /// third would drop the record of what struck a signature in that history. All four are the
+    /// record.
     /// </summary>
     public async Task<RequestDetail?> GetByIdAsync(int requestInstanceId)
     {
@@ -37,8 +38,15 @@ public class RequestRepository : IRequestRepository
 
         var steps = (await multi.ReadAsync<RequestStep>()).ToList();
         var history = (await multi.ReadAsync<SignatureLogEntry>()).ToList();
+        var reversals = (await multi.ReadAsync<RequestReversal>()).ToList();
 
-        return new RequestDetail { Header = header, Steps = steps, History = history };
+        return new RequestDetail
+        {
+            Header = header,
+            Steps = steps,
+            History = history,
+            Reversals = reversals,
+        };
     }
 
     /// <summary>The chain on its own, read FOR a user so each step's CanWithdraw reflects what that user may take back.</summary>
@@ -357,5 +365,49 @@ public class RequestRepository : IRequestRepository
             "workflow.usp_Request_ReopenClosed",
             new { RequestInstanceId = requestInstanceId, ActedByUserId = actedByUserId, Reason = reason },
             commandType: CommandType.StoredProcedure);
+    }
+
+    /// <summary>
+    /// The last signer takes their OWN decision back, same UTC day. Every rule about who and when is
+    /// the procedure's — its own signature, the last one standing, the same day, and the request's
+    /// effects not yet consumed — and each refusal names which of those failed. It SELECTs the
+    /// request's new standing back.
+    /// </summary>
+    public async Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<ApproveResult>(
+            "workflow.usp_Request_RetractLastDecision",
+            new { RequestInstanceId = requestInstanceId, ActedByUserId = actedByUserId, Reason = reason },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    /// <summary>
+    /// One half of a GM + Owner reopen.
+    ///
+    /// THE PROCEDURE RETURNS TWO DIFFERENT SHAPES and the caller must not assume either: the first
+    /// role to sign gets back { State, FirstSignRole } and nothing has moved; the second gets back
+    /// { RequestInstanceId, Status, CurrentStepNo } because the request is now open again. They are
+    /// read into one row here and told apart by which columns arrived — Dapper leaves the absent
+    /// ones at their defaults, so State is the discriminator and it is set explicitly for the
+    /// completing call, which the procedure does not name.
+    /// </summary>
+    public async Task<ReopenResult?> ReopenAsync(int requestInstanceId, int actedByUserId, string reason)
+    {
+        using var db = _factory.Create();
+        var row = await db.QuerySingleOrDefaultAsync<ReopenResult>(
+            "workflow.usp_Request_Reopen",
+            new { RequestInstanceId = requestInstanceId, ActedByUserId = actedByUserId, Reason = reason },
+            commandType: CommandType.StoredProcedure);
+
+        if (row is null)
+            return null;
+
+        // The completing call's result set has no State column, so Dapper leaves it empty. Naming it
+        // here keeps the discriminator meaningful for every caller above this line.
+        if (string.IsNullOrEmpty(row.State))
+            row.State = "Reopened";
+
+        return row;
     }
 }

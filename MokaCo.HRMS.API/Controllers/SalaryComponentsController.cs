@@ -12,7 +12,17 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class SalaryComponentsController : ControllerBase
 {
     private readonly ISalaryComponentService _salaryComponents;
-    public SalaryComponentsController(ISalaryComponentService salaryComponents) => _salaryComponents = salaryComponents;
+    private readonly ILiveNotifier _live;
+
+    public SalaryComponentsController(
+        ISalaryComponentService salaryComponents, ILiveNotifier live)
+    {
+        _salaryComponents = salaryComponents;
+        _live = live;
+    }
+
+    /// <summary>These rows ARE somebody's pay — the next run reads them.</summary>
+    private Task NotifyPayAsync() => _live.NotifyAsync("hr", "payroll", "dashboard");
 
     private int CurrentUserId =>
         int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub")!);
@@ -27,6 +37,7 @@ public class SalaryComponentsController : ControllerBase
     public async Task<IActionResult> Create([FromBody] SalaryComponentCreateRequest request)
     {
         var id = await _salaryComponents.CreateAsync(request);
+        await NotifyPayAsync();
         return CreatedAtAction(nameof(GetByEmployee), new { employeeId = request.EmployeeId },
             new { salaryComponentId = id });
     }
@@ -36,6 +47,7 @@ public class SalaryComponentsController : ControllerBase
     public async Task<IActionResult> Update(int id, [FromBody] SalaryComponentUpdateRequest request)
     {
         await _salaryComponents.UpdateAsync(id, request);
+        await NotifyPayAsync();
         return NoContent();
     }
 
@@ -44,6 +56,7 @@ public class SalaryComponentsController : ControllerBase
     public async Task<IActionResult> Delete(int id)
     {
         await _salaryComponents.DeleteAsync(id);
+        await NotifyPayAsync();
         return NoContent();
     }
 
@@ -63,7 +76,9 @@ public class SalaryComponentsController : ControllerBase
     {
         try
         {
-            return Ok(await _salaryComponents.EndAsync(id, request, CurrentUserId));
+            var ended = await _salaryComponents.EndAsync(id, request, CurrentUserId);
+            await NotifyPayAsync();
+            return Ok(ended);
         }
         catch (WorkflowException ex)
         {

@@ -24,11 +24,14 @@ public class AvailabilityChangesController : ControllerBase
 {
     private readonly IAvailabilityService _availability;
     private readonly IWorkflowSupportService _support;
+    private readonly ILiveNotifier _live;
 
-    public AvailabilityChangesController(IAvailabilityService availability, IWorkflowSupportService support)
+    public AvailabilityChangesController(
+        IAvailabilityService availability, IWorkflowSupportService support, ILiveNotifier live)
     {
         _availability = availability;
         _support = support;
+        _live = live;
     }
 
     /// <summary>
@@ -51,7 +54,11 @@ public class AvailabilityChangesController : ControllerBase
         try
         {
             var created = await _availability.CreateAsync(request, caller);
-            return created is null ? BadRequest(new { error = "The request could not be created." }) : Ok(created);
+            if (created is null)
+                return BadRequest(new { error = "The request could not be created." });
+
+            await _live.NotifyAsync("workflow", "dashboard");
+            return Ok(created);
         }
         catch (WorkflowException ex)
         {
@@ -78,7 +85,12 @@ public class AvailabilityChangesController : ControllerBase
         try
         {
             var result = await _availability.DecideAsync(id, User.UserId(), request);
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            // The final approval REWRITES THE WEEKLY PATTERN, so this is not only a request closing:
+            // the roster the attendance screens draw from has changed underneath them.
+            await _live.NotifyAsync("workflow", "attendance", "dashboard");
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {

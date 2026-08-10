@@ -14,8 +14,12 @@ public class BranchesController : ControllerBase
     private readonly IBranchService _branches;
     private readonly IWorkflowSupportService _workflowSupport;
 
-    public BranchesController(IBranchService branches, IWorkflowSupportService workflowSupport)
+    private readonly ILiveNotifier _live;
+
+    public BranchesController(
+        IBranchService branches, IWorkflowSupportService workflowSupport, ILiveNotifier live)
     {
+        _live = live;
         _branches = branches;
         _workflowSupport = workflowSupport;
     }
@@ -29,6 +33,7 @@ public class BranchesController : ControllerBase
     public async Task<IActionResult> Create([FromBody] BranchCreateRequest request)
     {
         var id = await _branches.CreateAsync(request.Name);
+        await _live.NotifyAsync("hr", "dashboard");
         return CreatedAtAction(nameof(GetAll), new { id }, new { branchId = id });
     }
 
@@ -37,6 +42,7 @@ public class BranchesController : ControllerBase
     public async Task<IActionResult> Update(int id, [FromBody] BranchUpdateRequest request)
     {
         await _branches.UpdateAsync(id, request.Name, request.IsActive);
+        await _live.NotifyAsync("hr", "dashboard");
         return NoContent();
     }
 
@@ -58,6 +64,11 @@ public class BranchesController : ControllerBase
     public async Task<IActionResult> SetManager(int id, [FromBody] SetBranchManagerRequest request)
     {
         var result = await _workflowSupport.SetBranchManagerAsync(id, request, User.UserId());
-        return result is null ? NotFound() : Ok(result);
+        if (result is null) return NotFound();
+
+        // Branch-manager steps resolve to THIS person. Changing them changes who owes a signature on
+        // every request in flight through such a step — and a vacant post makes those steps skip.
+        await _live.NotifyAsync("hr", "workflow", "dashboard");
+        return Ok(result);
     }
 }

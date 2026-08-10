@@ -21,7 +21,19 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class RosterController : ControllerBase
 {
     private readonly IRosterService _roster;
-    public RosterController(IRosterService roster) => _roster = roster;
+    private readonly ILiveNotifier _live;
+
+    public RosterController(IRosterService roster, ILiveNotifier live)
+    {
+        _roster = roster;
+        _live = live;
+    }
+
+    /// <summary>
+    /// The roster decides who is expected at work, so every write here moves the attendance screens
+    /// AND the dashboard's staffing and coverage-gap tiles. Named once so the pair cannot drift.
+    /// </summary>
+    private Task NotifyRosterAsync() => _live.NotifyAsync("attendance", "dashboard");
 
     [HttpGet]
     [HasPermission("ATTENDANCE_VIEW")]
@@ -44,6 +56,7 @@ public class RosterController : ControllerBase
             return BadRequest(new { error = "Choose a shift, or mark the day as a rest day." });
 
         var id = await _roster.SetDayAsync(request);
+        await NotifyRosterAsync();
         return Ok(new { shiftAssignmentId = id });
     }
 
@@ -52,6 +65,7 @@ public class RosterController : ControllerBase
     public async Task<IActionResult> Delete(int id)
     {
         await _roster.DeleteAsync(id);
+        await NotifyRosterAsync();
         return NoContent();
     }
 
@@ -64,7 +78,9 @@ public class RosterController : ControllerBase
         if (error is not null)
             return BadRequest(new { error });
 
-        return Ok(await _roster.GenerateAsync(request));
+        var generated = await _roster.GenerateAsync(request);
+        await NotifyRosterAsync();
+        return Ok(generated);
     }
 
     /// <summary>The same, for a whole team in one action.</summary>
@@ -79,7 +95,9 @@ public class RosterController : ControllerBase
         if (error is not null)
             return BadRequest(new { error });
 
-        return Ok(await _roster.GenerateBulkAsync(request));
+        var generated = await _roster.GenerateBulkAsync(request);
+        await NotifyRosterAsync();
+        return Ok(generated);
     }
 
     /// <summary>Copies a month onto another, aligned by WEEKDAY — a Monday shift lands on a Monday, not on the same date number.</summary>
@@ -90,7 +108,9 @@ public class RosterController : ControllerBase
         if (!IsYearMonth(request.SourceYearMonth) || !IsYearMonth(request.TargetYearMonth))
             return BadRequest(new { error = "Periods must look like '2026-06'." });
 
-        return Ok(await _roster.CopyPeriodAsync(request));
+        var copied = await _roster.CopyPeriodAsync(request);
+        await NotifyRosterAsync();
+        return Ok(copied);
     }
 
     /// <summary>Expands employees' saved weekly patterns into real dated roster rows for a month.</summary>
@@ -101,7 +121,9 @@ public class RosterController : ControllerBase
         if (!IsYearMonth(request.YearMonth))
             return BadRequest(new { error = "Period must look like '2026-06'." });
 
-        return Ok(await _roster.ApplyPatternAsync(request));
+        var applied = await _roster.ApplyPatternAsync(request);
+        await NotifyRosterAsync();
+        return Ok(applied);
     }
 
     /// <summary>Employee-days with NO roster row at all. These are the ones that block payroll.</summary>
@@ -154,6 +176,7 @@ public class RosterController : ControllerBase
             return BadRequest(new { error = "DayOfWeek must be 1 (Monday) to 7 (Sunday)." });
 
         await _roster.SavePatternsAsync(employeeId, days);
+        await NotifyRosterAsync();
         return NoContent();
     }
 
@@ -162,6 +185,7 @@ public class RosterController : ControllerBase
     public async Task<IActionResult> DeletePatterns(int employeeId)
     {
         await _roster.DeletePatternsAsync(employeeId);
+        await NotifyRosterAsync();
         return NoContent();
     }
 

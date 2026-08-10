@@ -10,7 +10,13 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class LeaveAccrualController : ControllerBase
 {
     private readonly ILeaveAccrualService _accrual;
-    public LeaveAccrualController(ILeaveAccrualService accrual) => _accrual = accrual;
+    private readonly ILiveNotifier _live;
+
+    public LeaveAccrualController(ILeaveAccrualService accrual, ILiveNotifier live)
+    {
+        _accrual = accrual;
+        _live = live;
+    }
 
     private int CurrentUserId =>
         int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub")!);
@@ -29,6 +35,8 @@ public class LeaveAccrualController : ControllerBase
             return BadRequest(new { error = "Month must be between 1 and 12." });
 
         var result = await _accrual.RunMonthlyAccrual(year, month, CurrentUserId);
+        // A month's accrual moves every employee's balance at once.
+        await _live.NotifyAsync("hr", "dashboard");
         return Ok(result);
     }
 }

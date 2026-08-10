@@ -22,11 +22,14 @@ public class LeaveRequestsController : ControllerBase
 {
     private readonly ILeaveRequestService _leave;
     private readonly IWorkflowSupportService _support;
+    private readonly ILiveNotifier _live;
 
-    public LeaveRequestsController(ILeaveRequestService leave, IWorkflowSupportService support)
+    public LeaveRequestsController(
+        ILeaveRequestService leave, IWorkflowSupportService support, ILiveNotifier live)
     {
         _leave = leave;
         _support = support;
+        _live = live;
     }
 
     /// <summary>
@@ -50,7 +53,11 @@ public class LeaveRequestsController : ControllerBase
         try
         {
             var created = await _leave.CreateAsync(request, caller);
-            return created is null ? BadRequest(new { error = "The request could not be created." }) : Ok(created);
+            if (created is null)
+                return BadRequest(new { error = "The request could not be created." });
+
+            await _live.NotifyAsync("workflow", "dashboard");
+            return Ok(created);
         }
         catch (WorkflowException ex)
         {
@@ -72,7 +79,12 @@ public class LeaveRequestsController : ControllerBase
         try
         {
             var result = await _leave.DecideAsync(id, User.UserId(), request);
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            // The final approval posts the ledger movement, so the leave balances on the dashboard
+            // move with the request itself.
+            await _live.NotifyAsync("workflow", "dashboard");
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {

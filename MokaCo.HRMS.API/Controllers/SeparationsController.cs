@@ -27,13 +27,16 @@ public class SeparationsController : ControllerBase
     private readonly ISeparationService _separations;
     private readonly IRequestService _requests;
     private readonly IWorkflowSupportService _support;
+    private readonly ILiveNotifier _live;
 
     public SeparationsController(
-        ISeparationService separations, IRequestService requests, IWorkflowSupportService support)
+        ISeparationService separations, IRequestService requests,
+        IWorkflowSupportService support, ILiveNotifier live)
     {
         _separations = separations;
         _requests = requests;
         _support = support;
+        _live = live;
     }
 
     /// <summary>
@@ -71,7 +74,14 @@ public class SeparationsController : ControllerBase
         try
         {
             var created = await _separations.CreateAsync(request, caller);
-            return created is null ? BadRequest(new { error = "The request could not be created." }) : Ok(created);
+            if (created is null)
+                return BadRequest(new { error = "The request could not be created." });
+
+            // A raised separation is waiting on its first approver THIS MOMENT. Without this the
+            // request only reached their To-handle when they happened to reload — which is the whole
+            // class of bug this signal exists to prevent.
+            await _live.NotifyAsync("workflow", "dashboard");
+            return Ok(created);
         }
         catch (WorkflowException ex)
         {
@@ -114,7 +124,13 @@ public class SeparationsController : ControllerBase
         try
         {
             var saved = await _separations.SetSettlementAsync(id, User.UserId(), request, mayEdit);
-            return saved is null ? NotFound() : Ok(saved);
+            if (saved is null) return NotFound();
+
+            // The settlement is what UNBLOCKS the final sign-off. The Owner sitting on the request
+            // page is looking at the refusal that says it is unprepared; preparing it changes what
+            // they can do, so they must be told rather than left to discover it by reloading.
+            await _live.NotifyAsync("workflow", "dashboard");
+            return Ok(saved);
         }
         catch (WorkflowException ex)
         {
@@ -134,7 +150,13 @@ public class SeparationsController : ControllerBase
         try
         {
             var result = await _separations.DecideAsync(id, User.UserId(), request);
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            // The final approval ENDS THE EMPLOYMENT and zeroes the leave ledger, so this is not
+            // only a request moving on: headcount, staffing and leave balances all just changed.
+            // 'hr' is signalled for the same reason, ahead of any page subscribing to it.
+            await _live.NotifyAsync("workflow", "dashboard", "hr");
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {

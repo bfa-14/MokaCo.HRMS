@@ -18,6 +18,13 @@ public class EmployeesController : ControllerBase
     private readonly IOvertimeService _overtime;
     private readonly IExpenseService _expenses;
     private readonly ISalaryComponentService _salaryComponents;
+    private readonly ILiveNotifier _live;
+
+    /// <summary>
+    /// The people records are what the dashboard counts and what the chains resolve approvers
+    /// against, so a change here is never local to this screen.
+    /// </summary>
+    private Task NotifyPeopleAsync() => _live.NotifyAsync("hr", "dashboard");
 
     public EmployeesController(
         IEmployeeService employees,
@@ -25,8 +32,10 @@ public class EmployeesController : ControllerBase
         IRosterService roster,
         IOvertimeService overtime,
         IExpenseService expenses,
-        ISalaryComponentService salaryComponents)
+        ISalaryComponentService salaryComponents,
+        ILiveNotifier live)
     {
+        _live = live;
         _employees = employees;
         _leave = leave;
         _roster = roster;
@@ -57,6 +66,7 @@ public class EmployeesController : ControllerBase
         try
         {
             var id = await _employees.CreateAsync(request, CurrentUserId);
+            await NotifyPeopleAsync();
             return CreatedAtAction(nameof(GetProfile), new { id }, new { employeeId = id });
         }
         catch (WorkflowException ex)
@@ -71,6 +81,7 @@ public class EmployeesController : ControllerBase
     public async Task<IActionResult> Update(int id, [FromBody] EmployeeUpdateRequest request)
     {
         await _employees.UpdateAsync(id, request, CurrentUserId);
+        await NotifyPeopleAsync();
         return NoContent();
     }
 
@@ -86,7 +97,12 @@ public class EmployeesController : ControllerBase
         try
         {
             var result = await _employees.SetApprovalTierAsync(id, request.ApprovalTier);
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            // The tier picks WHICH published chain their requests run, so this changes who will be
+            // asked to sign the next one.
+            await _live.NotifyAsync("hr", "workflow", "dashboard");
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -106,7 +122,11 @@ public class EmployeesController : ControllerBase
         try
         {
             var result = await _employees.SetReportsToAsync(id, request.ReportsToEmployeeId);
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            // A LineManager step resolves up this reporting line — moving it moves who signs.
+            await _live.NotifyAsync("hr", "workflow", "dashboard");
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -184,6 +204,7 @@ public class EmployeesController : ControllerBase
     public async Task<IActionResult> Delete(int id)
     {
         await _employees.SoftDeleteAsync(id, CurrentUserId);
+        await NotifyPeopleAsync();
         return NoContent();
     }
 
@@ -211,7 +232,12 @@ public class EmployeesController : ControllerBase
         try
         {
             var result = await _employees.LinkUserAsync(id, request.UserId, CurrentUserId);
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            // Giving somebody a login is what makes them able to SIGN — a branch manager without
+            // one silently skips their step.
+            await _live.NotifyAsync("hr", "workflow", "dashboard");
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -226,7 +252,12 @@ public class EmployeesController : ControllerBase
     [HttpDelete("{id:int}/user")]
     [HasPermission("USER_MANAGE")]
     public async Task<IActionResult> UnlinkUser(int id)
-        => Ok(await _employees.UnlinkUserAsync(id, CurrentUserId));
+    {
+        var result = await _employees.UnlinkUserAsync(id, CurrentUserId);
+        // It reports how many pending requests they can no longer sign — those chains just changed.
+        await _live.NotifyAsync("hr", "workflow", "dashboard");
+        return Ok(result);
+    }
 
     // ───────────────────── salary administration ─────────────────────
     //
@@ -258,7 +289,9 @@ public class EmployeesController : ControllerBase
     {
         try
         {
-            return Ok(await _salaryComponents.SetAsync(id, request, CurrentUserId));
+            var saved = await _salaryComponents.SetAsync(id, request, CurrentUserId);
+            await _live.NotifyAsync("hr", "payroll", "dashboard");
+            return Ok(saved);
         }
         catch (WorkflowException ex)
         {

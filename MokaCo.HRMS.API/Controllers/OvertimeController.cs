@@ -19,11 +19,14 @@ public class OvertimeController : ControllerBase
 {
     private readonly IOvertimeService _overtime;
     private readonly IWorkflowSupportService _support;
+    private readonly ILiveNotifier _live;
 
-    public OvertimeController(IOvertimeService overtime, IWorkflowSupportService support)
+    public OvertimeController(
+        IOvertimeService overtime, IWorkflowSupportService support, ILiveNotifier live)
     {
         _overtime = overtime;
         _support = support;
+        _live = live;
     }
 
     /// <summary>
@@ -46,7 +49,11 @@ public class OvertimeController : ControllerBase
         try
         {
             var created = await _overtime.CreateAsync(request, caller);
-            return created is null ? BadRequest(new { error = "The request could not be created." }) : Ok(created);
+            if (created is null)
+                return BadRequest(new { error = "The request could not be created." });
+
+            await _live.NotifyAsync("workflow", "dashboard");
+            return Ok(created);
         }
         catch (WorkflowException ex)
         {
@@ -69,7 +76,10 @@ public class OvertimeController : ControllerBase
         try
         {
             var result = await _overtime.DecideAsync(id, User.UserId(), request);
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            await _live.NotifyAsync("workflow", "dashboard");
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -95,7 +105,12 @@ public class OvertimeController : ControllerBase
     [HttpPost("apply-to-attendance")]
     [HasPermission("ATTENDANCE_MANAGE")]
     public async Task<IActionResult> ApplyToAttendance([FromBody] OvertimeApplyRequest? request)
-        => Ok(await _overtime.ApplyToAttendanceAsync(request?.WorkDate));
+    {
+        var result = await _overtime.ApplyToAttendanceAsync(request?.WorkDate);
+        // The sweep stamps attendance days — the screen showing them is now behind.
+        await _live.NotifyAsync("attendance", "dashboard");
+        return Ok(result);
+    }
 }
 
 /// <summary>Which day to sweep. Null sweeps every outstanding day.</summary>

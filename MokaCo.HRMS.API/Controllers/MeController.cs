@@ -9,6 +9,12 @@ using MokaCo.HRMS.Services.Workflow;
 namespace MokaCo.HRMS.Api.Controllers;
 
 /// <summary>The signed-in user's own context. Every self-service screen keys off it.</summary>
+/*
+ * DELIBERATELY SILENT — see the note on AuthController. Changing your own password changes nothing
+ * anybody is looking at, and a signature image is FROZEN onto each decision at the moment it is
+ * signed, so replacing yours cannot alter a chain already on screen. It applies to your next
+ * signature, which you have not made yet.
+ */
 [ApiController]
 [Route("api/me")]
 [Authorize]

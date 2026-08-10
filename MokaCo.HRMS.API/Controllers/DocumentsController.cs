@@ -13,13 +13,16 @@ public class DocumentsController : ControllerBase
 {
     private readonly IDocumentService _documents;
     private readonly string _root;
+    private readonly ILiveNotifier _live;
 
     public DocumentsController(
         IDocumentService documents,
         IWebHostEnvironment env,
-        IConfiguration config)
+        IConfiguration config,
+        ILiveNotifier live)
     {
         _documents = documents;
+        _live = live;
         // Where uploaded files are stored on the server. Configurable via
         // "Storage:DocumentsPath"; defaults to <ContentRoot>/App_Data/documents.
         var configured = config["Storage:DocumentsPath"];
@@ -72,6 +75,7 @@ public class DocumentsController : ControllerBase
             SizeBytes = file.Length,
         });
 
+        await _live.NotifyAsync("hr");
         return CreatedAtAction(nameof(GetByEmployee), new { employeeId },
             new { documentId = id });
     }
@@ -101,6 +105,7 @@ public class DocumentsController : ControllerBase
     public async Task<IActionResult> Delete(int id)
     {
         await _documents.DeleteAsync(id);
+        await _live.NotifyAsync("hr");
         return NoContent();
     }
 }

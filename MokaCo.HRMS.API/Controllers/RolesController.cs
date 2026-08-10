@@ -13,8 +13,17 @@ public class RolesController : ControllerBase
 {
     private readonly IRoleRepository _roles;
     private readonly IPermissionRepository _permissions;
-    public RolesController(IRoleRepository roles, IPermissionRepository permissions)
-    { _roles = roles; _permissions = permissions; }
+    private readonly ILiveNotifier _live;
+
+    public RolesController(
+        IRoleRepository roles, IPermissionRepository permissions, ILiveNotifier live)
+    { _roles = roles; _permissions = permissions; _live = live; }
+
+    /// <summary>
+    /// Roles are how the chains decide who may sign a step, whether a rejection ends the request,
+    /// and whether a password is demanded — so a role edit reaches every request in flight.
+    /// </summary>
+    private Task NotifyRolesAsync() => _live.NotifyAsync("workflow", "dashboard");
 
     [HttpGet]
     [HasPermission("ROLE_MANAGE")]
@@ -41,6 +50,7 @@ public class RolesController : ControllerBase
     public async Task<IActionResult> SetRolePermissions(int id, [FromBody] int[] permissionIds)
     {
         await _roles.SetPermissionsAsync(id, permissionIds ?? Array.Empty<int>(), CurrentUserId);
+        await NotifyRolesAsync();
         return NoContent();
     }
 
@@ -49,6 +59,7 @@ public class RolesController : ControllerBase
     public async Task<IActionResult> Create([FromBody] RoleRequest request)
     {
         var id = await _roles.CreateAsync(request.Name, CurrentUserId);
+        await NotifyRolesAsync();
         return CreatedAtAction(nameof(GetRoles), new { id }, new { roleId = id });
     }
 
@@ -57,6 +68,7 @@ public class RolesController : ControllerBase
     public async Task<IActionResult> Update(int id, [FromBody] RoleRequest request)
     {
         await _roles.UpdateAsync(id, request.Name, CurrentUserId);
+        await NotifyRolesAsync();
         return NoContent();
     }
 
@@ -79,7 +91,10 @@ public class RolesController : ControllerBase
     public async Task<IActionResult> SetRejectionBehaviour(int id, [FromBody] RejectionBehaviourRequest request)
     {
         var updated = await _roles.SetRejectionBehaviourAsync(id, request.RejectionEndsRequest);
-        return updated is null ? NotFound() : Ok(updated);
+        if (updated is null) return NotFound();
+
+        await NotifyRolesAsync();
+        return Ok(updated);
     }
 
     /// <summary>Every role with its approver-usage and signature flags — the other two "workflow behaviour" settings.</summary>
@@ -101,7 +116,10 @@ public class RolesController : ControllerBase
         try
         {
             var updated = await _roles.SetApproverUsageAsync(id, request.UsableAsApprover);
-            return updated is null ? NotFound() : Ok(updated);
+            if (updated is null) return NotFound();
+
+            await NotifyRolesAsync();
+            return Ok(updated);
         }
         catch (SqlException ex) when (ex.Number == 50000)
         {
@@ -116,6 +134,9 @@ public class RolesController : ControllerBase
     public async Task<IActionResult> SetSignatureRequirement(int id, [FromBody] SignatureRequirementRequest request)
     {
         var updated = await _roles.SetSignatureRequirementAsync(id, request.RequiresSignaturePassword);
-        return updated is null ? NotFound() : Ok(updated);
+        if (updated is null) return NotFound();
+
+        await NotifyRolesAsync();
+        return Ok(updated);
     }
 }

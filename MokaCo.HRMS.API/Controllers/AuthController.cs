@@ -6,6 +6,12 @@ using MokaCo.HRMS.Services.Security;
 
 namespace MokaCo.HRMS.Api.Controllers;
 
+/*
+ * DELIBERATELY SILENT — no NotifyAsync anywhere in this controller, and that is the answer, not a
+ * gap. Login, refresh and logout write only refresh-token rows, which no screen displays and no
+ * live topic covers. Signalling here would wake every subscribed page on every sign-in for nothing.
+ * Recorded so the periodic "which mutating actions do not notify?" sweep stops rediscovering it.
+ */
 [ApiController]
 [Route("api/auth")]
 public class AuthController : ControllerBase

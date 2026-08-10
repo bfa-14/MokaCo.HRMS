@@ -44,6 +44,15 @@ public static class WorkflowSqlErrors
             if (message.Contains("not the approver", StringComparison.OrdinalIgnoreCase))
                 throw new WorkflowException(403, message);
 
+            // The reversals' authorisation failures, which are the same KIND of answer: not a bad
+            // request, but the wrong person asking. Matched on the procedures' own wording so the
+            // status is right; the message still travels untouched, because each one names the path
+            // that WOULD work (the GM + Owner route, or the other of the two).
+            if (message.Contains("may retract it", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("needs the General Manager and the Owner", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("already signed the reopen", StringComparison.OrdinalIgnoreCase))
+                throw new WorkflowException(403, message);
+
             // Everything else the procedures raise is a request-state or input rule, not a 500.
             throw new WorkflowException(400, message);
         }

@@ -10,7 +10,13 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class PositionsController : ControllerBase
 {
     private readonly IPositionService _positions;
-    public PositionsController(IPositionService positions) => _positions = positions;
+    private readonly ILiveNotifier _live;
+
+    public PositionsController(IPositionService positions, ILiveNotifier live)
+    {
+        _positions = positions;
+        _live = live;
+    }
 
     [HttpGet]
     [HasPermission("EMP_VIEW")]
@@ -21,6 +27,7 @@ public class PositionsController : ControllerBase
     public async Task<IActionResult> Create([FromBody] PositionCreateRequest request)
     {
         var id = await _positions.CreateAsync(request.Title);
+        await _live.NotifyAsync("hr", "dashboard");
         return CreatedAtAction(nameof(GetAll), new { id }, new { positionId = id });
     }
 
@@ -29,6 +36,7 @@ public class PositionsController : ControllerBase
     public async Task<IActionResult> Update(int id, [FromBody] PositionUpdateRequest request)
     {
         await _positions.UpdateAsync(id, request.Title, request.IsActive);
+        await _live.NotifyAsync("hr", "dashboard");
         return NoContent();
     }
 }

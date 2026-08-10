@@ -88,4 +88,18 @@ public interface IRequestRepository
     /// that closed it. The proc refuses an approved request and demands a reason, raising otherwise.
     /// </summary>
     Task<ApproveResult?> ReopenClosedAsync(int requestInstanceId, int actedByUserId, string reason);
+
+    /// <summary>
+    /// The last signer takes their own decision back, same UTC day
+    /// (usp_Request_RetractLastDecision). The proc owns every rule — own signature, last one
+    /// standing, same day, effects not yet consumed — and names which one failed.
+    /// </summary>
+    Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason);
+
+    /// <summary>
+    /// One half of a GM + Owner reopen (usp_Request_Reopen). Returns 'AwaitingSecond' when this was
+    /// the first of the two to sign and nothing has moved yet, or 'Reopened' with the request's new
+    /// standing when it completed.
+    /// </summary>
+    Task<ReopenResult?> ReopenAsync(int requestInstanceId, int actedByUserId, string reason);
 }

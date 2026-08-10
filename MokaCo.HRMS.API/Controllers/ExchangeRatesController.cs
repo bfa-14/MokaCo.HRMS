@@ -10,7 +10,13 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class ExchangeRatesController : ControllerBase
 {
     private readonly IExchangeRateService _rates;
-    public ExchangeRatesController(IExchangeRateService rates) => _rates = rates;
+    private readonly ILiveNotifier _live;
+
+    public ExchangeRatesController(IExchangeRateService rates, ILiveNotifier live)
+    {
+        _rates = rates;
+        _live = live;
+    }
 
     [HttpGet]
     [HasPermission("EMP_VIEW")]
@@ -33,6 +39,8 @@ public class ExchangeRatesController : ControllerBase
         var id = await _rates.CreateAsync(
             request.FromCurrency, request.ToCurrency, request.RateType,
             request.EffectiveDate, request.Rate);
+        // A new rate changes what every foreign-currency figure converts to.
+        await _live.NotifyAsync("payroll", "dashboard");
         return CreatedAtAction(nameof(GetAll), new { id }, new { exchangeRateId = id });
     }
 }

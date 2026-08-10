@@ -180,18 +180,90 @@ public class SignatureLogEntry
 
     /// <summary>Whether this step has a frozen signature image to fetch (set by the signature-image patch). The bytes never travel here.</summary>
     public bool HasSignatureImage { get; set; }
+
+    /// <summary>
+    /// When this signature was STRUCK by a retract or a reopen. Null on a signature that still
+    /// stands, which is nearly all of them.
+    ///
+    /// A struck signature is never deleted — it stays in the log, rendered struck through, with the
+    /// reason beside it. Removing it would make the record say the decision was never taken, which
+    /// is the one thing an append-only audit trail exists to prevent.
+    /// </summary>
+    public DateTime? RetractedAt { get; set; }
+
+    /// <summary>Why it was struck — the retractor's own words, or "Reopened by GM + Owner".</summary>
+    public string? RetractedReason { get; set; }
 }
 
 /// <summary>
-/// A full request: header, its materialised chain, and its history — the three result sets of
-/// usp_Request_GetById, together. All three must be read; a request without its chain is just a
-/// title, and without its history has no audit trail.
+/// A reversal — undoing a decision, recorded as its OWN event rather than as another signature.
+///
+/// TWO KINDS, differing in who may do it and when. A RETRACT is the last signer taking back their
+/// own decision on the same UTC day: it completes immediately, so FirstSignRole is 'Self' and
+/// CompletedAt is set at once. A REOPEN needs the General Manager AND the Owner, in either order —
+/// whichever signs first creates the row with CompletedAt NULL, and the OTHER role completes it.
+///
+/// So a row with CompletedAt still null is a reopen half-signed and waiting, which is exactly what
+/// the request page reads to say it is waiting on the other of the two.
+/// </summary>
+public class RequestReversal
+{
+    public int ReversalId { get; set; }
+
+    /// <summary>'Retract' or 'Reopen'.</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    public string Reason { get; set; } = string.Empty;
+
+    public int FirstSignUserId { get; set; }
+    public string? FirstSignUsername { get; set; }
+
+    /// <summary>'Self' for a retract; 'Owner' or 'GeneralManager' for a reopen.</summary>
+    public string FirstSignRole { get; set; } = string.Empty;
+
+    public int? SecondSignUserId { get; set; }
+    public string? SecondSignUsername { get; set; }
+    public string? SecondSignRole { get; set; }
+
+    /// <summary>Null while a reopen waits on the other of GM/Owner; set the moment it takes effect.</summary>
+    public DateTime? CompletedAt { get; set; }
+
+    public DateTime CreatedAt { get; set; }
+}
+
+/// <summary>
+/// What a reopen attempt did. ONE OF TWO THINGS, and the caller must handle both.
+///
+/// The first of GM/Owner to sign gets State 'AwaitingSecond' with FirstSignRole naming who signed —
+/// nothing has moved yet. The second gets State 'Reopened' with the request's new standing. Modelling
+/// only the second is how a UI ends up reporting a half-signed reopen as a completed one.
+/// </summary>
+public class ReopenResult
+{
+    /// <summary>'AwaitingSecond' or 'Reopened'.</summary>
+    public string State { get; set; } = string.Empty;
+
+    /// <summary>Which of GM/Owner has signed so far. Set only on 'AwaitingSecond'.</summary>
+    public string? FirstSignRole { get; set; }
+
+    /// <summary>The request's new standing. Set only on 'Reopened'.</summary>
+    public int? RequestInstanceId { get; set; }
+    public string? Status { get; set; }
+    public int? CurrentStepNo { get; set; }
+}
+
+/// <summary>
+/// A full request: header, its materialised chain, its history, and any reversals — the four result
+/// sets of usp_Request_GetById, together. All four must be read; a request without its chain is just
+/// a title, without its history has no audit trail, and without its reversals cannot explain why a
+/// signature in that history is struck through.
 /// </summary>
 public class RequestDetail
 {
     public RequestHeader Header { get; set; } = new();
     public List<RequestStep> Steps { get; set; } = new();
     public List<SignatureLogEntry> History { get; set; } = new();
+    public List<RequestReversal> Reversals { get; set; } = new();
 }
 
 /// <summary>

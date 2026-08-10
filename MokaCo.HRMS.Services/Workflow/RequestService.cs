@@ -318,4 +318,24 @@ public class RequestService : IRequestService
 
     public Task<ApproveResult?> ReopenClosedAsync(int requestInstanceId, int actedByUserId, string reason)
         => WorkflowSqlErrors.MapAsync(() => _repo.ReopenClosedAsync(requestInstanceId, actedByUserId, reason));
+
+    /*
+     * THE TWO REVERSALS. Neither checks a permission and neither re-checks a rule.
+     *
+     * Who may retract (the last signer, same UTC day, their own signature) and who may reopen (the
+     * General Manager and the Owner, together) are decided by the procedures, in the same way and
+     * for the same reason as approve and reject: the database is the single authority on who may act
+     * on a request, and a second copy of the rule in C# would drift from it.
+     *
+     * What reaches the user is the procedure's own sentence. Every one of them says which rule was
+     * broken AND what to do instead — a next-day retract names the GM + Owner path, a consumed
+     * adjustment names the counter-adjustment — so replacing them with a friendlier message would
+     * throw away the only part worth reading.
+     */
+
+    public Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason)
+        => WorkflowSqlErrors.MapAsync(() => _repo.RetractLastDecisionAsync(requestInstanceId, actedByUserId, reason));
+
+    public Task<ReopenResult?> ReopenAsync(int requestInstanceId, int actedByUserId, string reason)
+        => WorkflowSqlErrors.MapAsync(() => _repo.ReopenAsync(requestInstanceId, actedByUserId, reason));
 }

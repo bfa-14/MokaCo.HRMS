@@ -24,13 +24,16 @@ public class OnboardingsController : ControllerBase
     private readonly IOnboardingService _onboardings;
     private readonly IRequestService _requests;
     private readonly IWorkflowSupportService _support;
+    private readonly ILiveNotifier _live;
 
     public OnboardingsController(
-        IOnboardingService onboardings, IRequestService requests, IWorkflowSupportService support)
+        IOnboardingService onboardings, IRequestService requests,
+        IWorkflowSupportService support, ILiveNotifier live)
     {
         _onboardings = onboardings;
         _requests = requests;
         _support = support;
+        _live = live;
     }
 
     /// <summary>
@@ -47,7 +50,11 @@ public class OnboardingsController : ControllerBase
         try
         {
             var created = await _onboardings.CreateAsync(request, User.UserId());
-            return created is null ? BadRequest(new { error = "The request could not be created." }) : Ok(created);
+            if (created is null)
+                return BadRequest(new { error = "The request could not be created." });
+
+            await _live.NotifyAsync("workflow", "dashboard");
+            return Ok(created);
         }
         catch (WorkflowException ex)
         {
@@ -68,7 +75,12 @@ public class OnboardingsController : ControllerBase
         try
         {
             var result = await _onboardings.DecideAsync(id, User.UserId(), request);
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            // The FIRST approval creates the employee record, so headcount and staffing move here
+            // and not at the end — 'hr' alongside, for the same reason as a separation.
+            await _live.NotifyAsync("workflow", "dashboard", "hr");
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -112,7 +124,13 @@ public class OnboardingsController : ControllerBase
 
         try
         {
-            return Ok(await _onboardings.SetTaskAsync(id, code, request, User.UserId(), mayEdit));
+            var tasks = await _onboardings.SetTaskAsync(id, code, request, User.UserId(), mayEdit);
+
+            // Ticking an item is what UNBLOCKS the final approval, which is refused while any
+            // required one is outstanding. The approver watching the request needs to see the gate
+            // lift, so this is a change to the request and not merely to a checklist beside it.
+            await _live.NotifyAsync("workflow", "dashboard");
+            return Ok(tasks);
         }
         catch (WorkflowException ex)
         {

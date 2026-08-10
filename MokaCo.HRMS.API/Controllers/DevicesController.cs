@@ -17,7 +17,13 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class DevicesController : ControllerBase
 {
     private readonly IDeviceService _devices;
-    public DevicesController(IDeviceService devices) => _devices = devices;
+    private readonly ILiveNotifier _live;
+
+    public DevicesController(IDeviceService devices, ILiveNotifier live)
+    {
+        _devices = devices;
+        _live = live;
+    }
 
     [HttpGet]
     [HasPermission("ATTENDANCE_VIEW")]
@@ -28,6 +34,7 @@ public class DevicesController : ControllerBase
     public async Task<IActionResult> Create([FromBody] DeviceCreateRequest request)
     {
         var id = await _devices.CreateAsync(request);
+        await _live.NotifyAsync("attendance");
         return CreatedAtAction(nameof(GetAll), new { id }, new { deviceId = id });
     }
 
@@ -36,6 +43,7 @@ public class DevicesController : ControllerBase
     public async Task<IActionResult> Update(int id, [FromBody] DeviceUpdateRequest request)
     {
         await _devices.UpdateAsync(id, request);
+        await _live.NotifyAsync("attendance");
         return NoContent();
     }
 
@@ -54,6 +62,7 @@ public class DevicesController : ControllerBase
             return NotFound();
 
         var result = await _devices.IssueApiKeyAsync(id, device.SerialNumber);
+        await _live.NotifyAsync("attendance");
         return Ok(result);
     }
 
@@ -69,13 +78,19 @@ public class DevicesController : ControllerBase
     [HttpPost("enrollments")]
     [HasPermission("DEVICE_MANAGE")]
     public async Task<IActionResult> MapEnrollment([FromBody] EnrollmentMapRequest request)
-        => Ok(await _devices.MapAsync(request));
+    {
+        var result = await _devices.MapAsync(request);
+        // Mapping a PIN to a person moves punches out of the unresolved queue and onto their days.
+        await _live.NotifyAsync("attendance", "dashboard");
+        return Ok(result);
+    }
 
     [HttpDelete("enrollments/{id:int}")]
     [HasPermission("DEVICE_MANAGE")]
     public async Task<IActionResult> Unmap(int id)
     {
         await _devices.UnmapAsync(id);
+        await _live.NotifyAsync("attendance", "dashboard");
         return NoContent();
     }
 }

@@ -15,7 +15,13 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class ShiftsController : ControllerBase
 {
     private readonly IShiftService _shifts;
-    public ShiftsController(IShiftService shifts) => _shifts = shifts;
+    private readonly ILiveNotifier _live;
+
+    public ShiftsController(IShiftService shifts, ILiveNotifier live)
+    {
+        _shifts = shifts;
+        _live = live;
+    }
 
     [HttpGet]
     [HasPermission("ATTENDANCE_VIEW")]
@@ -34,6 +40,7 @@ public class ShiftsController : ControllerBase
             return BadRequest(new { error = "This shift ends before it starts. Tick 'crosses midnight' if it is an overnight shift." });
 
         var id = await _shifts.CreateAsync(request);
+        await _live.NotifyAsync("attendance", "dashboard");
         return CreatedAtAction(nameof(GetAll), new { id }, new { shiftId = id });
     }
 
@@ -45,6 +52,8 @@ public class ShiftsController : ControllerBase
             return BadRequest(new { error = "This shift ends before it starts. Tick 'crosses midnight' if it is an overnight shift." });
 
         await _shifts.UpdateAsync(id, request);
+        // Shift times decide what counts as late and as overtime on every day rostered to them.
+        await _live.NotifyAsync("attendance", "dashboard");
         return NoContent();
     }
 }

@@ -18,11 +18,14 @@ public class ExitPermissionsController : ControllerBase
 {
     private readonly IExitPermissionService _exitPermissions;
     private readonly IWorkflowSupportService _support;
+    private readonly ILiveNotifier _live;
 
-    public ExitPermissionsController(IExitPermissionService exitPermissions, IWorkflowSupportService support)
+    public ExitPermissionsController(
+        IExitPermissionService exitPermissions, IWorkflowSupportService support, ILiveNotifier live)
     {
         _exitPermissions = exitPermissions;
         _support = support;
+        _live = live;
     }
 
     /// <summary>
@@ -44,7 +47,13 @@ public class ExitPermissionsController : ControllerBase
         try
         {
             var created = await _exitPermissions.CreateAsync(request, caller);
-            return created is null ? BadRequest(new { error = "The request could not be created." }) : Ok(created);
+            if (created is null)
+                return BadRequest(new { error = "The request could not be created." });
+
+            // It is waiting on its first approver from this moment — their To-handle must show it
+            // without a reload.
+            await _live.NotifyAsync("workflow", "dashboard");
+            return Ok(created);
         }
         catch (WorkflowException ex)
         {
@@ -78,7 +87,12 @@ public class ExitPermissionsController : ControllerBase
     [HttpPost("apply")]
     [HasPermission("ATTENDANCE_MANAGE")]
     public async Task<IActionResult> Apply([FromQuery] int? exitPermissionId, [FromQuery] DateTime? workDate)
-        => Ok(await _exitPermissions.ApplyToAttendanceAsync(exitPermissionId, workDate));
+    {
+        var result = await _exitPermissions.ApplyToAttendanceAsync(exitPermissionId, workDate);
+        // The sweep rewrites attendance days, which is what the daily attendance screen is showing.
+        await _live.NotifyAsync("attendance", "dashboard");
+        return Ok(result);
+    }
 
     /// <summary>Approved permissions not yet reflected in attendance — the day may not have happened yet.</summary>
     [HttpGet("pending-application")]
@@ -90,5 +104,10 @@ public class ExitPermissionsController : ControllerBase
     [HttpPost("post-leave")]
     [HasPermission("ATTENDANCE_MANAGE")]
     public async Task<IActionResult> PostLeave([FromBody] PostLeaveRequest request)
-        => Ok(await _exitPermissions.PostLeaveUsageAsync(request, User.UserId()));
+    {
+        var result = await _exitPermissions.PostLeaveUsageAsync(request, User.UserId());
+        // Leave usage posted at period close moves the balances the dashboard shows.
+        await _live.NotifyAsync("attendance", "dashboard");
+        return Ok(result);
+    }
 }

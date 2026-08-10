@@ -96,4 +96,19 @@ public interface IRequestService
 
     /// <summary>Reopens a rejected/cancelled request. The database refuses an approved one and demands a reason; that comes back as a WorkflowException.</summary>
     Task<ApproveResult?> ReopenClosedAsync(int requestInstanceId, int actedByUserId, string reason);
+
+    /// <summary>
+    /// The last signer takes their own decision back, same UTC day. NO permission is checked here —
+    /// the database decides, exactly as it does for approve and reject, and its refusal (wrong
+    /// person, wrong day, already consumed) comes back as a WorkflowException with the message
+    /// intact. That message is the entire value of the refusal, so nothing may replace it.
+    /// </summary>
+    Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason);
+
+    /// <summary>
+    /// One half of a GM + Owner reopen. Answers 'AwaitingSecond' when this was the first signature —
+    /// nothing has moved — or 'Reopened' with the request's new standing when the other role
+    /// completed it. The database owns the role check and refuses anybody else.
+    /// </summary>
+    Task<ReopenResult?> ReopenAsync(int requestInstanceId, int actedByUserId, string reason);
 }

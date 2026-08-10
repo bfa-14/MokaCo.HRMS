@@ -17,7 +17,13 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class SystemController : ControllerBase
 {
     private readonly ISystemRepository _system;
-    public SystemController(ISystemRepository system) => _system = system;
+    private readonly ILiveNotifier _live;
+
+    public SystemController(ISystemRepository system, ILiveNotifier live)
+    {
+        _system = system;
+        _live = live;
+    }
 
     /// <summary>
     /// Deletes every request, attendance record and employee. Users, roles, chains, branches and
@@ -42,6 +48,9 @@ public class SystemController : ControllerBase
         try
         {
             var summary = await _system.ResetTestDataAsync(request.Confirm ?? string.Empty, User.UserId());
+            // EVERY topic: this deletes and renumbers test data wholesale, so every open page is
+            // showing rows that no longer exist.
+            await _live.NotifyAsync("workflow", "payroll", "attendance", "hr", "dashboard");
             return Ok(summary);
         }
         catch (SqlException ex) when (ex.Number == 50000)

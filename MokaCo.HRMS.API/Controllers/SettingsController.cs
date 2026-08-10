@@ -24,7 +24,13 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class SettingsController : ControllerBase
 {
     private readonly ISettingService _settings;
-    public SettingsController(ISettingService settings) => _settings = settings;
+    private readonly ILiveNotifier _live;
+
+    public SettingsController(ISettingService settings, ILiveNotifier live)
+    {
+        _settings = settings;
+        _live = live;
+    }
 
     private int CurrentUserId =>
         int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub")!);
@@ -65,6 +71,9 @@ public class SettingsController : ControllerBase
     public async Task<IActionResult> Upsert(string key, [FromBody] SettingUpsertRequest request)
     {
         await _settings.UpsertAsync(key, request, CurrentUserId);
+        // Settings are read by every module — the standard working day, the expense threshold, the
+        // signature grace. Which one changed is not known here, so every topic is signalled.
+        await _live.NotifyAsync("workflow", "payroll", "attendance", "hr", "dashboard");
         return NoContent();
     }
 }

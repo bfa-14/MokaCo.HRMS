@@ -23,7 +23,13 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class AttendanceCorrectionsController : ControllerBase
 {
     private readonly ICorrectionService _corrections;
-    public AttendanceCorrectionsController(ICorrectionService corrections) => _corrections = corrections;
+    private readonly ILiveNotifier _live;
+
+    public AttendanceCorrectionsController(ICorrectionService corrections, ILiveNotifier live)
+    {
+        _corrections = corrections;
+        _live = live;
+    }
 
     private int CurrentUserId =>
         int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub")!);
@@ -47,6 +53,8 @@ public class AttendanceCorrectionsController : ControllerBase
             return BadRequest(new { error = "A reason is required — a correction without one is an unexplained change to somebody's pay." });
 
         var id = await _corrections.CreateAsync(request, CurrentUserId);
+        // It joins the pending-corrections queue somebody else is watching.
+        await _live.NotifyAsync("attendance", "dashboard");
         return CreatedAtAction(nameof(GetPending), new { id }, new { correctionId = id });
     }
 
@@ -60,7 +68,12 @@ public class AttendanceCorrectionsController : ControllerBase
     public async Task<IActionResult> Approve(int id)
     {
         var result = await _corrections.ApproveAsync(id, CurrentUserId);
-        return result is null ? NotFound(new { error = "No pending correction with that id." }) : Ok(result);
+        if (result is null)
+            return NotFound(new { error = "No pending correction with that id." });
+
+        // Approving RECOMPUTES the day, so it changes hours and therefore pay.
+        await _live.NotifyAsync("attendance", "payroll", "dashboard");
+        return Ok(result);
     }
 
     [HttpPost("{id:int}/reject")]
@@ -68,6 +81,8 @@ public class AttendanceCorrectionsController : ControllerBase
     public async Task<IActionResult> Reject(int id)
     {
         await _corrections.RejectAsync(id, CurrentUserId);
+        // The day is untouched, but the queue it was sitting in is one shorter.
+        await _live.NotifyAsync("attendance", "dashboard");
         return NoContent();
     }
 }

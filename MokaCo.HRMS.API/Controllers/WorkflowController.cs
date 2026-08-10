@@ -21,12 +21,22 @@ public class WorkflowController : ControllerBase
 {
     private readonly IDefinitionService _definitions;
     private readonly IRequestService _requests;
+    private readonly ILiveNotifier _live;
 
-    public WorkflowController(IDefinitionService definitions, IRequestService requests)
+    public WorkflowController(
+        IDefinitionService definitions, IRequestService requests, ILiveNotifier live)
     {
         _definitions = definitions;
         _requests = requests;
+        _live = live;
     }
+
+    /// <summary>
+    /// A reversal moves a request between somebody's inbox and their history, and moves the counts
+    /// with it — the same pair of topics every decision on a request signals. Named once so the pair
+    /// cannot drift action by action.
+    /// </summary>
+    private Task NotifyWorkflowAsync() => _live.NotifyAsync("workflow", "dashboard");
 
     /* ---- request types ---- */
 
@@ -49,7 +59,12 @@ public class WorkflowController : ControllerBase
     [HttpPost("request-types")]
     [HasPermission("WORKFLOW_CONFIGURE")]
     public async Task<IActionResult> UpsertRequestType([FromBody] RequestTypeUpsertRequest request)
-        => Ok(new { requestTypeId = await _definitions.UpsertRequestTypeAsync(request) });
+    {
+        var requestTypeId = await _definitions.UpsertRequestTypeAsync(request);
+        // Deactivating a type removes it from what anybody may raise.
+        await NotifyWorkflowAsync();
+        return Ok(new { requestTypeId });
+    }
 
     /* ---- starting a draft from an existing chain ---- */
 
@@ -77,7 +92,10 @@ public class WorkflowController : ControllerBase
         try
         {
             var result = await _definitions.CopyStepsFromAsync(id, request);
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            await NotifyWorkflowAsync();
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -96,7 +114,11 @@ public class WorkflowController : ControllerBase
     [HttpPost("definitions")]
     [HasPermission("WORKFLOW_CONFIGURE")]
     public async Task<IActionResult> CreateDraft([FromBody] DefinitionCreateRequest request)
-        => Ok(await _definitions.CreateDraftAsync(request, User.UserId()));
+    {
+        var created = await _definitions.CreateDraftAsync(request, User.UserId());
+        await NotifyWorkflowAsync();
+        return Ok(created);
+    }
 
     /// <summary>Adds a step to a DRAFT. The engine refuses this on a published version — that refusal becomes a 400.</summary>
     [HttpPost("definitions/{id:int}/steps")]
@@ -106,6 +128,7 @@ public class WorkflowController : ControllerBase
         try
         {
             await _definitions.AddStepAsync(id, step);
+            await NotifyWorkflowAsync();
             return NoContent();
         }
         catch (WorkflowException ex)
@@ -122,7 +145,12 @@ public class WorkflowController : ControllerBase
         try
         {
             var result = await _definitions.PublishAsync(id, User.UserId());
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            // Publishing RETIRES the previous active chain and decides who will sign every request
+            // raised from now on — the one chain-config write that changes the running system.
+            await NotifyWorkflowAsync();
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -145,6 +173,7 @@ public class WorkflowController : ControllerBase
         try
         {
             await _definitions.DeleteDraftAsync(id);
+            await NotifyWorkflowAsync();
             return NoContent();
         }
         catch (WorkflowException ex)
@@ -165,7 +194,10 @@ public class WorkflowController : ControllerBase
         try
         {
             var result = await _definitions.SetMinTierAsync(id, request.MinRequesterTier);
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            await NotifyWorkflowAsync();
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -196,4 +228,77 @@ public class WorkflowController : ControllerBase
     [HasPermission("WORKFLOW_CONFIGURE")]
     public async Task<IActionResult> GetLongHolds([FromQuery] int olderThanDays = 7)
         => Ok(await _requests.GetLongHoldsAsync(olderThanDays));
+
+    /* ---- reversals: taking a decision back ----
+       Both need NO permission, exactly like approve and reject. The database decides who may act —
+       the last signer on the same UTC day for a retract, the General Manager and the Owner together
+       for a reopen — and refuses everybody else with a sentence that names the path that would
+       work. Those sentences reach the client untouched. */
+
+    /// <summary>
+    /// The last signer takes their own decision back, on the same UTC day.
+    ///
+    /// The rules are the procedure's and are NOT duplicated here: it must be your own signature, it
+    /// must be the last one standing, it must be from today, and the request's effects must not have
+    /// been consumed yet. A next-day attempt is refused with the GM + Owner route named; an
+    /// adjustment already swallowed by a locked payslip is refused with the counter-adjustment named.
+    ///
+    /// Whether the effects are consumed is deliberately NOT pre-checked to hide the button either —
+    /// the refusal explains what to do instead, and no disabled control could say that much.
+    /// </summary>
+    [HttpPost("requests/{id:int}/retract")]
+    [Authorize]
+    public async Task<IActionResult> Retract(int id, [FromBody] ReasonRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request?.Reason))
+            return BadRequest(new { error = "A reason is required to retract a decision." });
+
+        try
+        {
+            var result = await _requests.RetractLastDecisionAsync(id, User.UserId(), request.Reason.Trim());
+            if (result is null) return NotFound();
+
+            // The struck signature puts the request back in somebody's inbox and moves the counts
+            // with it — the same pair of topics every other decision on a request signals.
+            await NotifyWorkflowAsync();
+            return Ok(result);
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Reopens a closed request — the General Manager AND the Owner, in either order.
+    ///
+    /// TWO OUTCOMES, and the caller must handle both. The first of the two to sign gets
+    /// State 'AwaitingSecond' and NOTHING HAS MOVED: the request is still closed, waiting on the
+    /// other role. The second gets State 'Reopened' with the request's new standing. Reporting the
+    /// first as though it were the second is the mistake this shape exists to prevent.
+    ///
+    /// The reason is required on the first signature; the second inherits it, which is why an empty
+    /// reason is not rejected here — the procedure knows which half this is and asks only when it
+    /// needs to.
+    /// </summary>
+    [HttpPost("requests/{id:int}/reopen")]
+    [Authorize]
+    public async Task<IActionResult> Reopen(int id, [FromBody] ReasonRequest? request)
+    {
+        try
+        {
+            var result = await _requests.ReopenAsync(id, User.UserId(), request?.Reason?.Trim() ?? string.Empty);
+            if (result is null) return NotFound();
+
+            // Signalled on BOTH outcomes. A half-signed reopen changes nothing about the request,
+            // but it does change what the other of GM/Owner sees when they open it — the banner
+            // saying it is waiting on them is the whole point of telling them.
+            await NotifyWorkflowAsync();
+            return Ok(result);
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
 }

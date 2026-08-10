@@ -11,7 +11,19 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class LeaveTypesController : ControllerBase
 {
     private readonly ILeaveTypeService _leaveTypes;
-    public LeaveTypesController(ILeaveTypeService leaveTypes) => _leaveTypes = leaveTypes;
+    private readonly ILiveNotifier _live;
+
+    public LeaveTypesController(ILeaveTypeService leaveTypes, ILiveNotifier live)
+    {
+        _leaveTypes = leaveTypes;
+        _live = live;
+    }
+
+    /// <summary>
+    /// A leave type's tiers decide the entitlement every balance is measured against, so editing one
+    /// changes figures already on screen elsewhere.
+    /// </summary>
+    private Task NotifyLeavePolicyAsync() => _live.NotifyAsync("hr", "dashboard");
 
     [HttpGet]
     [HasPermission("EMP_VIEW")]
@@ -44,7 +56,11 @@ public class LeaveTypesController : ControllerBase
         try
         {
             var saved = await _leaveTypes.UpsertAsync(null, request);
-            return saved is null ? BadRequest(new { error = "The leave type could not be saved." }) : Ok(saved);
+            if (saved is null)
+                return BadRequest(new { error = "The leave type could not be saved." });
+
+            await NotifyLeavePolicyAsync();
+            return Ok(saved);
         }
         catch (SqlException ex) when (ex.Number == 50000)
         {
@@ -67,7 +83,10 @@ public class LeaveTypesController : ControllerBase
         try
         {
             var saved = await _leaveTypes.UpsertAsync(id, request);
-            return saved is null ? NotFound() : Ok(saved);
+            if (saved is null) return NotFound();
+
+            await NotifyLeavePolicyAsync();
+            return Ok(saved);
         }
         catch (SqlException ex) when (ex.Number == 50000)
         {
@@ -84,6 +103,7 @@ public class LeaveTypesController : ControllerBase
     public async Task<IActionResult> SetAccrualTier(int id, [FromBody] LeaveAccrualTierRequest request)
     {
         await _leaveTypes.SetAccrualTierAsync(id, request);
+        await NotifyLeavePolicyAsync();
         return NoContent();
     }
 
@@ -92,6 +112,7 @@ public class LeaveTypesController : ControllerBase
     public async Task<IActionResult> DeleteAccrualTier(int id, int minYears)
     {
         await _leaveTypes.DeleteAccrualTierAsync(id, minYears);
+        await NotifyLeavePolicyAsync();
         return NoContent();
     }
 
@@ -101,6 +122,7 @@ public class LeaveTypesController : ControllerBase
     public async Task<IActionResult> SetPayTier(int id, [FromBody] LeavePayTierRequest request)
     {
         await _leaveTypes.SetPayTierAsync(id, request);
+        await NotifyLeavePolicyAsync();
         return NoContent();
     }
 
@@ -109,6 +131,7 @@ public class LeaveTypesController : ControllerBase
     public async Task<IActionResult> DeletePayTier(int id, int minYears)
     {
         await _leaveTypes.DeletePayTierAsync(id, minYears);
+        await NotifyLeavePolicyAsync();
         return NoContent();
     }
 
@@ -124,6 +147,7 @@ public class LeaveTypesController : ControllerBase
             return BadRequest(new { error = "Name the relation." });
 
         await _leaveTypes.SetRelationAsync(id, request);
+        await NotifyLeavePolicyAsync();
         return NoContent();
     }
 
@@ -132,6 +156,7 @@ public class LeaveTypesController : ControllerBase
     public async Task<IActionResult> DeleteRelation(int id, string relation)
     {
         await _leaveTypes.DeleteRelationAsync(id, relation);
+        await NotifyLeavePolicyAsync();
         return NoContent();
     }
 }

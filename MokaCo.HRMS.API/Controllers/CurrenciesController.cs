@@ -10,7 +10,13 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class CurrenciesController : ControllerBase
 {
     private readonly ICurrencyService _currencies;
-    public CurrenciesController(ICurrencyService currencies) => _currencies = currencies;
+    private readonly ILiveNotifier _live;
+
+    public CurrenciesController(ICurrencyService currencies, ILiveNotifier live)
+    {
+        _currencies = currencies;
+        _live = live;
+    }
 
     [HttpGet]
     [HasPermission("EMP_VIEW")]
@@ -21,6 +27,8 @@ public class CurrenciesController : ControllerBase
     public async Task<IActionResult> Upsert([FromBody] CurrencyUpsertRequest request)
     {
         await _currencies.UpsertAsync(request.CurrencyCode, request.Name, request.DecimalPlaces);
+        // DecimalPlaces decides how every amount in that currency is rendered and rounded.
+        await _live.NotifyAsync("payroll", "dashboard");
         return NoContent();
     }
 }

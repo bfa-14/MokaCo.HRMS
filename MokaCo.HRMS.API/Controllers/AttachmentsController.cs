@@ -23,10 +23,14 @@ public class AttachmentsController : ControllerBase
     private readonly IAttachmentService _attachments;
     private readonly IWorkflowSupportService _support;
 
-    public AttachmentsController(IAttachmentService attachments, IWorkflowSupportService support)
+    private readonly ILiveNotifier _live;
+
+    public AttachmentsController(
+        IAttachmentService attachments, IWorkflowSupportService support, ILiveNotifier live)
     {
         _attachments = attachments;
         _support = support;
+        _live = live;
     }
 
     /// <summary>What may be attached: documents and the common image formats, capped at 5 MB.</summary>
@@ -76,6 +80,10 @@ public class AttachmentsController : ControllerBase
         {
             var attachmentId = await _attachments.AddAsync(
                 id, stepNo, await BuildCallerAsync(), file.FileName, file.ContentType, bytes, caption);
+
+            // A leave type that cannot be approved without a certificate is UNBLOCKED by this
+            // upload, and the approver is looking at the panel that says one is missing.
+            await _live.NotifyAsync("workflow");
             return Ok(new { attachmentId });
         }
         catch (WorkflowException ex)
@@ -119,6 +127,7 @@ public class AttachmentsController : ControllerBase
         try
         {
             await _attachments.DeleteAsync(attachmentId, await BuildCallerAsync());
+            await _live.NotifyAsync("workflow");
             return NoContent();
         }
         catch (WorkflowException ex)

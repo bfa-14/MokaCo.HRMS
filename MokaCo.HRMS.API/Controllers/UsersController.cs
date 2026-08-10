@@ -14,10 +14,14 @@ public class UsersController : ControllerBase
     private readonly IUserService _users;
     private readonly IUserSignatureService _signatures;
 
-    public UsersController(IUserService users, IUserSignatureService signatures)
+    private readonly ILiveNotifier _live;
+
+    public UsersController(
+        IUserService users, IUserSignatureService signatures, ILiveNotifier live)
     {
         _users = users;
         _signatures = signatures;
+        _live = live;
     }
 
     private int CurrentUserId =>
@@ -37,6 +41,7 @@ public class UsersController : ControllerBase
     public async Task<IActionResult> Create([FromBody] CreateUserRequest request)
     {
         var id = await _users.CreateAsync(request, CurrentUserId);
+        await _live.NotifyAsync("workflow", "dashboard");
         return CreatedAtAction(nameof(GetAll), new { id }, new { userId = id });
     }
 
@@ -45,6 +50,9 @@ public class UsersController : ControllerBase
     public async Task<IActionResult> SetActive(int id, [FromQuery] bool isActive)
     {
         await _users.SetActiveAsync(id, isActive, CurrentUserId);
+        // Deactivating an account removes a signer: fn_CanUserActOnStep only counts ACTIVE users,
+        // so steps waiting on them, and any deputy cover, change the moment this lands.
+        await _live.NotifyAsync("workflow", "dashboard");
         return NoContent();
     }
 
@@ -99,6 +107,7 @@ public class UsersController : ControllerBase
         {
             var saved = await _signatures.UploadAsync(
                 userId, stream.ToArray(), file.ContentType, file.FileName, CurrentUserId);
+            await _live.NotifyAsync("workflow");
             return Ok(saved);
         }
         catch (SignatureValidationException ex)
@@ -113,6 +122,7 @@ public class UsersController : ControllerBase
     public async Task<IActionResult> DeleteSignature(int userId)
     {
         await _signatures.DeleteAsync(userId);
+        await _live.NotifyAsync("workflow");
         return NoContent();
     }
 }

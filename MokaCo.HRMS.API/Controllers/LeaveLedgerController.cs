@@ -11,7 +11,13 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class LeaveLedgerController : ControllerBase
 {
     private readonly ILeaveLedgerService _ledger;
-    public LeaveLedgerController(ILeaveLedgerService ledger) => _ledger = ledger;
+    private readonly ILiveNotifier _live;
+
+    public LeaveLedgerController(ILeaveLedgerService ledger, ILiveNotifier live)
+    {
+        _ledger = ledger;
+        _live = live;
+    }
 
     private int CurrentUserId =>
         int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub")!);
@@ -31,6 +37,8 @@ public class LeaveLedgerController : ControllerBase
     public async Task<IActionResult> PostMovement([FromBody] LeaveLedgerPostRequest request)
     {
         var id = await _ledger.PostMovementAsync(request, CurrentUserId);
+        // Leave balances are a dashboard tile and a figure every leave decision is judged against.
+        await _live.NotifyAsync("hr", "dashboard");
         return CreatedAtAction(nameof(GetByEmployee), new { employeeId = request.EmployeeId },
             new { leaveLedgerId = id });
     }
@@ -40,6 +48,7 @@ public class LeaveLedgerController : ControllerBase
     public async Task<IActionResult> Delete(int id)
     {
         await _ledger.DeleteAsync(id);
+        await _live.NotifyAsync("hr", "dashboard");
         return NoContent();
     }
 }
