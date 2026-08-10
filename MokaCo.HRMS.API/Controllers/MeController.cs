@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MokaCo.HRMS.Api.Auth;
+using MokaCo.HRMS.Model.Security;
 using MokaCo.HRMS.Services.Payroll;
 using MokaCo.HRMS.Services.Security;
 using MokaCo.HRMS.Services.Workflow;
@@ -16,13 +17,39 @@ public class MeController : ControllerBase
     private readonly IWorkflowSupportService _support;
     private readonly IUserSignatureService _signatures;
     private readonly IPayrollService _payroll;
+    private readonly IUserService _users;
 
     public MeController(
-        IWorkflowSupportService support, IUserSignatureService signatures, IPayrollService payroll)
+        IWorkflowSupportService support, IUserSignatureService signatures, IPayrollService payroll,
+        IUserService users)
     {
         _support = support;
         _signatures = signatures;
         _payroll = payroll;
+        _users = users;
+    }
+
+    /// <summary>
+    /// Changes the caller's own password. Authentication only — NO permission, because everybody has
+    /// a password and gating this would leave most people unable to change theirs.
+    ///
+    /// THE ACCOUNT IS THE TOKEN'S, AND ONLY THE TOKEN'S. There is no id in the route and none in the
+    /// body: <see cref="ChangePasswordRequest"/> carries the two passwords and nothing else, so the
+    /// worst a caller can do by editing the request is change their own password. This is the whole
+    /// reason it lives on /api/me rather than as a variant of /api/users/{id} — an id parameter here
+    /// would need an authorisation rule to defend it, and the rule that does not exist cannot be got
+    /// wrong.
+    ///
+    /// A wrong current password is a 400 with the reason, not a 401: the caller IS authenticated —
+    /// their token is perfectly good — they have simply mistyped a field. Answering 401 would send
+    /// the client's refresh-and-retry path down a road that cannot help, and on a second failure it
+    /// would log them out for a typo.
+    /// </summary>
+    [HttpPost("change-password")]
+    public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request)
+    {
+        var result = await _users.ChangePasswordAsync(User.UserId(), request);
+        return result.Success ? NoContent() : BadRequest(new { error = result.Error });
     }
 
     /// <summary>
