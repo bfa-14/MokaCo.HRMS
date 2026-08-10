@@ -38,6 +38,16 @@ public class CreateUserRequest
     public bool IsActive { get; set; } = true;
     public List<int> RoleIds { get; set; } = new();
 }
+/// <summary>
+/// Body of POST /api/me/change-password. Note what is NOT here: a user id. The account being
+/// changed is read from the token, so this body can only ever describe the caller's own password.
+/// </summary>
+public class ChangePasswordRequest
+{
+    public string CurrentPassword { get; set; } = string.Empty;
+    public string NewPassword { get; set; } = string.Empty;
+}
+
 public class RoleRequest
 {
     public string Name { get; set; } = string.Empty;

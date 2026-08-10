@@ -9,6 +9,11 @@ public interface IUserRepository
     Task RegisterLoginSuccessAsync(int userId);
     Task<LoginFailureResult> RegisterLoginFailureAsync(int userId, int maxAttempts = 5, int lockoutMinutes = 15);
     Task<IEnumerable<PermissionDto>> GetPermissionsAsync(int userId);
+    /// <summary>
+    /// Writes an already-hashed password and stamps PasswordChangedAt. The hash is produced by the
+    /// API — the procedure neither verifies nor computes one. Returns rows affected.
+    /// </summary>
+    Task<int> ChangePasswordAsync(int userId, string newPasswordHash);
     // inline CRUD
     Task<IEnumerable<UserListItem>> GetAllAsync();
     /// <summary>Accounts not yet claimed by any employee — feeds the "link account" picker.</summary>

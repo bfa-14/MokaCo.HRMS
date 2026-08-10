@@ -52,6 +52,15 @@ public class UserRepository : IUserRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    public async Task<int> ChangePasswordAsync(int userId, string newPasswordHash)
+    {
+        using var db = _factory.Create();
+        return await db.ExecuteScalarAsync<int>(
+            "security.usp_User_ChangePassword",
+            new { UserId = userId, NewPasswordHash = newPasswordHash },
+            commandType: CommandType.StoredProcedure);
+    }
+
     // ---- inline CRUD ----
 
     public async Task<IEnumerable<UserListItem>> GetAllAsync()
