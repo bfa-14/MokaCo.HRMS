@@ -24,9 +24,16 @@ public interface IPayrollService
     Task<PayslipDetail> GetPayslipAsync(int payslipId);
     Task<PayslipPaymentResult?> SetPaymentAsync(int payslipId, PayslipPaymentRequest request, int actedByUserId);
 
+    Task<IEnumerable<StatutoryReportRow>> GetStatutoryReportAsync(int payrollRunId);
+
+    // --- payslips, read from the other side ---
+    Task<IEnumerable<MyPayslip>> GetMyPayslipsAsync(int userId);
+    Task<IEnumerable<EmployeePayslip>> GetPayslipsForEmployeeAsync(int employeeId);
+    Task<PayslipLineLookup?> LookupLineAsync(string sourceType, int sourceId);
+
     // --- advances ---
     Task<IEnumerable<SalaryAdvance>> GetAdvancesAsync(int? employeeId, bool openOnly);
-    Task<SalaryAdvanceCreated?> CreateAdvanceAsync(SalaryAdvanceCreateRequest request, int createdByUserId);
+    // No CreateAdvanceAsync: advances are raised as requests (ISalaryAdvanceService).
     Task<SalaryAdvanceMonthlyResult?> UpdateAdvanceMonthlyAsync(
         int salaryAdvanceId, SalaryAdvanceMonthlyRequest request, int actedByUserId);
 

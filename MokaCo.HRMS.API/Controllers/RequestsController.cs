@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Net.Http.Headers;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Model.Workflow;
 using MokaCo.HRMS.Services.Workflow;
@@ -21,12 +22,22 @@ public class RequestsController : ControllerBase
 {
     private readonly IRequestService _requests;
     private readonly IWorkflowSupportService _support;
+    private readonly ILiveNotifier _live;
 
-    public RequestsController(IRequestService requests, IWorkflowSupportService support)
+    public RequestsController(
+        IRequestService requests, IWorkflowSupportService support, ILiveNotifier live)
     {
         _requests = requests;
         _support = support;
+        _live = live;
     }
+
+    /// <summary>
+    /// Every decision on this controller moves a request through a chain, which is the same thing as
+    /// changing somebody else's inbox and the dashboard's counts. Named once so the topic pair
+    /// cannot drift action by action.
+    /// </summary>
+    private Task NotifyWorkflowAsync() => _live.NotifyAsync("workflow", "dashboard");
 
     /// <summary>
     /// One request in full. Visible only to someone who holds REQUEST_VIEW_ALL, or whose request it
@@ -193,6 +204,9 @@ public class RequestsController : ControllerBase
         try
         {
             await _requests.SaveDraftAsync(id, User.UserId(), request);
+            // A draft is half a decision, but it DOES change what a colleague sees: the hub badges
+            // a step somebody has started, so nobody duplicates the work.
+            await NotifyWorkflowAsync();
             return NoContent();
         }
         catch (WorkflowException ex)
@@ -207,6 +221,7 @@ public class RequestsController : ControllerBase
         try
         {
             await _requests.DiscardDraftAsync(id, User.UserId());
+            await NotifyWorkflowAsync();
             return NoContent();
         }
         catch (WorkflowException ex)
@@ -227,6 +242,8 @@ public class RequestsController : ControllerBase
         try
         {
             await _requests.DelegateAsync(id, User.UserId(), request.ToUserId, request.Reason.Trim());
+            // Two inboxes change at once — it leaves one person's and arrives in another's.
+            await NotifyWorkflowAsync();
             return NoContent();
         }
         catch (WorkflowException ex)
@@ -245,6 +262,7 @@ public class RequestsController : ControllerBase
         try
         {
             await _requests.ReclaimAsync(id, User.UserId(), string.IsNullOrWhiteSpace(request?.Reason) ? null : request!.Reason.Trim());
+            await NotifyWorkflowAsync();
             return NoContent();
         }
         catch (WorkflowException ex)
@@ -264,7 +282,10 @@ public class RequestsController : ControllerBase
         try
         {
             var result = await _requests.ApproveAsync(id, User.UserId(), request?.Comment, request?.ChangeSummary, request?.Password);
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            await NotifyWorkflowAsync();
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -286,6 +307,7 @@ public class RequestsController : ControllerBase
         try
         {
             await _requests.PutOnHoldAsync(id, User.UserId(), request.Reason.Trim(), request.WaitingOnRequester, request.Password);
+            await NotifyWorkflowAsync();
             return NoContent();
         }
         catch (WorkflowException ex)
@@ -308,6 +330,8 @@ public class RequestsController : ControllerBase
         try
         {
             var noteId = await _requests.AddNoteAsync(id, User.UserId(), request.NoteText.Trim(), request.StepNo, request.IsHoldResponse);
+            // A note is a conversation on an open request; the other party should see it arrive.
+            await NotifyWorkflowAsync();
             return Ok(new { noteId });
         }
         catch (WorkflowException ex)
@@ -326,7 +350,10 @@ public class RequestsController : ControllerBase
         try
         {
             var result = await _requests.RejectAsync(id, User.UserId(), request.Reason.Trim(), request.Password);
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            await NotifyWorkflowAsync();
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -343,7 +370,10 @@ public class RequestsController : ControllerBase
         try
         {
             var result = await _requests.CancelAsync(id, User.UserId(), request.Reason.Trim());
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            await NotifyWorkflowAsync();
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -379,6 +409,8 @@ public class RequestsController : ControllerBase
                 return BadRequest(new { error = "Withdrawing is not supported for this request type yet." });
 
             var result = await _requests.WithdrawExitPermissionDecisionAsync(id, stepNo, User.UserId(), request.Reason.Trim(), request.Password);
+            // Withdrawing hands the step back — it reappears in an inbox as work to redo.
+            await NotifyWorkflowAsync();
             return Ok(result);
         }
         catch (WorkflowException ex)
@@ -403,6 +435,7 @@ public class RequestsController : ControllerBase
         try
         {
             await _requests.ReopenClosedAsync(id, User.UserId(), request.Reason.Trim());
+            await NotifyWorkflowAsync();
             return NoContent();
         }
         catch (WorkflowException ex)
@@ -425,7 +458,10 @@ public class RequestsController : ControllerBase
         try
         {
             var result = await _requests.MoveToVersionAsync(id, request, User.UserId());
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            await NotifyWorkflowAsync();
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -453,8 +489,15 @@ public class RequestsController : ControllerBase
             if (image?.SignatureImage is null || image.SignatureContentType is null)
                 return NotFound();
 
-            Response.Headers.CacheControl = "private, max-age=86400";
-            return File(image.SignatureImage, image.SignatureContentType);
+            // Same defect as /api/signatures/{id}/image had, with a 24-hour blast radius instead of
+            // a year: this URL is keyed by RequestInstanceId + StepNo, and REQUEST_INSTANCE is
+            // reseeded by core.usp_System_ResetTestData too — so "request 21, step 1" after a reset
+            // is a different signature by a different person. A time-based cache with no validator
+            // serves the previous occupant. Validate on content instead, which renumbering cannot
+            // disturb; an unchanged image still costs only a 304.
+            Response.Headers.CacheControl = "private, no-cache";
+            var etag = new EntityTagHeaderValue(SignaturesController.ContentETag(image.SignatureImage));
+            return File(image.SignatureImage, image.SignatureContentType, null, etag);
         }
         catch (WorkflowException ex)
         {

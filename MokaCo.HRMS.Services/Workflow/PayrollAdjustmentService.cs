@@ -63,15 +63,36 @@ public class PayrollAdjustmentService : IPayrollAdjustmentService
     }
 
     /// <summary>
-    /// Signs the decision. The signature is verified exactly as the other typed decides do — the
-    /// step says whether one is required, and the password is checked against the caller's own hash.
+    /// Signs the decision, INCLUDING THE FIGURE. The signature is verified exactly as the other
+    /// typed decides do — the step says whether one is required, and the password is checked
+    /// against the caller's own hash.
+    ///
+    /// ONLY THE SHAPE IS CHECKED HERE: that a figure arrived at all, and that it is above zero.
+    /// Both of those are facts about the request body, knowable without reading a single row. The
+    /// two rules that matter — no more than was requested, and no more than an earlier approver
+    /// allowed — need the request's own history and stay in the procedure, whose refusals travel
+    /// back verbatim. Duplicating them here would create a second authority on what a person is
+    /// owed, and the day the two disagree is the day nobody can say which was right.
     /// </summary>
     public async Task<PayrollAdjustmentDecisionResult?> DecideAsync(
         int requestInstanceId, int actedByUserId, PayrollAdjustmentDecideRequest request)
     {
+        // Null and zero are different mistakes: one is a client that forgot the field, the other is
+        // somebody trying to approve nothing. The procedure says the same two things; saying them
+        // here as well costs one comparison and saves a round trip.
+        if (request.ApprovedAmount is not decimal approvedAmount)
+            throw new WorkflowException(
+                400,
+                "State the approved amount - the figure you sign is what the payslip will carry.");
+
+        if (approvedAmount <= 0)
+            throw new WorkflowException(
+                400,
+                "The approved amount must be above zero. To grant nothing, reject the request.");
+
         var signed = await _signature.VerifyAsync(requestInstanceId, actedByUserId, request.Password);
         return await WorkflowSqlErrors.MapAsync(() => _repo.DecideAsync(
-            requestInstanceId, actedByUserId,
+            requestInstanceId, actedByUserId, approvedAmount,
             string.IsNullOrWhiteSpace(request.Comment) ? null : request.Comment.Trim(),
             signed));
     }

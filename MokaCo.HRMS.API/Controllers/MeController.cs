@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MokaCo.HRMS.Api.Auth;
+using MokaCo.HRMS.Services.Payroll;
 using MokaCo.HRMS.Services.Security;
 using MokaCo.HRMS.Services.Workflow;
 
@@ -14,12 +15,30 @@ public class MeController : ControllerBase
 {
     private readonly IWorkflowSupportService _support;
     private readonly IUserSignatureService _signatures;
+    private readonly IPayrollService _payroll;
 
-    public MeController(IWorkflowSupportService support, IUserSignatureService signatures)
+    public MeController(
+        IWorkflowSupportService support, IUserSignatureService signatures, IPayrollService payroll)
     {
         _support = support;
         _signatures = signatures;
+        _payroll = payroll;
     }
+
+    /// <summary>
+    /// The caller's OWN payslips. Authentication only — NO payroll permission.
+    ///
+    /// That is the whole point: everybody is paid, so everybody must be able to read what they were
+    /// paid, and gating this on PAYROLL_RUN would mean only the people who run payroll could ever
+    /// see a payslip. The scoping is not done by a permission but by the procedure, which resolves
+    /// the employee through hr.EMPLOYEE.UserId from the TOKEN — there is no id in the URL to change,
+    /// so there is nothing to tamper with.
+    ///
+    /// APPROVED runs only, and an account not linked to an employee simply gets an empty list.
+    /// </summary>
+    [HttpGet("payslips")]
+    public async Task<IActionResult> Payslips()
+        => Ok(await _payroll.GetMyPayslipsAsync(User.UserId()));
 
     /// <summary>
     /// The employee record behind the token. An admin account with no employee record is NOT an

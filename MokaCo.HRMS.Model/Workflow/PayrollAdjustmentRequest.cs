@@ -35,7 +35,19 @@ public sealed class PayrollAdjustmentPayload
     /// <summary>+1 or -1. THE SIGN DECIDES DIRECTION; the amount is always positive.</summary>
     public short Sign { get; set; }
 
+    /// <summary>What was ASKED FOR. It never changes — the claim as raised is part of the record.</summary>
     public decimal Amount { get; set; }
+
+    /// <summary>
+    /// What the last approver actually signed for, or null while nobody has yet.
+    ///
+    /// THE STANDING FIGURE IS <c>ApprovedAmount ?? Amount</c>, and that is the number the next
+    /// approver is deciding about — not the original request. Each signature may tighten it and
+    /// never raise it, so reading <see cref="Amount"/> as "the amount" once a chain is underway
+    /// shows a figure that has already been superseded.
+    /// </summary>
+    public decimal? ApprovedAmount { get; set; }
+
     public string CurrencyCode { get; set; } = string.Empty;
 
     /// <summary>The open period whose payslip will carry this line. Format 2026-09.</summary>
@@ -74,22 +86,34 @@ public sealed class PayrollAdjustmentCreateRequest
 }
 
 /// <summary>
-/// POST /api/payroll-adjustment-requests/{id}/decide — approve or reject, and nothing else.
+/// POST /api/payroll-adjustment-requests/{id}/decide — the APPROVE path, and the figure being signed.
 ///
-/// THERE IS NO FIGURE HERE, deliberately. A correction is a precise claim; an approver who believes a
-/// different number rejects and says why, and HR raises it again. Half-corrected corrections are how
-/// a ledger stops being readable, so the type carries no CanAdjust anywhere in its chain.
+/// THE AMOUNT IS PART OF THE SIGNATURE. An approver is not agreeing to a claim someone else wrote;
+/// they are stating the number that will land on the payslip, and it is recorded against their name.
+/// The procedure is what enforces the rules — no more than was requested, and never more than an
+/// earlier approver already allowed — so an approver may tighten a figure on its way up the chain
+/// but never loosen it, and granting MORE means rejecting and raising again.
+///
+/// REJECTING CARRIES NO FIGURE, and does not come through here: there is nothing to sign for a
+/// request that is being refused.
 /// </summary>
 public sealed class PayrollAdjustmentDecideRequest
 {
+    /// <summary>
+    /// Required, above zero. Nullable so that "not sent at all" is distinguishable from "sent as
+    /// zero" — the two are different mistakes and deserve different sentences. Zero is not a way to
+    /// grant nothing; rejecting is.
+    /// </summary>
+    public decimal? ApprovedAmount { get; set; }
+
     public string? Comment { get; set; }
     /// <summary>Present only when the step requires a signature; verified against the caller's own hash.</summary>
     public string? Password { get; set; }
 }
 
 /// <summary>
-/// The generic decision outcome plus the one fact this type adds: the ledger row, if this signature
-/// was the one that created it.
+/// The generic decision outcome plus the two facts this type adds: the figure that was signed, and
+/// the ledger row if this signature was the one that created it.
 /// </summary>
 public sealed class PayrollAdjustmentDecisionResult
 {
@@ -100,6 +124,13 @@ public sealed class PayrollAdjustmentDecisionResult
     public string? Decision { get; set; }
     public bool SignedAsDeputy { get; set; }
     public bool SignedWithPassword { get; set; }
+
+    /// <summary>
+    /// The figure this signature actually set, echoed back BY THE PROCEDURE rather than by the
+    /// caller. Read it rather than assuming the request body took effect — it is the new standing
+    /// amount, and it is what the next approver in the chain will be shown.
+    /// </summary>
+    public decimal ApprovedAmount { get; set; }
 
     /// <summary>Non-null once the final approval has written the payroll ledger row.</summary>
     public int? CreatedAdjustmentId { get; set; }

@@ -14,6 +14,12 @@ public class PayrollRunListItem
     public string PeriodYearMonth { get; set; } = string.Empty;
     /// <summary>Draft / Review / Approved / Cancelled.</summary>
     public string Status { get; set; } = string.Empty;
+    /// <summary>
+    /// Primary / Supplemental. A supplemental is an OFF-CYCLE run: it pays approved, unconsumed
+    /// adjustments for a period whose primary is already locked, and computes no statutory
+    /// contributions. Both types use the same endpoints from here on.
+    /// </summary>
+    public string RunType { get; set; } = "Primary";
     public string PrimaryCurrency { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; }
     public string? CreatedBy { get; set; }
@@ -54,6 +60,8 @@ public class PayrollRunHeader
     public DateTime PeriodStart { get; set; }
     public DateTime PeriodEnd { get; set; }
     public string Status { get; set; } = string.Empty;
+    /// <summary>Primary / Supplemental — see <see cref="PayrollRunListItem.RunType"/>.</summary>
+    public string RunType { get; set; } = "Primary";
     public string PrimaryCurrency { get; set; } = string.Empty;
     public string? Notes { get; set; }
     public DateTime CreatedAt { get; set; }
@@ -183,6 +191,13 @@ public class PayrollRunCreateRequest
     /// <summary>Format 2026-08. The procedure validates the shape and says so if it is wrong.</summary>
     public string PeriodYearMonth { get; set; } = string.Empty;
     public string? Notes { get; set; }
+
+    /// <summary>
+    /// Primary (the default) or Supplemental. Passed straight through to @RunType — every rule
+    /// about when a supplemental is allowed (the primary must be locked, only one open at a time,
+    /// something must actually be payable) belongs to the procedure and arrives as its own sentence.
+    /// </summary>
+    public string? RunType { get; set; }
 }
 
 /// <summary>POST /api/payroll/runs/{id}/cancel. The procedure requires a non-empty reason.</summary>

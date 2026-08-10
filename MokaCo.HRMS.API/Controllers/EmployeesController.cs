@@ -17,19 +17,22 @@ public class EmployeesController : ControllerBase
     private readonly IRosterService _roster;
     private readonly IOvertimeService _overtime;
     private readonly IExpenseService _expenses;
+    private readonly ISalaryComponentService _salaryComponents;
 
     public EmployeesController(
         IEmployeeService employees,
         ILeaveRequestService leave,
         IRosterService roster,
         IOvertimeService overtime,
-        IExpenseService expenses)
+        IExpenseService expenses,
+        ISalaryComponentService salaryComponents)
     {
         _employees = employees;
         _leave = leave;
         _roster = roster;
         _overtime = overtime;
         _expenses = expenses;
+        _salaryComponents = salaryComponents;
     }
 
     private int CurrentUserId =>
@@ -224,4 +227,42 @@ public class EmployeesController : ControllerBase
     [HasPermission("USER_MANAGE")]
     public async Task<IActionResult> UnlinkUser(int id)
         => Ok(await _employees.UnlinkUserAsync(id, CurrentUserId));
+
+    // ───────────────────── salary administration ─────────────────────
+    //
+    // THE HISTORY-PRESERVING PATH. These two are not the same thing as the older
+    // POST/PUT/DELETE on /api/salary-components, which edit a row in place: a change here CLOSES
+    // the standing row the day before and OPENS a new one, so a month already paid keeps saying
+    // what it paid. Use these.
+    //
+    // The gate is EMP_VIEW/EMP_EDIT for consistency with the rest of this controller, but the real
+    // authority is the procedure — it checks for the HR (or Admin) role itself and refuses with
+    // "Salaries are administered by HR." That check is not repeated here, because two opinions
+    // about who may change a salary is one too many.
+
+    /// <summary>Every salary row for the employee — the standing ones and the closed history.</summary>
+    [HttpGet("{id:int}/salary-components")]
+    [HasPermission("EMP_VIEW")]
+    public async Task<IActionResult> GetSalaryComponents(int id)
+        => Ok(await _salaryComponents.GetForEmployeeAsync(id));
+
+    /// <summary>
+    /// Sets what a component is worth FROM a date, closing whatever stood before it.
+    ///
+    /// The refusal to expect is the locked-through one — it names the earliest date that would
+    /// work, so the message contains its own fix. Returned verbatim.
+    /// </summary>
+    [HttpPut("{id:int}/salary-components")]
+    [HasPermission("EMP_EDIT")]
+    public async Task<IActionResult> SetSalaryComponent(int id, [FromBody] SalaryComponentSetRequest request)
+    {
+        try
+        {
+            return Ok(await _salaryComponents.SetAsync(id, request, CurrentUserId));
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
 }

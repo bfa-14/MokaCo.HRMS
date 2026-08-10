@@ -7,6 +7,9 @@ public class DeviceCreateRequest
     /// <summary>The terminal's own serial. It is the identity a pushing device authenticates with, so it must match the hardware exactly.</summary>
     public string SerialNumber { get; set; } = string.Empty;
 
+    /// <summary>Optional human label — "Verdun front door". The serial identifies the hardware; this identifies the machine to a person.</summary>
+    public string? Name { get; set; }
+
     /// <summary>Required: a terminal is a physical object and sits at a physical site.</summary>
     public int BranchId { get; set; }
 
@@ -16,6 +19,7 @@ public class DeviceCreateRequest
 public class DeviceUpdateRequest
 {
     public string SerialNumber { get; set; } = string.Empty;
+    public string? Name { get; set; }
     public int BranchId { get; set; }
     public int? DepartmentId { get; set; }
 

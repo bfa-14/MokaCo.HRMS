@@ -39,12 +39,20 @@ public class PayrollRepository : IPayrollRepository
             commandType: CommandType.StoredProcedure);
     }
 
-    public async Task<PayrollRunCreated?> CreateRunAsync(string periodYearMonth, int createdByUserId, string? notes)
+    public async Task<PayrollRunCreated?> CreateRunAsync(
+        string periodYearMonth, int createdByUserId, string? notes, string? runType)
     {
         using var db = _factory.Create();
         return await db.QuerySingleOrDefaultAsync<PayrollRunCreated>(
             "payroll.usp_PayrollRun_Create",
-            new { PeriodYearMonth = periodYearMonth, CreatedByUserId = createdByUserId, Notes = notes },
+            new
+            {
+                PeriodYearMonth = periodYearMonth,
+                CreatedByUserId = createdByUserId,
+                Notes = notes,
+                // Null lets the procedure apply its own default rather than this layer asserting one.
+                RunType = runType,
+            },
             commandType: CommandType.StoredProcedure);
     }
 
@@ -93,6 +101,21 @@ public class PayrollRepository : IPayrollRepository
             commandTimeout: 300);
     }
 
+    /// <summary>
+    /// The OFF-CYCLE generator. A separate procedure, not a flag on the primary one: it pays
+    /// approved, unconsumed adjustments and computes no statutory contributions, so the two share a
+    /// name and nothing else.
+    /// </summary>
+    public async Task<PayrollRunGenerateResult?> GenerateSupplementalAsync(int payrollRunId, int actedByUserId)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<PayrollRunGenerateResult>(
+            "payroll.usp_PayrollRun_GenerateSupplemental",
+            new { PayrollRunId = payrollRunId, ActedByUserId = actedByUserId },
+            commandType: CommandType.StoredProcedure,
+            commandTimeout: 300);
+    }
+
     public async Task<PayrollRunStatusResult?> SendToReviewAsync(int payrollRunId, int actedByUserId)
     {
         using var db = _factory.Create();
@@ -130,6 +153,44 @@ public class PayrollRepository : IPayrollRepository
         return await db.QueryAsync<PaymentSheetRow>(
             "payroll.usp_PayrollRun_GetPaymentSheet",
             new { PayrollRunId = payrollRunId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<IEnumerable<StatutoryReportRow>> GetStatutoryReportAsync(int payrollRunId)
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<StatutoryReportRow>(
+            "payroll.usp_PayrollRun_GetStatutoryReport",
+            new { PayrollRunId = payrollRunId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<IEnumerable<MyPayslip>> GetMyPayslipsAsync(int userId)
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<MyPayslip>(
+            "payroll.usp_Payslip_GetMine",
+            // The USER id, not an employee id: the procedure resolves the person through
+            // hr.EMPLOYEE.UserId, so nobody can read another's pay by changing a number.
+            new { UserId = userId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<IEnumerable<EmployeePayslip>> GetPayslipsForEmployeeAsync(int employeeId)
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<EmployeePayslip>(
+            "payroll.usp_Payslip_GetForEmployee",
+            new { EmployeeId = employeeId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<PayslipLineLookup?> LookupLineAsync(string sourceType, int sourceId)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<PayslipLineLookup>(
+            "payroll.usp_PayslipLine_Lookup",
+            new { SourceType = sourceType, SourceId = sourceId },
             commandType: CommandType.StoredProcedure);
     }
 
@@ -225,27 +286,6 @@ WHERE l.PayslipId = @PayslipId AND l.SourceId IS NOT NULL AND x.RequestInstanceI
         return await db.QueryAsync<SalaryAdvance>(
             "payroll.usp_Advance_GetList",
             new { EmployeeId = employeeId, OpenOnly = openOnly },
-            commandType: CommandType.StoredProcedure);
-    }
-
-    public async Task<SalaryAdvanceCreated?> CreateAdvanceAsync(
-        int employeeId, decimal amount, string currencyCode, DateTime advanceDate,
-        decimal monthlyDeduction, string firstDeductionPeriod, string? reason, int createdByUserId)
-    {
-        using var db = _factory.Create();
-        return await db.QuerySingleOrDefaultAsync<SalaryAdvanceCreated>(
-            "payroll.usp_Advance_Create",
-            new
-            {
-                EmployeeId = employeeId,
-                Amount = amount,
-                CurrencyCode = currencyCode,
-                AdvanceDate = advanceDate.Date,
-                MonthlyDeduction = monthlyDeduction,
-                FirstDeductionPeriod = firstDeductionPeriod,
-                Reason = reason,
-                CreatedByUserId = createdByUserId,
-            },
             commandType: CommandType.StoredProcedure);
     }
 

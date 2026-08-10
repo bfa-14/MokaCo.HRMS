@@ -39,20 +39,10 @@ public class PayrollAdjustment
     public int? RequestInstanceId { get; set; }
 }
 
-/// <summary>POST /api/payroll/adjustments. The creator comes from the token.</summary>
-public class PayrollAdjustmentCreateRequest
-{
-    public int EmployeeId { get; set; }
-    public int ComponentTypeId { get; set; }
-    /// <summary>Above zero. Direction is the component type's sign, not this figure's.</summary>
-    public decimal Amount { get; set; }
-    public string CurrencyCode { get; set; } = string.Empty;
-    /// <summary>Format 2026-09. The procedure refuses a period whose run is already approved.</summary>
-    public string TargetPeriod { get; set; } = string.Empty;
-    public int? CorrectsRunId { get; set; }
-    /// <summary>Required — the procedure refuses an unexplained adjustment, and says why.</summary>
-    public string? Reason { get; set; }
-}
+// The create DTO that used to live here is gone with its route. An adjustment is raised as a
+// REQUEST now; its create shape is Model.Workflow.PayrollAdjustmentCreateRequest. Keeping a
+// same-named type in this namespace would also have made the two ambiguous to any file that
+// happened to import both.
 
 /// <summary>What usp_Adjustment_Delete returns — 0 when nothing was removed.</summary>
 public class PayrollAdjustmentDeleteResult

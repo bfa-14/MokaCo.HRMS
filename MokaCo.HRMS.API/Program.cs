@@ -19,7 +19,10 @@ using MokaCo.HRMS.Services.Attendance;
 using MokaCo.HRMS.Services.Report;
 using MokaCo.HRMS.Services.Workflow;
 using MokaCo.HRMS.Services.Payroll;
+using MokaCo.HRMS.Api.Hubs;
 using MokaCo.HRMS.Api.Jobs;
+using MokaCo.HRMS.Api.Controllers;
+using System.Threading.RateLimiting;
 using Quartz;
 using Scalar.AspNetCore;
 
@@ -87,6 +90,7 @@ builder.Services.AddScoped<IAvailabilityRepository, AvailabilityRepository>();
 builder.Services.AddScoped<IOnboardingRepository, OnboardingRepository>();
 builder.Services.AddScoped<ISeparationRepository, SeparationRepository>();
 builder.Services.AddScoped<IPayrollAdjustmentRepository, PayrollAdjustmentRepository>();
+builder.Services.AddScoped<ISalaryAdvanceRepository, SalaryAdvanceRepository>();
 builder.Services.AddScoped<IWorkflowSupportRepository, WorkflowSupportRepository>();
 
 // --- DI: repositories (Payroll) ---
@@ -143,6 +147,7 @@ builder.Services.AddScoped<IAvailabilityService, AvailabilityService>();
 builder.Services.AddScoped<IOnboardingService, OnboardingService>();
 builder.Services.AddScoped<ISeparationService, SeparationService>();
 builder.Services.AddScoped<IPayrollAdjustmentService, PayrollAdjustmentService>();
+builder.Services.AddScoped<ISalaryAdvanceService, SalaryAdvanceService>();
 builder.Services.AddScoped<IWorkflowSupportService, WorkflowSupportService>();
 
 // --- DI: services (Payroll) ---
@@ -187,18 +192,85 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.SecretKey)),
             ClockSkew = TimeSpan.FromSeconds(30)
         };
+
+        // THE HUB'S TOKEN ARRIVES IN THE QUERY STRING, and only the hub's.
+        //
+        // WebSockets cannot carry custom headers from a browser — the WebSocket API has no way to
+        // set Authorization — so SignalR's standard pattern is ?access_token=. That is a real
+        // trade: query strings land in server logs and browser history in a way headers do not.
+        // It is scoped as tightly as possible: the token is read ONLY for the hub path, so every
+        // ordinary API call keeps using the Authorization header and gains no new exposure.
+        options.Events = new JwtBearerEvents
+        {
+            OnMessageReceived = context =>
+            {
+                var accessToken = context.Request.Query["access_token"];
+                var path = context.HttpContext.Request.Path;
+                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs/live"))
+                    context.Token = accessToken;
+
+                return Task.CompletedTask;
+            }
+        };
     });
 
 // --- Authorization (permission policies) ---
 builder.Services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
 builder.Services.AddAuthorization();
 
+// --- Rate limiting: the fingerprint terminals' push endpoints only ---
+//
+// Scoped to /iclock/* by the [EnableRateLimiting] attribute on IclockController, because that is
+// the one part of the API that is not behind a JWT: it is reachable by anyone who can guess a
+// registered serial, and the serial is printed on the back of the machine. Everything else in the
+// API is protected by having to log in first, and a limiter there would only ever punish real users.
+//
+// PARTITIONED BY SERIAL, so one terminal (or one leaked serial) cannot starve the others. Falls
+// back to the remote IP when there is no SN — a caller that has not even said who it claims to be
+// still must not get an unlimited number of guesses.
+//
+// The ceiling is deliberately generous. A real terminal with Realtime=1 sends one small request per
+// punch plus a command poll every few seconds; a busy door at shift change might produce a few
+// dozen requests in a minute, and a device flushing a backlog after an outage produces a burst.
+// This is sized to be invisible to all of that and to still cap a flood.
+builder.Services.AddRateLimiter(options =>
+{
+    // 429 is not in a fingerprint terminal's vocabulary. 503 is a "try later" it already handles by
+    // keeping the batch and retrying — which is exactly what we want it to do, since a throttled
+    // punch must not be treated by the device as delivered.
+    options.RejectionStatusCode = StatusCodes.Status503ServiceUnavailable;
+
+    options.AddPolicy(IclockController.RateLimitPolicy, context =>
+    {
+        var serial = context.Request.Query["SN"].ToString();
+        var partition = string.IsNullOrWhiteSpace(serial)
+            ? $"ip:{context.Connection.RemoteIpAddress}"
+            : $"sn:{serial}";
+
+        return RateLimitPartition.GetFixedWindowLimiter(partition, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 240,                     // ~4/second sustained, per terminal
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0                         // refuse immediately; the device's own retry IS the queue
+        });
+    });
+});
+
 // --- CORS for the React front end (adjust origin) ---
 const string CorsPolicy = "MokaCoFront";
 builder.Services.AddCors(o => o.AddPolicy(CorsPolicy, p =>
     p.WithOrigins("http://localhost:5173")   // Vite dev server; change as needed
      .AllowAnyHeader()
-     .AllowAnyMethod()));
+     .AllowAnyMethod()
+     // Required by SignalR: its JS client sets withCredentials on the negotiate request, and a
+     // response without Access-Control-Allow-Credentials fails CORS before the socket is ever
+     // opened. Legal here only because the origin is named explicitly — the browser refuses this
+     // combined with a wildcard origin, which is the rule that keeps it safe.
+     .AllowCredentials()));
+
+// --- Live updates (SignalR): signals only, never data ---
+builder.Services.AddSignalR();
+builder.Services.AddSingleton<ILiveNotifier, LiveNotifier>();
 
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
@@ -211,10 +283,23 @@ if (app.Environment.IsDevelopment())
     app.MapScalarApiReference(); // interactive UI at /scalar/v1
 }
 
+// NOTE FOR THE FINGERPRINT TERMINALS: this redirects plain HTTP to HTTPS with a 307, and ZKTeco
+// firmware does not reliably follow redirects — a terminal configured against port 80 can sit there
+// "connected" and never deliver a punch. If the device turns out not to speak TLS, the fix is to
+// terminate TLS in front of the API (IIS/nginx) and let it forward on HTTP, NOT to drop this line:
+// the serial and every punch travel in clear text, and the serial is the only credential this
+// protocol has.
 app.UseHttpsRedirection();
 app.UseCors(CorsPolicy);
+
+// Before authentication on purpose: a flood should be refused at the door, not after we have done
+// the work of trying to identify it. Only endpoints carrying [EnableRateLimiting] are affected —
+// there is no global limiter, so every JWT-protected endpoint is untouched.
+app.UseRateLimiter();
+
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+app.MapHub<LiveHub>("/hubs/live");
 
 app.Run();

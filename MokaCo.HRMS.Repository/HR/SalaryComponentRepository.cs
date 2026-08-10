@@ -61,4 +61,53 @@ public class SalaryComponentRepository : ISalaryComponentRepository
             new { SalaryComponentId = salaryComponentId },
             commandType: CommandType.StoredProcedure);
     }
+
+    // ── salary administration: the history-preserving path ───────────────────
+    //
+    // Set and End both RETURN the employee's rows as they now stand, because the caller's next
+    // question is always "so what does this person earn now?" — and answering it from the same
+    // transaction that changed it removes any window where the screen and the truth disagree.
+
+    public async Task<IEnumerable<EmployeeSalaryComponent>> GetForEmployeeAsync(int employeeId)
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<EmployeeSalaryComponent>(
+            "hr.usp_SalaryComponent_GetForEmployee",
+            new { EmployeeId = employeeId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<IEnumerable<EmployeeSalaryComponent>> SetAsync(
+        int employeeId, int componentTypeId, decimal amount, string currencyCode,
+        DateTime effectiveFrom, int actedByUserId)
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<EmployeeSalaryComponent>(
+            "hr.usp_SalaryComponent_Set",
+            new
+            {
+                EmployeeId = employeeId,
+                ComponentTypeId = componentTypeId,
+                Amount = amount,
+                CurrencyCode = currencyCode,
+                EffectiveFrom = effectiveFrom.Date,
+                ActedByUserId = actedByUserId,
+            },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<IEnumerable<EmployeeSalaryComponent>> EndAsync(
+        int salaryComponentId, DateTime effectiveTo, int actedByUserId)
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<EmployeeSalaryComponent>(
+            "hr.usp_SalaryComponent_End",
+            new
+            {
+                SalaryComponentId = salaryComponentId,
+                EffectiveTo = effectiveTo.Date,
+                ActedByUserId = actedByUserId,
+            },
+            commandType: CommandType.StoredProcedure);
+    }
 }

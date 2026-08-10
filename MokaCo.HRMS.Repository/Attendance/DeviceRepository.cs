@@ -32,16 +32,16 @@ public class DeviceRepository : IDeviceRepository
             commandType: CommandType.StoredProcedure);
     }
 
-    public async Task<int> CreateAsync(string serialNumber, int branchId, int? departmentId)
+    public async Task<int> CreateAsync(string serialNumber, string? name, int branchId, int? departmentId)
     {
         using var db = _factory.Create();
         return await db.ExecuteScalarAsync<int>(
             "attendance.usp_Device_Create",
-            new { SerialNumber = serialNumber, BranchId = branchId, DepartmentId = departmentId },
+            new { SerialNumber = serialNumber, Name = name, BranchId = branchId, DepartmentId = departmentId },
             commandType: CommandType.StoredProcedure);
     }
 
-    public async Task UpdateAsync(int deviceId, string serialNumber, int branchId, int? departmentId, bool isActive)
+    public async Task UpdateAsync(int deviceId, string serialNumber, string? name, int branchId, int? departmentId, bool isActive)
     {
         using var db = _factory.Create();
         await db.ExecuteAsync(
@@ -50,6 +50,7 @@ public class DeviceRepository : IDeviceRepository
             {
                 DeviceId = deviceId,
                 SerialNumber = serialNumber,
+                Name = name,
                 BranchId = branchId,
                 DepartmentId = departmentId,
                 IsActive = isActive
@@ -63,6 +64,21 @@ public class DeviceRepository : IDeviceRepository
         using var db = _factory.Create();
         await db.ExecuteAsync(
             "attendance.usp_Device_TouchSync",
+            new { DeviceId = deviceId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    /// <summary>
+    /// Stamps "punches just arrived" — and contact along with it, because a terminal that is
+    /// pushing is self-evidently reachable. The two are separate columns because the reverse does
+    /// NOT hold: an ADMS terminal polls for commands every few seconds whether or not anyone has
+    /// touched the sensor, so contact alone can look healthy while nothing is being recorded.
+    /// </summary>
+    public async Task TouchPushAsync(int deviceId)
+    {
+        using var db = _factory.Create();
+        await db.ExecuteAsync(
+            "attendance.usp_Device_TouchPush",
             new { DeviceId = deviceId },
             commandType: CommandType.StoredProcedure);
     }

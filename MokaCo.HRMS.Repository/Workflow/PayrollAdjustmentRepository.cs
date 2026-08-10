@@ -17,8 +17,14 @@ public interface IPayrollAdjustmentRepository
         string currencyCode, string targetPeriod, int? correctsRunId, string? reason, string? title);
 
     /// <summary>
-    /// Approves or rejects. NO FIGURE IS PASSED — the type has no CanAdjust step, so a signature can
-    /// only agree with the claim or refuse it.
+    /// Approves, AND SIGNS A FIGURE. <paramref name="approvedAmount"/> is required by the procedure:
+    /// what the approver states here is what the payslip will carry, and it is recorded against
+    /// their name.
+    ///
+    /// THE PROCEDURE OWNS THE RULES AND NOTHING IS RE-CHECKED HERE. It refuses an amount above what
+    /// was requested, and refuses one above what an earlier approver already allowed — so a figure
+    /// may be tightened on its way up the chain and never raised. Re-deriving either rule in C#
+    /// would be a second opinion about money, and the two would eventually disagree.
     ///
     /// The FINAL approval is what writes the payroll ledger row, once: the procedure guards on
     /// CreatedAdjustmentId, so a repeated approval cannot double-insert. If the target period locked
@@ -26,7 +32,7 @@ public interface IPayrollAdjustmentRepository
     /// request stays exactly where it was and can be rejected and re-raised.
     /// </summary>
     Task<PayrollAdjustmentDecisionResult?> DecideAsync(
-        int requestInstanceId, int actedByUserId, string? comment, bool signedWithPassword);
+        int requestInstanceId, int actedByUserId, decimal approvedAmount, string? comment, bool signedWithPassword);
 
     Task<PayrollAdjustmentPayload?> GetPayloadAsync(int requestInstanceId);
 }
@@ -70,7 +76,7 @@ public class PayrollAdjustmentRepository : IPayrollAdjustmentRepository
     }
 
     public async Task<PayrollAdjustmentDecisionResult?> DecideAsync(
-        int requestInstanceId, int actedByUserId, string? comment, bool signedWithPassword)
+        int requestInstanceId, int actedByUserId, decimal approvedAmount, string? comment, bool signedWithPassword)
     {
         using var db = _factory.Create();
         return await db.QuerySingleOrDefaultAsync<PayrollAdjustmentDecisionResult>(
@@ -79,6 +85,10 @@ public class PayrollAdjustmentRepository : IPayrollAdjustmentRepository
             {
                 RequestInstanceId = requestInstanceId,
                 ActedByUserId = actedByUserId,
+                // The procedure declares this with no default: omitting it is not "approve as
+                // requested", it is a hard failure. That is deliberate on its part — a signature
+                // with no figure attached is not a decision about money.
+                ApprovedAmount = approvedAmount,
                 Comment = comment,
                 SignedWithPassword = signedWithPassword,
             },

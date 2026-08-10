@@ -40,16 +40,37 @@ public class PayrollService : IPayrollService
         => WorkflowSqlErrors.MapAsync(() => _repo.CreateRunAsync(
             request.PeriodYearMonth?.Trim() ?? string.Empty,
             createdByUserId,
-            string.IsNullOrWhiteSpace(request.Notes) ? null : request.Notes.Trim()));
+            string.IsNullOrWhiteSpace(request.Notes) ? null : request.Notes.Trim(),
+            // Not defaulted to "Primary" here: a blank lets the PROCEDURE own the default, so there
+            // is one place that decides it rather than two that can disagree.
+            string.IsNullOrWhiteSpace(request.RunType) ? null : request.RunType.Trim()));
 
     public Task<PayrollRunDetail> GetRunAsync(int payrollRunId) => _repo.GetRunAsync(payrollRunId);
 
     public Task<IEnumerable<PayslipListItem>> GetRunPayslipsAsync(int payrollRunId)
         => _repo.GetRunPayslipsAsync(payrollRunId);
 
-    /// <summary>Regenerating a locked run is refused BY THE PROCEDURE — that refusal is the lock.</summary>
-    public Task<PayrollRunGenerateResult?> GenerateAsync(int payrollRunId, int actedByUserId)
-        => WorkflowSqlErrors.MapAsync(() => _repo.GenerateAsync(payrollRunId, actedByUserId));
+    /// <summary>
+    /// Generates, and the RUN'S OWN TYPE decides which generator does it.
+    ///
+    /// The type is read from the run rather than accepted from the caller: a supplemental sent
+    /// through the primary generator would rebuild the whole company's payslips into an off-cycle
+    /// run, and the caller is in no position to be trusted with that distinction. One extra read
+    /// buys the guarantee that the two can never be crossed.
+    ///
+    /// Regenerating a LOCKED run is refused by both procedures — that refusal is the lock.
+    /// </summary>
+    public async Task<PayrollRunGenerateResult?> GenerateAsync(int payrollRunId, int actedByUserId)
+    {
+        var detail = await _repo.GetRunAsync(payrollRunId);
+        if (detail.Header is null)
+            return null;
+
+        return await WorkflowSqlErrors.MapAsync(() =>
+            string.Equals(detail.Header.RunType, "Supplemental", StringComparison.OrdinalIgnoreCase)
+                ? _repo.GenerateSupplementalAsync(payrollRunId, actedByUserId)
+                : _repo.GenerateAsync(payrollRunId, actedByUserId));
+    }
 
     public Task<PayrollRunStatusResult?> SendToReviewAsync(int payrollRunId, int actedByUserId)
         => WorkflowSqlErrors.MapAsync(() => _repo.SendToReviewAsync(payrollRunId, actedByUserId));
@@ -77,6 +98,24 @@ public class PayrollService : IPayrollService
     public Task<PayrollReadiness?> GetReadinessAsync(string periodYearMonth)
         => _repo.GetReadinessAsync(periodYearMonth);
 
+    /// <summary>
+    /// The statutory sheet. Not mapped through the SQL-error translator because it raises nothing —
+    /// it is a pure read, and a run with no payslips honestly returns no rows.
+    /// </summary>
+    public Task<IEnumerable<StatutoryReportRow>> GetStatutoryReportAsync(int payrollRunId)
+        => _repo.GetStatutoryReportAsync(payrollRunId);
+
+    // ── payslips, read from the other side ───────────────────────────────────
+
+    public Task<IEnumerable<MyPayslip>> GetMyPayslipsAsync(int userId)
+        => _repo.GetMyPayslipsAsync(userId);
+
+    public Task<IEnumerable<EmployeePayslip>> GetPayslipsForEmployeeAsync(int employeeId)
+        => _repo.GetPayslipsForEmployeeAsync(employeeId);
+
+    public Task<PayslipLineLookup?> LookupLineAsync(string sourceType, int sourceId)
+        => _repo.LookupLineAsync(sourceType, sourceId);
+
     // ─────────────────────────────── payslips ───────────────────────────────
 
     public Task<PayslipDetail> GetPayslipAsync(int payslipId) => _repo.GetPayslipAsync(payslipId);
@@ -93,15 +132,13 @@ public class PayrollService : IPayrollService
     public Task<IEnumerable<SalaryAdvance>> GetAdvancesAsync(int? employeeId, bool openOnly)
         => _repo.GetAdvancesAsync(employeeId, openOnly);
 
-    public Task<SalaryAdvanceCreated?> CreateAdvanceAsync(SalaryAdvanceCreateRequest request, int createdByUserId)
-        => WorkflowSqlErrors.MapAsync(() => _repo.CreateAdvanceAsync(
-            request.EmployeeId, request.Amount, request.CurrencyCode?.Trim() ?? string.Empty,
-            request.AdvanceDate, request.MonthlyDeduction,
-            request.FirstDeductionPeriod?.Trim() ?? string.Empty,
-            string.IsNullOrWhiteSpace(request.Reason) ? null : request.Reason.Trim(),
-            createdByUserId));
-
-    /// <summary>A settled advance refuses rescheduling — there is nothing left to schedule.</summary>
+    /// <summary>
+    /// Reschedules recovery. A settled advance refuses — there is nothing left to schedule.
+    ///
+    /// Deliberately still an unsigned HR act while CREATING an advance now needs two signatures:
+    /// this changes the pace of recovery, never what is owed, and making somebody who is already
+    /// short of money wait for a chain to reduce their monthly deduction would be the wrong trade.
+    /// </summary>
     public Task<SalaryAdvanceMonthlyResult?> UpdateAdvanceMonthlyAsync(
         int salaryAdvanceId, SalaryAdvanceMonthlyRequest request, int actedByUserId)
         => WorkflowSqlErrors.MapAsync(() => _repo.UpdateAdvanceMonthlyAsync(

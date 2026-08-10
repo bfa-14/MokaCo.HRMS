@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Net.Http.Headers;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Services.Workflow;
 
@@ -96,8 +97,14 @@ public class AttachmentsController : ControllerBase
             if (file is null)
                 return NotFound();
 
-            Response.Headers.CacheControl = "private, max-age=86400";
-            return File(file.FileBytes, file.ContentType, file.FileName);
+            // The same defect the signature endpoints had: this URL is keyed by AttachmentId, and
+            // workflow.REQUEST_ATTACHMENT is reseeded by core.usp_System_ResetTestData — so after a
+            // reset, attachment #7 is a different file. A time-based cache with no validator would
+            // hand back the previous occupant for a day, which on a document somebody APPROVED
+            // against is the same class of wrong as the wrong signature. Validate on content.
+            Response.Headers.CacheControl = "private, no-cache";
+            var etag = new EntityTagHeaderValue(SignaturesController.ContentETag(file.FileBytes));
+            return File(file.FileBytes, file.ContentType, file.FileName, null, etag);
         }
         catch (WorkflowException ex)
         {

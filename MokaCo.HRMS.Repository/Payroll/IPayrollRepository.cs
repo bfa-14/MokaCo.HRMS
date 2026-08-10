@@ -16,7 +16,8 @@ public interface IPayrollRepository
     /// Creates a run for a period. Refuses when a live run already exists for it, when attendance is
     /// not ready, or when a currency in play has no rate on file — each with its own sentence.
     /// </summary>
-    Task<PayrollRunCreated?> CreateRunAsync(string periodYearMonth, int createdByUserId, string? notes);
+    Task<PayrollRunCreated?> CreateRunAsync(
+        string periodYearMonth, int createdByUserId, string? notes, string? runType);
 
     /// <summary>The run page in one round trip: header, frozen rates, totals, history.</summary>
     Task<PayrollRunDetail> GetRunAsync(int payrollRunId);
@@ -28,6 +29,13 @@ public interface IPayrollRepository
     /// Draft or Review; a locked run refuses, and that refusal is the point.
     /// </summary>
     Task<PayrollRunGenerateResult?> GenerateAsync(int payrollRunId, int actedByUserId);
+
+    /// <summary>
+    /// The off-cycle generator: pays approved, unconsumed adjustments for the period and computes no
+    /// statutory contributions. Refuses — in its own words — when the primary is not locked, when
+    /// there is nothing to pay, or when another supplemental is already open.
+    /// </summary>
+    Task<PayrollRunGenerateResult?> GenerateSupplementalAsync(int payrollRunId, int actedByUserId);
 
     Task<PayrollRunStatusResult?> SendToReviewAsync(int payrollRunId, int actedByUserId);
 
@@ -56,11 +64,36 @@ public interface IPayrollRepository
     Task<PayslipPaymentResult?> SetPaymentAsync(
         int payslipId, string paymentMethod, string? paymentReference, int actedByUserId);
 
+    /// <summary>
+    /// The statutory sheet for a run — per employee, in the run's PRIMARY currency because a
+    /// contribution base is one legal figure rather than a pair.
+    /// </summary>
+    Task<IEnumerable<StatutoryReportRow>> GetStatutoryReportAsync(int payrollRunId);
+
+    // --- payslips, read from the other side ---
+    /// <summary>The signed-in user's own payslips. APPROVED runs only — the procedure joins on it.</summary>
+    Task<IEnumerable<MyPayslip>> GetMyPayslipsAsync(int userId);
+
+    /// <summary>One employee's payslips across every run, drafts included — the HR tab.</summary>
+    Task<IEnumerable<EmployeePayslip>> GetPayslipsForEmployeeAsync(int employeeId);
+
+    /// <summary>
+    /// "Was this request ever paid?" Null means not yet — which the controller answers as a 404, so
+    /// the request pages can render the badge only on a hit.
+    /// </summary>
+    Task<PayslipLineLookup?> LookupLineAsync(string sourceType, int sourceId);
+
     // --- advances ---
     Task<IEnumerable<SalaryAdvance>> GetAdvancesAsync(int? employeeId, bool openOnly);
-    Task<SalaryAdvanceCreated?> CreateAdvanceAsync(
-        int employeeId, decimal amount, string currencyCode, DateTime advanceDate,
-        decimal monthlyDeduction, string firstDeductionPeriod, string? reason, int createdByUserId);
+
+    // Creation lives in ISalaryAdvanceRepository (workflow.usp_SalaryAdvance_Create): the ledger row
+    // is written by the final approval of a request, and payroll.usp_Advance_Create refuses.
+
+    /// <summary>
+    /// Reschedules what comes off each month. Deliberately NOT a request: it changes the pace of
+    /// recovery, never what is owed, and holding up a hardship reschedule for two signatures would
+    /// punish the person already short of money.
+    /// </summary>
     Task<SalaryAdvanceMonthlyResult?> UpdateAdvanceMonthlyAsync(
         int salaryAdvanceId, decimal monthlyDeduction, int actedByUserId);
 

@@ -33,6 +33,21 @@ public class ImportService : IImportService
     /// <summary>Every punch a terminal pushed itself.</summary>
     private const string DeviceSource = "Device";
 
+    /// <summary>Firmware is inconsistent about line endings, and about whether the last line has one.</summary>
+    private static readonly string[] LineSeparators = { "\r\n", "\n", "\r" };
+
+    /// <summary>
+    /// What ADMS timestamps actually look like. The first is the documented format; the second is
+    /// what some firmware sends when the seconds happen to be zero.
+    /// </summary>
+    private static readonly string[] AttlogTimeFormats = { "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm" };
+
+    /// <summary>
+    /// How many unreadable lines are kept for the log. A terminal stuck in a loop can send the same
+    /// malformed batch thousands of times, and one log line per repetition buries the event.
+    /// </summary>
+    private const int MaxLoggedBadLines = 5;
+
     private readonly IIngestionRepository _ingestion;
     private readonly IDeviceRepository _devices;
 
@@ -197,6 +212,128 @@ public class ImportService : IImportService
 
         return _ingestion.InsertRawLogAsync(
             deviceId, request.EnrollPin, request.PunchTimeUtc, request.PunchType, DeviceSource, hash, null);
+    }
+
+    /// <summary>
+    /// Lands an ATTLOG body pushed by a ZKTeco terminal over iclock/ADMS.
+    ///
+    /// THE LINE FORMAT the firmware sends is tab-separated and positional:
+    ///     {pin}\t{yyyy-MM-dd HH:mm:ss}\t{status}\t{verify}\t{workcode}\t...
+    /// Only the first three fields are read. Everything after them varies by firmware revision
+    /// (verify mode, work code, mask flag, temperature on the pandemic-era models) and none of it
+    /// changes who punched or when, so it is ignored rather than parsed into a shape that the next
+    /// firmware update would break.
+    ///
+    /// IT USES THE SAME HASH AS EVERY OTHER PATH, which is what makes this idempotent in the way
+    /// the protocol demands. A terminal that does not receive its "OK" — a dropped link, a proxy
+    /// timeout — re-sends the entire batch, sometimes for days. Re-sending is therefore the NORMAL
+    /// case, not an error case, and it must cost nothing. It also means a punch that arrives here
+    /// AND on a spreadsheet exported from the same machine is recognised as one punch, not two.
+    ///
+    /// A LINE THAT CANNOT BE READ IS DROPPED, and this is the one place the ingestion pipeline
+    /// breaks its "nothing is lost" promise. It is a forced choice: the terminal retries forever
+    /// unless it is answered "OK", so refusing the batch over one bad line would wedge the device
+    /// and stop every GOOD punch behind it. So the batch is accepted, the bad line is counted and
+    /// logged verbatim by the caller, and a human can see it. What is NOT done is guess: a line
+    /// with an unreadable direction is never assumed to be an IN, because that would invent worked
+    /// time on somebody's payslip.
+    /// </summary>
+    public async Task<AttlogPushResult> PushAttlogAsync(int deviceId, string body)
+    {
+        var result = new AttlogPushResult();
+
+        if (string.IsNullOrWhiteSpace(body))
+            return result;
+
+        // Firmware line endings are not consistent (\r\n, \n, and a trailing one either way).
+        var lines = body.Split(LineSeparators, StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (var rawLine in lines)
+        {
+            var line = rawLine.Trim();
+            if (line.Length == 0)
+                continue;
+
+            result.Received++;
+
+            if (!TryParseAttlogLine(line, out var pin, out var punchTime, out var status))
+            {
+                result.Unparsed++;
+
+                // Capped: a terminal stuck in a loop can send the same rubbish thousands of times,
+                // and a log line per repetition would bury the event it is meant to reveal.
+                if (result.UnparsedLines.Count < MaxLoggedBadLines)
+                    result.UnparsedLines.Add(line);
+
+                continue;
+            }
+
+            // 0=in and 1=out are what the processor understands. Anything else is a real punch on a
+            // key we do not model (2/3 break, 4/5 overtime on most ZKTeco firmware) — stored with
+            // the terminal's own value so the fact survives, and left for the anomaly flow.
+            if (status is not (0 or 1))
+                result.UnknownDirection++;
+
+            var hash = ComputeDedupHash(deviceId, pin, punchTime, status);
+
+            var inserted = await _ingestion.InsertRawLogAsync(
+                deviceId, pin, punchTime, status, DeviceSource, hash, null);
+
+            if (inserted.WasDuplicate)
+            {
+                result.Duplicates++;
+                continue;
+            }
+
+            result.Inserted++;
+
+            if (inserted.WasUnresolved)
+                result.UnresolvedPins++;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Reads one ATTLOG line. Strict about IDENTITY (a PIN, a real timestamp and a numeric status
+    /// must all be present) and indifferent to everything else on the line.
+    ///
+    /// THE TIMESTAMP IS STORED AS THE TERMINAL SENT IT, unconverted. The terminal stamps punches in
+    /// its own local wall-clock time, and that is exactly what the rest of the system expects:
+    /// usp_Attendance_ProcessRawLogs groups by CAST(PunchTimeUtc AS DATE) and compares against
+    /// SHIFT.StartTime, a local time of day, and the Excel path already stores the spreadsheet's
+    /// printed time verbatim. Converting only this path to true UTC would shift every pushed punch
+    /// by the offset and move night shifts onto the wrong day. The column's name is a misnomer the
+    /// schema contract owns; the behaviour is consistent across all three ingestion paths.
+    /// </summary>
+    private static bool TryParseAttlogLine(string line, out string pin, out DateTime punchTime, out short status)
+    {
+        pin = string.Empty;
+        punchTime = default;
+        status = 0;
+
+        var fields = line.Split('\t');
+
+        // pin + timestamp + status. Fewer than three fields is not a punch we can act on: with no
+        // status there is no direction, and guessing one is how fake worked time gets created.
+        if (fields.Length < 3)
+            return false;
+
+        pin = fields[0].Trim();
+        if (pin.Length == 0)
+            return false;
+
+        var timeText = fields[1].Trim();
+        if (!DateTime.TryParseExact(timeText, AttlogTimeFormats, CultureInfo.InvariantCulture,
+                DateTimeStyles.None, out punchTime)
+            && !DateTime.TryParse(timeText, CultureInfo.InvariantCulture, DateTimeStyles.None, out punchTime))
+        {
+            return false;
+        }
+
+        // Kept as the terminal's own number, INCLUDING values we do not model. Parsing it into an
+        // enum here would mean either rejecting break keys or silently flattening them into IN/OUT.
+        return short.TryParse(fields[2].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out status);
     }
 
     /* ------------------------------------------------------------------ *

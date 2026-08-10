@@ -24,10 +24,10 @@ public class DeviceService : IDeviceService
     public Task<Device?> GetBySerialAsync(string serialNumber) => _repo.GetBySerialAsync(serialNumber);
 
     public Task<int> CreateAsync(DeviceCreateRequest request)
-        => _repo.CreateAsync(request.SerialNumber, request.BranchId, request.DepartmentId);
+        => _repo.CreateAsync(request.SerialNumber, request.Name, request.BranchId, request.DepartmentId);
 
     public Task UpdateAsync(int deviceId, DeviceUpdateRequest request)
-        => _repo.UpdateAsync(deviceId, request.SerialNumber, request.BranchId, request.DepartmentId, request.IsActive);
+        => _repo.UpdateAsync(deviceId, request.SerialNumber, request.Name, request.BranchId, request.DepartmentId, request.IsActive);
 
     public Task<IEnumerable<EmployeeDevice>> GetEnrollmentsAsync() => _repo.GetEnrollmentsAsync();
 
@@ -40,6 +40,35 @@ public class DeviceService : IDeviceService
         => _repo.MapAsync(request.EmployeeId, request.DeviceId, request.EnrollPin);
 
     public Task UnmapAsync(int employeeDeviceId) => _repo.UnmapAsync(employeeDeviceId);
+
+    /// <summary>
+    /// The ADMS allowlist check: is this serial a terminal we registered, and is it still in
+    /// service? Null for unknown AND for retired, so the endpoint gives one answer to both and
+    /// cannot be used to enumerate our terminals by probing serials.
+    ///
+    /// THIS IS WEAKER THAN <see cref="AuthenticateAsync"/> AND THE DIFFERENCE IS THE POINT.
+    /// The API-key path proves possession of a secret. This proves only that the caller knows a
+    /// registered serial — which is printed on the back of the machine and travels in a query
+    /// string. It is an ALLOWLIST, not authentication, and it is what the protocol allows: the
+    /// firmware sends ?SN= and nothing else, and cannot be taught otherwise. What it buys is real
+    /// but narrow — an attacker must know a serial we registered, and a compromised terminal is
+    /// cut off by clearing IsActive. What it does not buy is any assurance that the sender IS that
+    /// terminal. The optional shared key (core.SETTING 'IclockSharedKey') exists to add a second
+    /// gate where firmware permits one; TLS is what stops the serial being read off the wire.
+    /// </summary>
+    public async Task<Device?> AuthoriseBySerialAsync(string serialNumber)
+    {
+        if (string.IsNullOrWhiteSpace(serialNumber))
+            return null;
+
+        var device = await _repo.GetBySerialAsync(serialNumber);
+
+        return device is { IsActive: true } ? device : null;
+    }
+
+    public Task TouchSyncAsync(int deviceId) => _repo.TouchSyncAsync(deviceId);
+
+    public Task TouchPushAsync(int deviceId) => _repo.TouchPushAsync(deviceId);
 
     /// <summary>
     /// Issues a fresh API key for a terminal and returns the PLAINTEXT — the only moment it exists.

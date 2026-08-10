@@ -19,7 +19,13 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class TipDistributionsController : ControllerBase
 {
     private readonly ITipDistributionService _tips;
-    public TipDistributionsController(ITipDistributionService tips) => _tips = tips;
+    private readonly ILiveNotifier _live;
+
+    public TipDistributionsController(ITipDistributionService tips, ILiveNotifier live)
+    {
+        _tips = tips;
+        _live = live;
+    }
 
     /// <summary>
     /// Raises one. REQUEST_RAISE_SELF is the floor — anyone who may raise anything holds it. There
@@ -33,7 +39,10 @@ public class TipDistributionsController : ControllerBase
         try
         {
             var created = await _tips.CreateAsync(request, User.UserId());
-            return created is null ? BadRequest(new { error = "The request could not be created." }) : Ok(created);
+            if (created is null) return BadRequest(new { error = "The request could not be created." });
+
+            await _live.NotifyAsync("workflow", "dashboard");
+            return Ok(created);
         }
         catch (WorkflowException ex)
         {
@@ -63,7 +72,12 @@ public class TipDistributionsController : ControllerBase
         try
         {
             var result = await _tips.DecideAsync(id, User.UserId(), request);
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            // FINALIZE is what makes the lines payroll's to consume, so "payroll" belongs here as
+            // much as "workflow" — the run that will pay these tips is now out of date.
+            await _live.NotifyAsync("workflow", "payroll", "dashboard");
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -83,13 +97,25 @@ public class TipDistributionsController : ControllerBase
 /// <summary>
 /// Shift swaps — two people in the same role exchange a rostered day.
 /// </summary>
+/// [LiveTopics] IS EASY TO LOSE ON A SECOND CLASS IN A SHARED FILE, and this one was: the attribute
+/// on TipDistributionsController above sits at the top of the file and reads, at a glance, as
+/// though it covers everything in it. It does not — the attribute is per class — so every swap
+/// raised or decided here was silent, and a swap waiting on somebody never appeared on their hub
+/// until they reloaded. A swap also moves the ROSTER once it is approved, which is why attendance
+/// is signalled alongside workflow.
 [ApiController]
 [Route("api/shift-swaps")]
 [Authorize]
 public class ShiftSwapsController : ControllerBase
 {
     private readonly IShiftSwapService _swaps;
-    public ShiftSwapsController(IShiftSwapService swaps) => _swaps = swaps;
+    private readonly ILiveNotifier _live;
+
+    public ShiftSwapsController(IShiftSwapService swaps, ILiveNotifier live)
+    {
+        _swaps = swaps;
+        _live = live;
+    }
 
     /// <summary>
     /// Raises one. Every rule is the procedure's — the consent tick, the same-role requirement,
@@ -103,7 +129,10 @@ public class ShiftSwapsController : ControllerBase
         try
         {
             var created = await _swaps.CreateAsync(request, User.UserId());
-            return created is null ? BadRequest(new { error = "The request could not be created." }) : Ok(created);
+            if (created is null) return BadRequest(new { error = "The request could not be created." });
+
+            await _live.NotifyAsync("workflow", "dashboard");
+            return Ok(created);
         }
         catch (WorkflowException ex)
         {
@@ -123,7 +152,12 @@ public class ShiftSwapsController : ControllerBase
         try
         {
             var result = await _swaps.DecideAsync(id, User.UserId(), request);
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            // A final approval REWRITES THE ROSTER, so attendance is stale too — the swap is not
+            // only a request that closed, it is two people's rostered days changing hands.
+            await _live.NotifyAsync("workflow", "attendance", "dashboard");
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {

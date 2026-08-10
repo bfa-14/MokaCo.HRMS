@@ -31,7 +31,16 @@ namespace MokaCo.HRMS.Api.Controllers;
 public class PayrollController : ControllerBase
 {
     private readonly IPayrollService _payroll;
-    public PayrollController(IPayrollService payroll) => _payroll = payroll;
+    private readonly ILiveNotifier _live;
+
+    public PayrollController(IPayrollService payroll, ILiveNotifier live)
+    {
+        _payroll = payroll;
+        _live = live;
+    }
+
+    /// <summary>Every write here changes a run's figures, and the dashboard's payroll line with them.</summary>
+    private Task NotifyPayrollAsync() => _live.NotifyAsync("payroll", "dashboard");
 
     // ───────────────────────────────── runs ─────────────────────────────────
 
@@ -52,9 +61,11 @@ public class PayrollController : ControllerBase
         try
         {
             var created = await _payroll.CreateRunAsync(request, User.UserId());
-            return created is null
-                ? BadRequest(new { error = "The payroll run could not be created." })
-                : Ok(created);
+            if (created is null)
+                return BadRequest(new { error = "The payroll run could not be created." });
+
+            await NotifyPayrollAsync();
+            return Ok(created);
         }
         catch (WorkflowException ex)
         {
@@ -84,6 +95,11 @@ public class PayrollController : ControllerBase
     /// Rebuilds the run's payslips from the data as it stands. Repeatable while the run is open —
     /// add a tip, regenerate, and the tip is there. A LOCKED RUN REFUSES, and that refusal carries
     /// the sentence that says where corrections go instead.
+    ///
+    /// ONE ROUTE, TWO GENERATORS. The service reads the run's own RunType and sends a Supplemental
+    /// to the off-cycle generator instead. The type is never taken from the caller: getting it wrong
+    /// would rebuild the whole company into an off-cycle run. Both paths sit behind the same
+    /// PAYROLL_RUN gate on this controller, so the permission story does not fork either.
     /// </summary>
     [HttpPost("runs/{id:int}/generate")]
     public async Task<IActionResult> Generate(int id)
@@ -91,7 +107,12 @@ public class PayrollController : ControllerBase
         try
         {
             var result = await _payroll.GenerateAsync(id, User.UserId());
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            // Covers the supplemental generator too — the service routes on the run's own type,
+            // so both paths arrive here and both make every open run page stale.
+            await NotifyPayrollAsync();
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -106,7 +127,10 @@ public class PayrollController : ControllerBase
         try
         {
             var result = await _payroll.SendToReviewAsync(id, User.UserId());
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            await NotifyPayrollAsync();
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -131,7 +155,12 @@ public class PayrollController : ControllerBase
         try
         {
             var result = await _payroll.ApproveAsync(id, User.UserId());
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            // Approval also stamps expenses, reduces advances and consumes adjustments, so the
+            // workflow side of those requests is stale too.
+            await _live.NotifyAsync("payroll", "workflow", "dashboard");
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -149,7 +178,10 @@ public class PayrollController : ControllerBase
         try
         {
             var result = await _payroll.CancelAsync(id, User.UserId(), request);
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            await NotifyPayrollAsync();
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -204,17 +236,11 @@ public class PayrollController : ControllerBase
         new(@"^\d{4}-(0[1-9]|1[0-2])$", RegexOptions.Compiled);
 
     // ─────────────────────────────── payslips ───────────────────────────────
-
-    /// <summary>
-    /// One payslip and its lines. Request-backed lines carry the RequestInstanceId of the request
-    /// that produced them, so every figure on the document can be followed back to its origin.
-    /// </summary>
-    [HttpGet("payslips/{id:int}")]
-    public async Task<IActionResult> GetPayslip(int id)
-    {
-        var detail = await _payroll.GetPayslipAsync(id);
-        return detail.Payslip is null ? NotFound() : Ok(detail);
-    }
+    //
+    // READING one payslip lives on PayslipsController, not here: it is the single payroll route an
+    // ordinary employee may reach (their own, once the run is approved), and this class's blanket
+    // PAYROLL_RUN gate is exactly what must NOT apply to it. Recording payment stays below, because
+    // that is managerial whoever the payslip belongs to.
 
     /// <summary>
     /// Records that a payslip was paid — method, reference, and the moment. Approved runs only.
@@ -229,7 +255,10 @@ public class PayrollController : ControllerBase
         try
         {
             var result = await _payroll.SetPaymentAsync(id, request, User.UserId());
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            await NotifyPayrollAsync();
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -244,26 +273,9 @@ public class PayrollController : ControllerBase
     public async Task<IActionResult> GetAdvances([FromQuery] int? employeeId, [FromQuery] bool openOnly = true)
         => Ok(await _payroll.GetAdvancesAsync(employeeId, openOnly));
 
-    /// <summary>
-    /// Records an advance and its repayment schedule. The bounds — above zero, no more per month
-    /// than the advance itself, a real employee, a known currency — are the procedure's, each with
-    /// its own sentence.
-    /// </summary>
-    [HttpPost("advances")]
-    public async Task<IActionResult> CreateAdvance([FromBody] SalaryAdvanceCreateRequest request)
-    {
-        try
-        {
-            var created = await _payroll.CreateAdvanceAsync(request, User.UserId());
-            return created is null
-                ? BadRequest(new { error = "The advance could not be created." })
-                : Ok(created);
-        }
-        catch (WorkflowException ex)
-        {
-            return StatusCode(ex.StatusCode, new { error = ex.Message });
-        }
-    }
+    // THERE IS NO POST HERE ANY MORE. An advance is a request — see
+    // SalaryAdvanceRequestsController — and payroll.usp_Advance_Create refuses outright, pointing
+    // at the request type. The route was removed rather than left to relay that refusal.
 
     /// <summary>
     /// Reschedules what comes off each month. The BALANCE is not touched — only future runs are.
@@ -275,7 +287,10 @@ public class PayrollController : ControllerBase
         try
         {
             var result = await _payroll.UpdateAdvanceMonthlyAsync(id, request, User.UserId());
-            return result is null ? NotFound() : Ok(result);
+            if (result is null) return NotFound();
+
+            await NotifyPayrollAsync();
+            return Ok(result);
         }
         catch (WorkflowException ex)
         {
@@ -320,7 +335,10 @@ public class PayrollController : ControllerBase
         try
         {
             var result = await _payroll.DeleteAdjustmentAsync(id, User.UserId());
-            return result is null || result.Deleted == 0 ? NotFound() : NoContent();
+            if (result is null || result.Deleted == 0) return NotFound();
+
+            await NotifyPayrollAsync();
+            return NoContent();
         }
         catch (WorkflowException ex)
         {
@@ -339,4 +357,45 @@ public class PayrollController : ControllerBase
     /// </summary>
     [HttpGet("component-types")]
     public async Task<IActionResult> GetComponentTypes() => Ok(await _payroll.GetComponentTypesAsync());
+
+    // ──────────────────────────── reports & lookups ─────────────────────────
+
+    /// <summary>
+    /// The statutory sheet for a run — per employee: wage base, NSSF employee and employer shares,
+    /// income tax. This is what goes to the NSSF and the tax office.
+    ///
+    /// Every figure is in the run's PRIMARY currency, converted at the rate frozen into the run.
+    /// That is the one place payroll deliberately merges currencies, and it is legitimate for the
+    /// same reason the comparable net is: a contribution base is a single legal number, and the
+    /// rate that produced it is printed on the run beside it.
+    /// </summary>
+    [HttpGet("runs/{id:int}/statutory-report")]
+    public async Task<IActionResult> GetStatutoryReport(int id)
+        => Ok(await _payroll.GetStatutoryReportAsync(id));
+
+    /// <summary>
+    /// One employee's payslips across every run — the HR tab. Includes DRAFT runs, unlike the
+    /// employee's own view, because preparing a month means looking at the month being prepared.
+    /// </summary>
+    [HttpGet("employees/{id:int}/payslips")]
+    public async Task<IActionResult> GetEmployeePayslips(int id)
+        => Ok(await _payroll.GetPayslipsForEmployeeAsync(id));
+
+    /// <summary>
+    /// "Was this request ever paid?" — one (sourceType, sourceId) pair, answered from the payslip
+    /// lines. 200 with the payslip and its period, or 404 when nothing has paid it yet.
+    ///
+    /// 404 IS THE POINT, not a failure: the request pages render their "Paid in …" badge only on a
+    /// hit, so the absent case has to be cheap and unambiguous rather than an empty object the
+    /// caller must then inspect.
+    /// </summary>
+    [HttpGet("lines/lookup")]
+    public async Task<IActionResult> LookupLine([FromQuery] string? sourceType, [FromQuery] int? sourceId)
+    {
+        if (string.IsNullOrWhiteSpace(sourceType) || sourceId is not int id)
+            return BadRequest(new { error = "sourceType and sourceId are both required." });
+
+        var hit = await _payroll.LookupLineAsync(sourceType.Trim(), id);
+        return hit is null ? NotFound() : Ok(hit);
+    }
 }

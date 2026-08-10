@@ -16,6 +16,13 @@ public class Device
     /// </summary>
     public string SerialNumber { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The terminal's human label — "Verdun front door". Optional, because a device is usable
+    /// without one; a serial identifies the hardware to us and nothing at all to an HR user
+    /// trying to work out which machine in which room stopped reporting.
+    /// </summary>
+    public string? Name { get; set; }
+
     /// <summary>Where the terminal is mounted. A punch's branch is taken from here: it records WHERE the day was worked.</summary>
     public int BranchId { get; set; }
     public string BranchName { get; set; } = string.Empty;
@@ -28,6 +35,21 @@ public class Device
 
     /// <summary>Last time this terminal talked to us. A stale value is how HR notices a device has quietly died.</summary>
     public DateTime? LastSyncUtc { get; set; }
+
+    /// <summary>
+    /// Last time this terminal sent PUNCHES, which is a different fact from LastSyncUtc and the
+    /// reason both exist. An ADMS terminal polls for commands every few seconds whether or not
+    /// anyone has touched it, so LastSyncUtc can look perfectly healthy while the fingerprint
+    /// sensor is dead. Contact answers "is it plugged in"; this answers "is it recording anyone".
+    /// </summary>
+    public DateTime? LastPushUtc { get; set; }
+
+    /// <summary>
+    /// Punches recorded on this terminal today, counted on the PUNCH'S OWN timestamp rather than
+    /// on when the row was written — a machine that queued a day's punches through a dead link and
+    /// flushed them at 18:00 recorded them across the day, not in one spike.
+    /// </summary>
+    public int PunchesToday { get; set; }
 }
 
 /// <summary>
