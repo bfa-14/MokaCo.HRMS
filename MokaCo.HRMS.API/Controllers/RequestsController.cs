@@ -369,7 +369,14 @@ public class RequestsController : ControllerBase
 
         try
         {
-            var result = await _requests.CancelAsync(id, User.UserId(), request.Reason.Trim());
+            // The full caller, because who may cancel depends on the EMPLOYEE behind the login as
+            // well as the login itself — the employee a request is about may cancel their own.
+            var caller = new RequestCaller(
+                User.UserId(),
+                await ResolveEmployeeIdAsync(),
+                User.HasPermission("REQUEST_VIEW_ALL"));
+
+            var result = await _requests.CancelAsync(id, caller, request.Reason.Trim());
             if (result is null) return NotFound();
 
             await NotifyWorkflowAsync();

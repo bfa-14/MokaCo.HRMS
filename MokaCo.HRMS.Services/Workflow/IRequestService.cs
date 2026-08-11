@@ -69,7 +69,12 @@ public interface IRequestService
     /// </summary>
     Task<ApproveResult?> ApproveAsync(int requestInstanceId, int actedByUserId, string? comment, string? changeSummary = null, string? password = null);
     Task<RequestClosedResult?> RejectAsync(int requestInstanceId, int actedByUserId, string reason, string? password = null);
-    Task<RequestClosedResult?> CancelAsync(int requestInstanceId, int actedByUserId, string reason);
+    /// <summary>
+    /// Cancels an open request. Refused with a <see cref="WorkflowException"/> 403 unless the caller
+    /// raised it, is the employee it concerns, or holds HR/Admin — the same rule usp_Request_Cancel
+    /// enforces, checked here only to answer cleanly before the round-trip.
+    /// </summary>
+    Task<RequestClosedResult?> CancelAsync(int requestInstanceId, RequestCaller caller, string reason);
 
     /// <summary>Parks a live request on hold. The database enforces the reason and who may act; a breach comes back as a WorkflowException.</summary>
     Task PutOnHoldAsync(int requestInstanceId, int actedByUserId, string reason, bool waitingOnRequester, string? password = null);

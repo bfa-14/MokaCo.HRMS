@@ -261,8 +261,45 @@ public class RequestService : IRequestService
         return await WorkflowSqlErrors.MapAsync(() => _repo.RejectAsync(requestInstanceId, actedByUserId, reason, signed));
     }
 
-    public Task<RequestClosedResult?> CancelAsync(int requestInstanceId, int actedByUserId, string reason)
-        => WorkflowSqlErrors.MapAsync(() => _repo.CancelAsync(requestInstanceId, actedByUserId, reason));
+    /// <summary>
+    /// Cancelling is for the people the request BELONGS to — whoever raised it, whoever it is about —
+    /// or HR/Admin acting for them.
+    ///
+    /// The procedure enforces exactly this and stays the authority; the same check runs here only so
+    /// the answer is a clean 403 with the reason, instead of a SQL round-trip that has to be
+    /// pattern-matched back out of an error message. The two must agree — if the rule ever changes,
+    /// change it in usp_Request_Cancel first and mirror it here.
+    /// </summary>
+    public async Task<RequestClosedResult?> CancelAsync(int requestInstanceId, RequestCaller caller, string reason)
+    {
+        var detail = await _repo.GetByIdAsync(requestInstanceId);
+        if (detail is null)
+            return null;
+
+        if (!await MayCancelAsync(detail.Header, caller))
+            throw new WorkflowException(403,
+                "Only the person who raised this request, the employee it concerns, or HR may cancel it.");
+
+        return await WorkflowSqlErrors.MapAsync(() => _repo.CancelAsync(requestInstanceId, caller.UserId, reason));
+    }
+
+    /// <summary>
+    /// The subject is matched on EMPLOYEE id rather than user id — the header carries the employee the
+    /// request is about, and the caller's own employee record is what the controller already resolved.
+    /// The role names are read from the database, not the token: only permissions are in the claims.
+    /// </summary>
+    private async Task<bool> MayCancelAsync(RequestHeader header, RequestCaller caller)
+    {
+        if (header.RaisedByUserId == caller.UserId)
+            return true;
+
+        if (caller.EmployeeId is int me && header.EmployeeId == me)
+            return true;
+
+        var roles = await _users.GetRoleNamesAsync(caller.UserId);
+        return roles.Any(r => r.Equals("HR", StringComparison.OrdinalIgnoreCase)
+                           || r.Equals("Admin", StringComparison.OrdinalIgnoreCase));
+    }
 
     /// <summary>
     /// The database enforces the reason and who may act; a rule broken there becomes a WorkflowException.
