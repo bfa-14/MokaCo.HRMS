@@ -11,6 +11,13 @@ public interface IExitPermissionRepository
     /// <summary>Sweeps approved-but-unapplied permissions into attendance. No arguments = every one whose day now exists.</summary>
     Task<ApplyResult> ApplyToAttendanceAsync(int? exitPermissionId, DateTime? workDate);
 
+    /// <summary>
+    /// The TYPED decision (usp_ExitPermission_Decide) — the only path that can reduce the minutes.
+    /// A null <paramref name="approvedMinutes"/> approves the figure as it stands; more than it is
+    /// refused. The procedure runs the engine first, so a refusal leaves the figure untouched.
+    /// </summary>
+    Task<ExitPermissionDecisionResult?> DecideAsync(int requestInstanceId, int actedByUserId, int? approvedMinutes, string? comment, bool signedWithPassword);
+
     Task<IEnumerable<PendingApplication>> GetPendingApplicationAsync();
     Task<PostLeaveResult> PostLeaveUsageAsync(string periodYearMonth, int leaveTypeId, int? postedBy);
 }

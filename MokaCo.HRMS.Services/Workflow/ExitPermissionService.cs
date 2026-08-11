@@ -11,7 +11,13 @@ namespace MokaCo.HRMS.Services.Workflow;
 public class ExitPermissionService : IExitPermissionService
 {
     private readonly IExitPermissionRepository _repo;
-    public ExitPermissionService(IExitPermissionRepository repo) => _repo = repo;
+    private readonly IDecisionSignatureService _signature;
+
+    public ExitPermissionService(IExitPermissionRepository repo, IDecisionSignatureService signature)
+    {
+        _repo = repo;
+        _signature = signature;
+    }
 
     public Task<ExitPermissionCreated?> CreateAsync(ExitPermissionCreateRequest request, ExitPermissionCaller caller)
     {
@@ -41,6 +47,28 @@ public class ExitPermissionService : IExitPermissionService
 
     public Task<ExitPermissionDetail?> GetByRequestAsync(int requestInstanceId)
         => _repo.GetByRequestAsync(requestInstanceId);
+
+    /// <summary>
+    /// THE TYPED APPROVAL — the only path that can reduce the minutes.
+    ///
+    /// Nothing about the figure is checked here. The procedure owns every rule (not negative, never
+    /// more than what currently stands) and each refusal names the figure that is wrong; a second
+    /// check in C# could only produce a vaguer version of the same sentence and would drift from it.
+    ///
+    /// The signature is verified FIRST, exactly as every other typed decide does it, so a wrong
+    /// password is a 401 that changes nothing at all.
+    /// </summary>
+    public async Task<ExitPermissionDecisionResult?> DecideAsync(int requestInstanceId, int actedByUserId, ExitPermissionDecideRequest request)
+    {
+        var signed = await _signature.VerifyAsync(requestInstanceId, actedByUserId, request.Password);
+
+        return await WorkflowSqlErrors.MapAsync(() => _repo.DecideAsync(
+            requestInstanceId,
+            actedByUserId,
+            request.ApprovedMinutes,
+            string.IsNullOrWhiteSpace(request.Comment) ? null : request.Comment.Trim(),
+            signed));
+    }
 
     public Task<ApplyResult> ApplyToAttendanceAsync(int? exitPermissionId, DateTime? workDate)
         => _repo.ApplyToAttendanceAsync(exitPermissionId, workDate);

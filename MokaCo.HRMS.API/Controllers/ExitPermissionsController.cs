@@ -81,6 +81,37 @@ public class ExitPermissionsController : ControllerBase
     }
 
     /// <summary>
+    /// THE TYPED DECISION — approve, optionally cutting the minutes.
+    ///
+    /// No permission, exactly like every other decision: the database decides whether this caller is
+    /// the approver for the step and refuses otherwise, and that refusal arrives as a clean 403 with
+    /// its own wording. The signature is verified before anything is written.
+    ///
+    /// `approvedMinutes` is optional — null approves the figure as it stands, which is the common
+    /// case. The procedure refuses more than currently stands: an approver may cut the time away but
+    /// never extend it, and that sentence tells the employee to raise a new request instead.
+    /// </summary>
+    [HttpPost("by-request/{id:int}/decide")]
+    public async Task<IActionResult> Decide(int id, [FromBody] ExitPermissionDecideRequest? request)
+    {
+        try
+        {
+            var result = await _exitPermissions.DecideAsync(
+                id, User.UserId(), request ?? new ExitPermissionDecideRequest());
+            if (result is null) return NotFound();
+
+            // A decision moves the chain, and a final one changes the minutes attendance will bill —
+            // so both the workflow topics and the attendance ones.
+            await _live.NotifyAsync("workflow", "dashboard", "attendance");
+            return Ok(result);
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// Sweeps approved permissions into attendance. Also run nightly; exposed here so HR can push a
     /// day through by hand. Idempotent — a permission already applied is left alone.
     /// </summary>

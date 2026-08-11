@@ -141,7 +141,45 @@ public class WithdrawDecisionResult
     public int? CurrentStepNo { get; set; }
 }
 
+/// <summary>
+/// The result of a TYPED exit-permission decision (usp_ExitPermission_Decide): the engine's own
+/// approval result, plus what the figure ended up being.
+///
+/// <see cref="MinutesReduced"/> and <see cref="WasReduced"/> come from the procedure rather than
+/// being worked out here — the approver may have left the figure alone, and the difference between
+/// "approved as asked" and "cut to 30" is the whole substance of the decision.
+/// </summary>
+public class ExitPermissionDecisionResult : TypedDecisionResult
+{
+    public int ExitPermissionId { get; set; }
+    public int RequestedMinutes { get; set; }
+    public int? ApprovedMinutes { get; set; }
+
+    /// <summary>Requested minus approved. Zero when the approver granted the request in full.</summary>
+    public int MinutesReduced { get; set; }
+    public bool WasReduced { get; set; }
+}
+
 /* ---- request ---- */
+
+/// <summary>
+/// A decision on an exit permission, carrying the minutes being signed for.
+///
+/// ApprovedMinutes is OPTIONAL and null means "as it stands" — the procedure's own default, and the
+/// common case. Sending the standing figure back explicitly means the same thing; sending MORE is
+/// refused, because an approver may cut the time away but never extend it.
+/// </summary>
+public class ExitPermissionDecideRequest
+{
+    public int? ApprovedMinutes { get; set; }
+    public string? Comment { get; set; }
+
+    /// <summary>The decision the user chose, for the record. The engine action is always an approval here.</summary>
+    public string? Code { get; set; }
+
+    /// <summary>Verified before anything is written, exactly as the generic approve does it.</summary>
+    public string? Password { get; set; }
+}
 
 /// <summary>
 /// Raise an exit permission. EmployeeId is WHOSE request it is — a caller with only
