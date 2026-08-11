@@ -91,6 +91,12 @@ public interface IRequestRepository
     Task<WithdrawDecisionResult?> WithdrawExitPermissionDecisionAsync(int requestInstanceId, int stepNo, int actedByUserId, string reason, bool signedWithPassword = false);
 
     /// <summary>
+    /// The ENGINE's withdrawal (usp_Request_WithdrawDecision): unsigns the step and hands it back,
+    /// restoring no typed figure. Correct only for request types that stamp none — the caller routes.
+    /// </summary>
+    Task<ApproveResult?> WithdrawDecisionAsync(int requestInstanceId, int stepNo, int actedByUserId, string reason, bool signedWithPassword = false);
+
+    /// <summary>
     /// Reopens a REJECTED or CANCELLED request (usp_Request_ReopenClosed), returning it to the step
     /// that closed it. The proc refuses an approved request and demands a reason, raising otherwise.
     /// </summary>

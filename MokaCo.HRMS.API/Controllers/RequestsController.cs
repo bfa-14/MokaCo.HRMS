@@ -417,11 +417,31 @@ public class RequestsController : ControllerBase
     }
 
     /// <summary>
+    /// THE TYPES THE ENGINE MAY SAFELY UNSIGN.
+    ///
+    /// None of these stamps a figure on its payload when it is decided, so handing the step back is
+    /// the whole of the undo. The figure-stamping types (leave, expense, overtime, salary advance,
+    /// payroll adjustment) are deliberately absent: the generic procedure clears the step's ValueBefore
+    /// without restoring the payload, so withdrawing an ApprovedWithChanges would leave the changed
+    /// figure standing as though the next approver had chosen it. They stay refused until each typed
+    /// _Decide snapshots its own figure (FIX_PROMPTS F10).
+    ///
+    /// EXIT_PERMISSION is not here either — it has its own wrapper that restores ApprovedMinutes.
+    /// </summary>
+    private static readonly HashSet<string> EngineWithdrawable = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "AVAILABILITY_CHANGE", "ONBOARDING", "SHIFT_SWAP", "TIP_DISTRIBUTION", "SEPARATION",
+    };
+
+    /// <summary>
     /// Takes back a decision the caller made on a step, while the request is still open and nobody has
     /// acted after them. Needs NO permission — the database decides whether this caller may withdraw,
     /// the same as approve/reject; its refusal comes back as a clean status, message intact. The reason
-    /// is required. Only exit permissions support withdrawal today; the routing to the typed procedure
-    /// lives here, never in the engine.
+    /// is required.
+    ///
+    /// Exit permissions go through their own procedure, which also puts the minutes back. The types
+    /// that stamp no figure go through the engine's own withdrawal. Everything else is still refused —
+    /// see EngineWithdrawable for why.
     /// </summary>
     [HttpPost("{id:int}/steps/{stepNo:int}/withdraw")]
     public async Task<IActionResult> Withdraw(int id, int stepNo, [FromBody] ReasonRequest request)
@@ -440,10 +460,20 @@ public class RequestsController : ControllerBase
             if (detail is null)
                 return NotFound();
 
-            if (detail.Header.RequestTypeCode != "EXIT_PERMISSION")
+            var typeCode = detail.Header.RequestTypeCode;
+
+            object? result;
+            if (typeCode == "EXIT_PERMISSION")
+                // The typed wrapper: it also puts ApprovedMinutes back to what it was before the
+                // withdrawn decision changed it.
+                result = await _requests.WithdrawExitPermissionDecisionAsync(
+                    id, stepNo, User.UserId(), request.Reason.Trim(), request.Password);
+            else if (EngineWithdrawable.Contains(typeCode))
+                result = await _requests.WithdrawDecisionAsync(
+                    id, stepNo, User.UserId(), request.Reason.Trim(), request.Password);
+            else
                 return BadRequest(new { error = "Withdrawing is not supported for this request type yet." });
 
-            var result = await _requests.WithdrawExitPermissionDecisionAsync(id, stepNo, User.UserId(), request.Reason.Trim(), request.Password);
             // Withdrawing hands the step back — it reappears in an inbox as work to redo.
             await NotifyWorkflowAsync();
             return Ok(result);

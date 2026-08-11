@@ -381,20 +381,39 @@ public class RequestService : IRequestService
     /// </summary>
     public async Task<WithdrawDecisionResult?> WithdrawExitPermissionDecisionAsync(int requestInstanceId, int stepNo, int actedByUserId, string reason, string? password = null)
     {
-        // THE WITHDRAWAL'S OWN SIGNATURE QUESTION, read from the STEP — not the request's
-        // SignatureRequired. They differ: a decision signed with a password must be signed to undo,
-        // even where the caller's role would no longer demand one for a fresh decision. Reading the
-        // wrong flag here would let a signed act be undone unsigned.
+        var signed = await VerifyWithdrawSignatureAsync(requestInstanceId, stepNo, actedByUserId, password);
+        return await WorkflowSqlErrors.MapAsync(() => _repo.WithdrawExitPermissionDecisionAsync(requestInstanceId, stepNo, actedByUserId, reason, signed));
+    }
+
+    /// <summary>
+    /// The ENGINE's withdrawal, for types that stamp no figure at decision time. Same signature
+    /// question, same authority: the procedure decides whether this caller may take the step back.
+    /// </summary>
+    public async Task<ApproveResult?> WithdrawDecisionAsync(int requestInstanceId, int stepNo, int actedByUserId, string reason, string? password = null)
+    {
+        var signed = await VerifyWithdrawSignatureAsync(requestInstanceId, stepNo, actedByUserId, password);
+        return await WorkflowSqlErrors.MapAsync(() => _repo.WithdrawDecisionAsync(requestInstanceId, stepNo, actedByUserId, reason, signed));
+    }
+
+    /// <summary>
+    /// THE WITHDRAWAL'S OWN SIGNATURE QUESTION, read from the STEP — not the request's
+    /// SignatureRequired. They differ: a decision signed with a password must be signed to undo, even
+    /// where the caller's role would no longer demand one for a fresh decision. Reading the wrong flag
+    /// here would let a signed act be undone unsigned.
+    ///
+    /// Shared by both withdrawal paths so the typed one and the engine one can never drift into asking
+    /// different questions about the same act.
+    /// </summary>
+    private async Task<bool> VerifyWithdrawSignatureAsync(int requestInstanceId, int stepNo, int actedByUserId, string? password)
+    {
         var steps = await _repo.GetStepsAsync(requestInstanceId, actedByUserId);
         var target = steps.FirstOrDefault(s => s.StepNo == stepNo);
 
-        var signed = await VerifyPasswordAsync(
+        return await VerifyPasswordAsync(
             actedByUserId,
             password,
             target?.WithdrawNeedsSignature ?? false,
             "Undoing a signed decision must itself be signed with your password.");
-
-        return await WorkflowSqlErrors.MapAsync(() => _repo.WithdrawExitPermissionDecisionAsync(requestInstanceId, stepNo, actedByUserId, reason, signed));
     }
 
     public Task<ApproveResult?> ReopenClosedAsync(int requestInstanceId, int actedByUserId, string reason)

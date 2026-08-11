@@ -371,6 +371,28 @@ public class RequestRepository : IRequestRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    /// <summary>
+    /// The ENGINE's own withdrawal (usp_Request_WithdrawDecision) — unsigns the step and hands it
+    /// back, with no typed figure to restore. Safe only for types that stamp no figure at decision
+    /// time; for the others the figure would be left at the withdrawn value (see FIX_PROMPTS F10),
+    /// which is why the controller routes by type rather than sending everything here.
+    /// </summary>
+    public async Task<ApproveResult?> WithdrawDecisionAsync(int requestInstanceId, int stepNo, int actedByUserId, string reason, bool signedWithPassword = false)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<ApproveResult>(
+            "workflow.usp_Request_WithdrawDecision",
+            new
+            {
+                RequestInstanceId = requestInstanceId,
+                StepNo = stepNo,
+                ActedByUserId = actedByUserId,
+                Reason = reason,
+                SignedWithPassword = signedWithPassword,
+            },
+            commandType: CommandType.StoredProcedure);
+    }
+
     /// <summary>Reopens a rejected/cancelled request; the proc SELECTs the request's new status and current step back.</summary>
     public async Task<ApproveResult?> ReopenClosedAsync(int requestInstanceId, int actedByUserId, string reason)
     {

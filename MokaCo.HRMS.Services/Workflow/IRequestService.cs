@@ -111,6 +111,14 @@ public interface IRequestService
     /// </summary>
     Task<WithdrawDecisionResult?> WithdrawExitPermissionDecisionAsync(int requestInstanceId, int stepNo, int actedByUserId, string reason, string? password = null);
 
+    /// <summary>
+    /// Takes back a decision through the ENGINE (usp_Request_WithdrawDecision) — for request types
+    /// that stamp NO figure when they are decided, so there is nothing to restore. Asks the same
+    /// signature question as the exit-permission path; the database remains the authority on whether
+    /// this caller may withdraw at all.
+    /// </summary>
+    Task<ApproveResult?> WithdrawDecisionAsync(int requestInstanceId, int stepNo, int actedByUserId, string reason, string? password = null);
+
     /// <summary>Reopens a rejected/cancelled request. The database refuses an approved one and demands a reason; that comes back as a WorkflowException.</summary>
     Task<ApproveResult?> ReopenClosedAsync(int requestInstanceId, int actedByUserId, string reason);
 
