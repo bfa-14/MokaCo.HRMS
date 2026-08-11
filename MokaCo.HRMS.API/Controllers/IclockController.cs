@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using MokaCo.HRMS.Api.Hubs;
@@ -45,6 +46,11 @@ namespace MokaCo.HRMS.Api.Controllers;
 [ApiController]
 [Route("iclock")]
 [EnableRateLimiting(RateLimitPolicy)]
+// EXPLICITLY public, now that Program.cs sets an authorization fallback. This changes nothing about
+// what protects these endpoints — the serial, the rate limiter, IsActive and TLS, exactly as the
+// comment above describes — but the terminals speak a fixed ZKTeco protocol with no way to carry a
+// bearer token, so the fallback would silently take every punch offline.
+[AllowAnonymous]
 public class IclockController : ControllerBase
 {
     /// <summary>Matches the policy registered in Program.cs, partitioned per serial.</summary>

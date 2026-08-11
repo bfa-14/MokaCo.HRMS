@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Model.Attendance;
@@ -41,6 +42,11 @@ public class AttendanceIngestionController : ControllerBase
     /// not paying somebody.
     /// </summary>
     [HttpPost("punch")]
+    // [DeviceApiKey] is an action FILTER, not an authentication scheme — it leaves no authenticated
+    // principal behind — so the authorization fallback in Program.cs would reject the device before
+    // the filter ever ran. The device's credential check is unchanged; this only says the endpoint
+    // does not want a JWT.
+    [AllowAnonymous]
     [DeviceApiKey]
     public async Task<IActionResult> Punch([FromBody] PunchRequest request)
     {

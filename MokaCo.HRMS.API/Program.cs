@@ -215,8 +215,27 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 
 // --- Authorization (permission policies) ---
+//
+// THE FALLBACK IS THE DEFAULT ANSWER. Without it, an endpoint carrying no [Authorize] and no
+// [HasPermission] is simply OPEN — protection is opt-in, and forgetting the attribute on one new
+// action is a silent hole rather than a compile error. With it, authentication is the floor and an
+// endpoint has to say [AllowAnonymous] out loud to be public.
+//
+// It applies only where NOTHING else is specified, so every existing [Authorize] and permission
+// policy is untouched. Four things are deliberately public and now say so:
+//   - AuthController login + refresh ([AllowAnonymous]) — you cannot hold a token before logging in;
+//   - IclockController ([AllowAnonymous] on the class) — the fingerprint terminals speak a fixed
+//     ZKTeco protocol and cannot send a bearer token; they are gated by serial + rate limiter;
+//   - AttendanceIngestion punch ([AllowAnonymous]) — [DeviceApiKey] is an action FILTER, not an
+//     authentication scheme, so the fallback would demand a JWT the device does not have;
+//   - the Development-only OpenAPI/Scalar endpoints.
 builder.Services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options =>
+{
+    options.FallbackPolicy = new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
+});
 
 // --- Rate limiting: the fingerprint terminals' push endpoints only ---
 //
@@ -279,8 +298,10 @@ var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
 {
-    app.MapOpenApi();          // serves the spec at /openapi/v1.json
-    app.MapScalarApiReference(); // interactive UI at /scalar/v1
+    // AllowAnonymous because the authorization fallback would otherwise demand a token to read the
+    // documentation — and the documentation is how you find out how to get one. Development only.
+    app.MapOpenApi().AllowAnonymous();          // serves the spec at /openapi/v1.json
+    app.MapScalarApiReference().AllowAnonymous(); // interactive UI at /scalar/v1
 }
 
 // NOTE FOR THE FINGERPRINT TERMINALS: this redirects plain HTTP to HTTPS with a 307, and ZKTeco
