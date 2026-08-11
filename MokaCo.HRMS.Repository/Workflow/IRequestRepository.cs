@@ -107,7 +107,11 @@ public interface IRequestRepository
     /// (usp_Request_RetractLastDecision). The proc owns every rule — own signature, last one
     /// standing, same day, effects not yet consumed — and names which one failed.
     /// </summary>
-    Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason);
+    /// <param name="signedWithPassword">
+    /// The procedure REFUSES an unsigned retract of a signed decision, and one by a caller whose role
+    /// demands a signature — so this must carry the verified fact, never a default.
+    /// </param>
+    Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason, bool signedWithPassword = false);
 
     /// <summary>
     /// One half of a GM + Owner reopen (usp_Request_Reopen). Returns 'AwaitingSecond' when this was

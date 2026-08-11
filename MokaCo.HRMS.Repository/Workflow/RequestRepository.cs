@@ -409,12 +409,18 @@ public class RequestRepository : IRequestRepository
     /// effects not yet consumed — and each refusal names which of those failed. It SELECTs the
     /// request's new standing back.
     /// </summary>
-    public async Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason)
+    public async Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason, bool signedWithPassword = false)
     {
         using var db = _factory.Create();
         return await db.QuerySingleOrDefaultAsync<ApproveResult>(
             "workflow.usp_Request_RetractLastDecision",
-            new { RequestInstanceId = requestInstanceId, ActedByUserId = actedByUserId, Reason = reason },
+            new
+            {
+                RequestInstanceId = requestInstanceId,
+                ActedByUserId = actedByUserId,
+                Reason = reason,
+                SignedWithPassword = signedWithPassword,
+            },
             commandType: CommandType.StoredProcedure);
     }
 

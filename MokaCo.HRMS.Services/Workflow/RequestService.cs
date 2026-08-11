@@ -433,8 +433,49 @@ public class RequestService : IRequestService
      * throw away the only part worth reading.
      */
 
-    public Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason)
-        => WorkflowSqlErrors.MapAsync(() => _repo.RetractLastDecisionAsync(requestInstanceId, actedByUserId, reason));
+    /// <summary>
+    /// Retract now FAILS CLOSED, like withdraw. usp_Request_RetractLastDecision refuses an unsigned
+    /// retract when the decision being struck was itself password-signed, or the caller holds a role
+    /// with RequiresSignaturePassword — so the password is verified HERE and the fact passed through.
+    /// Without that the procedure's own gate would refuse every retract, since this layer would never
+    /// send anything but 0.
+    /// </summary>
+    public async Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason, string? password = null)
+    {
+        var signed = await VerifyPasswordAsync(
+            actedByUserId,
+            password,
+            await RetractNeedsSignatureAsync(requestInstanceId, actedByUserId),
+            "Retracting this decision must be signed with your password.");
+
+        return await WorkflowSqlErrors.MapAsync(() => _repo.RetractLastDecisionAsync(requestInstanceId, actedByUserId, reason, signed));
+    }
+
+    /// <summary>
+    /// The procedure's own condition: the decision being struck was signed, OR the caller's role
+    /// demands a signature.
+    ///
+    /// The first half is read from the STEP — the history log carries no SignedWithPassword — by
+    /// taking the most recently acted-on decided step, which is the one the procedure will strike.
+    /// The second half rides on GetSignatureRequirement, which already answers "the step demands it OR
+    /// this user's role does". That makes this condition a SUPERSET of the procedure's: it can ask for
+    /// a password where the procedure would not have insisted, never the other way round. Erring
+    /// towards asking is the safe direction — the alternative is a refusal the caller cannot act on.
+    /// </summary>
+    private async Task<bool> RetractNeedsSignatureAsync(int requestInstanceId, int actedByUserId)
+    {
+        var steps = await _repo.GetStepsAsync(requestInstanceId, actedByUserId);
+        var lastDecided = steps
+            .Where(s => s.ActedAt is not null && (s.Status == "Approved" || s.Status == "Rejected"))
+            .OrderByDescending(s => s.ActedAt)
+            .FirstOrDefault();
+
+        if (lastDecided?.SignedWithPassword == true)
+            return true;
+
+        var requirement = await _repo.GetSignatureRequirementAsync(requestInstanceId, actedByUserId);
+        return requirement?.SignatureRequired ?? false;
+    }
 
     public Task<ReopenResult?> ReopenAsync(int requestInstanceId, int actedByUserId, string reason)
         => WorkflowSqlErrors.MapAsync(() => _repo.ReopenAsync(requestInstanceId, actedByUserId, reason));

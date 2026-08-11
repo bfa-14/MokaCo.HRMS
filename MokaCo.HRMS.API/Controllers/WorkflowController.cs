@@ -245,6 +245,10 @@ public class WorkflowController : ControllerBase
     ///
     /// Whether the effects are consumed is deliberately NOT pre-checked to hide the button either —
     /// the refusal explains what to do instead, and no disabled control could say that much.
+    ///
+    /// The password is OPTIONAL on the wire: whether this particular retract must be signed depends on
+    /// what is being struck, which the service works out. Sending none where one is demanded is a 401
+    /// that changes nothing.
     /// </summary>
     [HttpPost("requests/{id:int}/retract")]
     [Authorize]
@@ -255,7 +259,7 @@ public class WorkflowController : ControllerBase
 
         try
         {
-            var result = await _requests.RetractLastDecisionAsync(id, User.UserId(), request.Reason.Trim());
+            var result = await _requests.RetractLastDecisionAsync(id, User.UserId(), request.Reason.Trim(), request.Password);
             if (result is null) return NotFound();
 
             // The struck signature puts the request back in somebody's inbox and moves the counts

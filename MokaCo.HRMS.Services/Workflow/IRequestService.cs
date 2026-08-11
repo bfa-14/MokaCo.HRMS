@@ -128,7 +128,12 @@ public interface IRequestService
     /// person, wrong day, already consumed) comes back as a WorkflowException with the message
     /// intact. That message is the entire value of the refusal, so nothing may replace it.
     /// </summary>
-    Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason);
+    /// <param name="password">
+    /// Verified here and passed on as the signed fact. Required when the decision being struck was
+    /// itself password-signed, or the caller's role demands a signature — undoing a signed act is a
+    /// signed act, exactly as it is for a withdrawal.
+    /// </param>
+    Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason, string? password = null);
 
     /// <summary>
     /// One half of a GM + Owner reopen. Answers 'AwaitingSecond' when this was the first signature —
