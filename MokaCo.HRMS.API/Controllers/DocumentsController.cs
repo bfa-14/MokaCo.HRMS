@@ -37,6 +37,30 @@ public class DocumentsController : ControllerBase
         => Ok(await _documents.GetByEmployeeAsync(employeeId));
 
     /// <summary>
+    /// Records a document that lives SOMEWHERE ELSE — a contract in a shared drive, a scan in another
+    /// system. Metadata only: no bytes are transferred and none are stored here.
+    ///
+    /// Distinct from /upload on purpose, and the difference matters for the download route: an
+    /// uploaded file has a path under our own storage root, while StoragePath here is whatever the
+    /// caller says it is, so /download cannot serve it and does not try.
+    /// </summary>
+    [HttpPost]
+    [HasPermission("EMP_EDIT")]
+    public async Task<IActionResult> Create([FromBody] DocumentCreateRequest request)
+    {
+        if (request is null || request.EmployeeId <= 0)
+            return BadRequest(new { error = "Say which employee this document belongs to." });
+        if (string.IsNullOrWhiteSpace(request.FileName))
+            return BadRequest(new { error = "A document needs a name." });
+        if (string.IsNullOrWhiteSpace(request.StoragePath))
+            return BadRequest(new { error = "A document recorded here needs the location it actually lives at." });
+
+        var documentId = await _documents.CreateAsync(request);
+        await _live.NotifyAsync("hr");
+        return Ok(new { documentId });
+    }
+
+    /// <summary>
     /// Uploads a file for an employee. The file is written to server storage and
     /// only its path is kept in the DB; ContentType and SizeBytes are derived from
     /// the uploaded file (never supplied by the client).
