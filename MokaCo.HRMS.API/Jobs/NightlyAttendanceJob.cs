@@ -27,17 +27,20 @@ public class NightlyAttendanceJob : IJob
     private readonly IAttendanceService _attendance;
     private readonly IExitPermissionService _exitPermissions;
     private readonly IOvertimeService _overtime;
+    private readonly IRequestService _requests;
     private readonly ILogger<NightlyAttendanceJob> _logger;
 
     public NightlyAttendanceJob(
         IAttendanceService attendance,
         IExitPermissionService exitPermissions,
         IOvertimeService overtime,
+        IRequestService requests,
         ILogger<NightlyAttendanceJob> logger)
     {
         _attendance = attendance;
         _exitPermissions = exitPermissions;
         _overtime = overtime;
+        _requests = requests;
         _logger = logger;
     }
 
@@ -63,8 +66,31 @@ public class NightlyAttendanceJob : IJob
         // approved minutes against, which is why the panel reads "awaiting the worked day".
         var overtimeStamped = await _overtime.ApplyToAttendanceAsync(null);
 
+        // LAST, and the only step here that is not about attendance: a safety net for approvals whose
+        // EFFECT never happened. An approved salary advance with no payroll row, a leave request that
+        // never reached the ledger, a swap whose roster change was skipped — the request reads as done
+        // while the money or the leave silently does not exist, and nothing else would ever notice.
+        // Idempotent, so the ordinary result is an empty sweep and one quiet log line.
+        var reconciled = await _requests.ReconcileApprovalEffectsAsync();
+
         _logger.LogInformation(
             "Nightly attendance: processed {Days} employee-day(s), marked {Absentees} absentee(s) for {Yesterday:yyyy-MM-dd}, reclassified {Leave} day(s) as approved leave in {Period}, applied {Applied} exit permission(s) and stamped {Overtime} overtime request(s) to attendance.",
             processed.EmployeeDaysProcessed, absentees.AbsenteesMarked, yesterday, leave.DaysMarkedAsLeave, period, applied.PermissionsApplied, overtimeStamped.Stamped);
+
+        if (reconciled.Repaired.Count > 0)
+        {
+            _logger.LogWarning(
+                "Approval-effect reconciler: applied the missing effects of {Count} approved request(s): {RequestIds}. These closed without them, which should not happen — check how they were approved.",
+                reconciled.Repaired.Count, string.Join(", ", reconciled.Repaired));
+        }
+
+        // NOT lumped in with the repaired count. These were asked and still did not land, so they are
+        // the ones a person has to look at — most likely a swap whose rostered day no longer exists.
+        if (reconciled.StillUnapplied.Count > 0)
+        {
+            _logger.LogError(
+                "Approval-effect reconciler: {Count} approved request(s) STILL have no effect after a repair attempt and need looking at by hand: {RequestIds}.",
+                reconciled.StillUnapplied.Count, string.Join(", ", reconciled.StillUnapplied));
+        }
     }
 }

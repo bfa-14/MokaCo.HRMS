@@ -65,6 +65,18 @@ public interface IRequestRepository
     /// </summary>
     Task<ApproveResult?> ResumeAsync(int requestInstanceId, int actedByUserId, string? note);
 
+    /// <summary>
+    /// Approved requests whose type's effect never landed — leave with no ledger post, an advance or
+    /// adjustment with no row, a swap never applied. The reconciler's work list.
+    /// </summary>
+    Task<IEnumerable<int>> GetApprovedWithUnappliedEffectsAsync();
+
+    /// <summary>
+    /// Applies an approved request's type effects if they are still missing
+    /// (usp_Request_ApplyApprovalEffects). Idempotent, type-guarded, and silent when it cannot act.
+    /// </summary>
+    Task ApplyApprovalEffectsAsync(int requestInstanceId, int? actorUserId);
+
     /// <summary>The request's conversation, oldest first.</summary>
     Task<IEnumerable<RequestNote>> GetNotesAsync(int requestInstanceId);
 

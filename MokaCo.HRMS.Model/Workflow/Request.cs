@@ -496,6 +496,21 @@ public class PutOnHoldRequest
 }
 
 /// <summary>
+/// What one reconciler sweep found and fixed.
+///
+/// <see cref="Repaired"/> and <see cref="StillUnapplied"/> are kept apart on purpose: the procedure
+/// that applies an effect is deliberately silent when it cannot (a swap whose rostered day has since
+/// been deleted, say), so "we called it" and "it worked" are different facts. Anything left in
+/// StillUnapplied needs a person, and a log line that blurred the two would hide exactly that.
+/// </summary>
+public class EffectReconcileResult
+{
+    public IReadOnlyList<int> Examined { get; set; } = Array.Empty<int>();
+    public IReadOnlyList<int> Repaired { get; set; } = Array.Empty<int>();
+    public IReadOnlyList<int> StillUnapplied { get; set; } = Array.Empty<int>();
+}
+
+/// <summary>
 /// Lifts a hold. The note is OPTIONAL — the hold's own reason already says what was being waited for,
 /// and the answer usually arrives as a request note rather than here. No password: resuming asserts
 /// nothing and decides nothing, it just hands the step back to the approver.

@@ -86,6 +86,12 @@ public interface IRequestService
     /// </summary>
     Task<ApproveResult?> ResumeAsync(int requestInstanceId, int actedByUserId, string? note);
 
+    /// <summary>
+    /// Sweeps approved requests whose type effect never landed and applies it. Reports what actually
+    /// landed rather than what was attempted — anything left in StillUnapplied needs a person.
+    /// </summary>
+    Task<EffectReconcileResult> ReconcileApprovalEffectsAsync();
+
     /// <summary>The request's conversation, oldest first.</summary>
     Task<IEnumerable<RequestNote>> GetNotesAsync(int requestInstanceId);
 

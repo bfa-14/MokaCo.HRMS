@@ -329,6 +329,42 @@ public class RequestService : IRequestService
     public Task<ApproveResult?> ResumeAsync(int requestInstanceId, int actedByUserId, string? note)
         => WorkflowSqlErrors.MapAsync(() => _repo.ResumeAsync(requestInstanceId, actedByUserId, note));
 
+    /// <summary>
+    /// THE RECONCILER. Sweeps approved requests whose effect never landed and applies it.
+    ///
+    /// Two ways a request gets here. Historically: it was approved before the auto-approval hole was
+    /// closed, so it reads Approved with no advance, no ledger post, no roster change. Ongoing: an
+    /// effect that legitimately could not be applied at the time — the classic being a shift swap
+    /// whose rostered day was deleted between raising and final approval, which the typed procedure
+    /// skips rather than failing the approval.
+    ///
+    /// REPORTS WHAT ACTUALLY LANDED, not what was attempted. ApplyApprovalEffects is deliberately
+    /// silent when it cannot act, so the only honest way to say "repaired" is to ask again afterwards
+    /// and see what left the list. Anything still on it needs a human — and saying so is the point.
+    /// </summary>
+    public async Task<EffectReconcileResult> ReconcileApprovalEffectsAsync()
+    {
+        var outstanding = (await _repo.GetApprovedWithUnappliedEffectsAsync()).ToList();
+        if (outstanding.Count == 0)
+            return new EffectReconcileResult();
+
+        foreach (var requestInstanceId in outstanding)
+        {
+            // No actor: this is the system repairing itself, not somebody deciding. The procedure
+            // falls back to the request's own raiser for the created rows' CreatedBy.
+            await _repo.ApplyApprovalEffectsAsync(requestInstanceId, null);
+        }
+
+        var stillOutstanding = (await _repo.GetApprovedWithUnappliedEffectsAsync()).ToList();
+
+        return new EffectReconcileResult
+        {
+            Examined = outstanding,
+            Repaired = outstanding.Except(stillOutstanding).ToList(),
+            StillUnapplied = stillOutstanding,
+        };
+    }
+
     public Task<IEnumerable<RequestNote>> GetNotesAsync(int requestInstanceId)
         => _repo.GetNotesAsync(requestInstanceId);
 
