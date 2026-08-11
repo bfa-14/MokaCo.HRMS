@@ -214,11 +214,43 @@ public class RequestService : IRequestService
         });
 
     /// <summary>
+    /// THE TYPES THAT MUST NOT COME THROUGH THE GENERIC APPROVE.
+    ///
+    /// Every one of these has a typed _Decide procedure that applies the request's SIDE EFFECTS at
+    /// final approval — the leave-ledger post, the payroll advance and adjustment rows, the overtime
+    /// figure and its attendance link, the roster exchange, the employee a hire creates, the
+    /// termination date a separation stamps. workflow.usp_Request_Approve moves the chain and knows
+    /// nothing about any of it, so approving one of these here closed the request while the money,
+    /// the leave or the roster silently never happened.
+    ///
+    /// EXIT_PERMISSION is in the list for the same reason, even though its effects are also picked up
+    /// later by the nightly job and the period close: the approver may REDUCE the minutes, and only
+    /// the typed route carries that figure.
+    /// </summary>
+    private static readonly HashSet<string> TypedDecideOnly = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "LEAVE_REQUEST", "SALARY_ADVANCE", "PAYROLL_ADJUSTMENT", "OVERTIME", "SHIFT_SWAP",
+        "EXPENSE_REIMBURSEMENT", "TIP_DISTRIBUTION", "SEPARATION", "ONBOARDING",
+        "AVAILABILITY_CHANGE", "EXIT_PERMISSION",
+    };
+
+    /// <summary>
     /// The database decides whether this user may approve; a rejection there becomes a 403 here. The
     /// signature is verified FIRST, so a wrong password changes nothing at all.
+    ///
+    /// Before any of that, a typed request is REFUSED outright (409). The refusal comes before the
+    /// password check on purpose: there is no point putting the caller through a signature for a call
+    /// that was never going to be honoured. Untyped/simple types keep the plain engine behaviour.
     /// </summary>
     public async Task<ApproveResult?> ApproveAsync(int requestInstanceId, int actedByUserId, string? comment, string? changeSummary = null, string? password = null)
     {
+        var detail = await _repo.GetByIdAsync(requestInstanceId);
+        if (detail is null)
+            return null;
+
+        if (TypedDecideOnly.Contains(detail.Header.RequestTypeCode))
+            throw new WorkflowException(409, "Use the typed decide endpoint for this request type.");
+
         var signed = await VerifySignatureAsync(requestInstanceId, actedByUserId, password);
         return await WorkflowSqlErrors.MapAsync(() => _repo.ApproveAsync(requestInstanceId, actedByUserId, comment, changeSummary, signed));
     }

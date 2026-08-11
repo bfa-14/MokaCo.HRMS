@@ -61,6 +61,11 @@ public interface IRequestService
     /// <summary>
     /// Approve. When the step or the caller's role demands a signature, <paramref name="password"/>
     /// must be their real password: it is verified here and a wrong one is a 401 that changes nothing.
+    ///
+    /// ONLY for types with no typed decide procedure. A request whose final approval has side effects
+    /// (leave, advances, adjustments, overtime, swaps, hires, separations, exit permissions…) is
+    /// refused with a <see cref="WorkflowException"/> 409 telling the caller to use its typed endpoint
+    /// — the generic engine call would close the request without ever applying them.
     /// </summary>
     Task<ApproveResult?> ApproveAsync(int requestInstanceId, int actedByUserId, string? comment, string? changeSummary = null, string? password = null);
     Task<RequestClosedResult?> RejectAsync(int requestInstanceId, int actedByUserId, string reason, string? password = null);
