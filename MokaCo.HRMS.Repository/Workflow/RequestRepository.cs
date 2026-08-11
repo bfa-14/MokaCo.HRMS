@@ -251,6 +251,20 @@ public class RequestRepository : IRequestRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    /// <summary>
+    /// Lifts the hold — the step returns to Pending with the same approver. The procedure decides who
+    /// may: the approver who set it OR the requester, because when a hold is waiting on the employee,
+    /// answering it IS the resume and should not also require chasing the approver.
+    /// </summary>
+    public async Task<ApproveResult?> ResumeAsync(int requestInstanceId, int actedByUserId, string? note)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<ApproveResult>(
+            "workflow.usp_Request_Resume",
+            new { RequestInstanceId = requestInstanceId, ActedByUserId = actedByUserId, Note = note },
+            commandType: CommandType.StoredProcedure);
+    }
+
     /// <summary>The request's conversation, oldest first.</summary>
     public async Task<IEnumerable<RequestNote>> GetNotesAsync(int requestInstanceId)
     {

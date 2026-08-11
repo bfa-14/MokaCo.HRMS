@@ -316,6 +316,34 @@ public class RequestsController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Lifts a hold — the step goes back to Pending with the same approver.
+    ///
+    /// [Authorize] ONLY, deliberately: the procedure allows the approver who set the hold OR the
+    /// person who raised the request, because a hold marked "waiting on the requester" is answered by
+    /// the requester and answering it IS the resume. A permission gate here would lock out exactly the
+    /// person the hold is waiting for. The note is optional.
+    /// </summary>
+    [HttpPost("{id:int}/resume")]
+    public async Task<IActionResult> Resume(int id, [FromBody] ResumeRequest? request)
+    {
+        try
+        {
+            var result = await _requests.ResumeAsync(
+                id, User.UserId(),
+                string.IsNullOrWhiteSpace(request?.Note) ? null : request!.Note.Trim());
+            if (result is null) return NotFound();
+
+            // The step is somebody's again — an inbox and the dashboard's counts both move.
+            await NotifyWorkflowAsync();
+            return Ok(result);
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
     /// <summary>The request's conversation, oldest first. Visible to anyone who may see the request.</summary>
     [HttpGet("{id:int}/notes")]
     public async Task<IActionResult> GetNotes(int id) => Ok(await _requests.GetNotesAsync(id));

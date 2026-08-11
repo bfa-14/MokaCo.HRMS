@@ -496,6 +496,16 @@ public class PutOnHoldRequest
 }
 
 /// <summary>
+/// Lifts a hold. The note is OPTIONAL — the hold's own reason already says what was being waited for,
+/// and the answer usually arrives as a request note rather than here. No password: resuming asserts
+/// nothing and decides nothing, it just hands the step back to the approver.
+/// </summary>
+public class ResumeRequest
+{
+    public string? Note { get; set; }
+}
+
+/// <summary>
 /// One note in a request's conversation (usp_RequestNote_GetForRequest). A note never changes state;
 /// it carries context, questions and answers, with enough about the author for the UI to show who
 /// was speaking in what capacity.

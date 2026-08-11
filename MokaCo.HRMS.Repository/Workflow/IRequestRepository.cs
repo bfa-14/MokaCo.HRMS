@@ -58,6 +58,13 @@ public interface IRequestRepository
     /// <summary>Parks a live request on hold. The procedure raises if the reason is blank or the caller is not the approver.</summary>
     Task PutOnHoldAsync(int requestInstanceId, int actedByUserId, string reason, bool waitingOnRequester);
 
+    /// <summary>
+    /// Lifts a hold (usp_Request_Resume) — the step goes back to Pending with the same approver. The
+    /// procedure allows the approver who set it OR the requester, and raises when the request is not
+    /// on hold or the caller is neither. The note is optional and recorded on the 'Resumed' signature.
+    /// </summary>
+    Task<ApproveResult?> ResumeAsync(int requestInstanceId, int actedByUserId, string? note);
+
     /// <summary>The request's conversation, oldest first.</summary>
     Task<IEnumerable<RequestNote>> GetNotesAsync(int requestInstanceId);
 

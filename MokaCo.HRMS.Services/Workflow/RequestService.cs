@@ -317,6 +317,18 @@ public class RequestService : IRequestService
         });
     }
 
+    /// <summary>
+    /// Lifts a hold. NO permission and no C# identity rule — the database decides, exactly as it does
+    /// for approve and hold, and it allows the approver OR the requester on purpose: a hold marked
+    /// "waiting on the requester" is answered BY the requester, and making them then chase the
+    /// approver to press a button would leave the request parked for no reason.
+    ///
+    /// No signature. Resuming asserts nothing and decides nothing — it hands the step back to the
+    /// approver exactly as it was before the hold.
+    /// </summary>
+    public Task<ApproveResult?> ResumeAsync(int requestInstanceId, int actedByUserId, string? note)
+        => WorkflowSqlErrors.MapAsync(() => _repo.ResumeAsync(requestInstanceId, actedByUserId, note));
+
     public Task<IEnumerable<RequestNote>> GetNotesAsync(int requestInstanceId)
         => _repo.GetNotesAsync(requestInstanceId);
 

@@ -79,6 +79,13 @@ public interface IRequestService
     /// <summary>Parks a live request on hold. The database enforces the reason and who may act; a breach comes back as a WorkflowException.</summary>
     Task PutOnHoldAsync(int requestInstanceId, int actedByUserId, string reason, bool waitingOnRequester, string? password = null);
 
+    /// <summary>
+    /// Lifts a hold, returning the step to Pending with the same approver. The database allows the
+    /// approver who set it OR the requester — a hold waiting on the requester is answered by them, and
+    /// answering IS the resume. Its refusals come back as a WorkflowException, message intact.
+    /// </summary>
+    Task<ApproveResult?> ResumeAsync(int requestInstanceId, int actedByUserId, string? note);
+
     /// <summary>The request's conversation, oldest first.</summary>
     Task<IEnumerable<RequestNote>> GetNotesAsync(int requestInstanceId);
 
