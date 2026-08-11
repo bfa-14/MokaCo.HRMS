@@ -340,6 +340,20 @@ ORDER BY ri.RequestInstanceId;";
             commandType: CommandType.StoredProcedure);
     }
 
+    /// <summary>
+    /// Decisions started and never signed, older than the threshold. The quieter half of the
+    /// oversight page: unlike a hold, nobody knows an answer is coming, because from the requester's
+    /// side nothing has happened at all.
+    /// </summary>
+    public async Task<IEnumerable<StaleDraft>> GetStaleDraftsAsync(int olderThanDays)
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<StaleDraft>(
+            "workflow.usp_Request_GetStaleDrafts",
+            new { OlderThanDays = olderThanDays },
+            commandType: CommandType.StoredProcedure);
+    }
+
     /// <summary>Requests stuck on hold longer than the given number of days — HR's stuck-requests queue.</summary>
     public async Task<IEnumerable<LongHold>> GetLongHoldsAsync(int olderThanDays)
     {

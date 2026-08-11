@@ -36,4 +36,13 @@ public interface IDefinitionRepository
 
     /// <summary>Sets a DRAFT's population tier (2/3/null). RAISERRORs on a published version or bad value.</summary>
     Task<DefinitionMinTier?> SetMinTierAsync(int workflowDefinitionId, int? minRequesterTier);
+
+    /// <summary>The decision-type catalogue (usp_DecisionType_GetAll). Inactive types are excluded unless asked for.</summary>
+    Task<IEnumerable<DecisionTypeConfig>> GetDecisionTypesAsync(bool includeInactive);
+
+    /// <summary>
+    /// Restricts one step to a set of decision codes (usp_Definition_SetStepDecisions). Null or empty
+    /// restores the default — every selectable type.
+    /// </summary>
+    Task SetStepDecisionsAsync(int workflowStepId, string? decisionCodes);
 }

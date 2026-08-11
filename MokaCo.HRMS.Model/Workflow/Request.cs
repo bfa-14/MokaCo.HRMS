@@ -587,6 +587,84 @@ public class LongHold
     public string Detail { get; set; } = string.Empty;
 }
 
+/// <summary>
+/// A decision somebody started and never signed (usp_Request_GetStaleDrafts) — the oversight page's
+/// other queue, beside the long holds.
+///
+/// A stale draft is a QUIETER problem than a hold: nobody is waiting on an answer they know is
+/// coming, because from the requester's side nothing has happened at all. Property names mirror the
+/// procedure's columns exactly, which is what lets Dapper map them.
+/// </summary>
+public class StaleDraft
+{
+    public int RequestInstanceId { get; set; }
+    public string RequestTypeName { get; set; } = string.Empty;
+    public string EmployeeName { get; set; } = string.Empty;
+    public string BranchName { get; set; } = string.Empty;
+    public string? Title { get; set; }
+    public int StepNo { get; set; }
+    public string StepName { get; set; } = string.Empty;
+
+    /// <summary>The chosen decision's LABEL, not its code. Null when the draft carries only a note.</summary>
+    public string? DraftDecision { get; set; }
+
+    public DateTime? DraftSavedAt { get; set; }
+
+    /// <summary>The username of whoever started it.</summary>
+    public string? SavedBy { get; set; }
+
+    /// <summary>Days since the draft was saved — how long it has sat unsigned.</summary>
+    public int DaysUnsigned { get; set; }
+
+    /// <summary>Days since the request was submitted. Longer than DaysUnsigned, and the number the requester feels.</summary>
+    public int DaysWaiting { get; set; }
+}
+
+/// <summary>
+/// One configurable decision type (usp_DecisionType_GetAll) — the catalogue every decision dropdown
+/// is built from. The flags are the contract: they decide which fields a decision demands and what
+/// the engine does with it.
+/// </summary>
+public class DecisionTypeConfig
+{
+    public int DecisionTypeId { get; set; }
+    public string Code { get; set; } = string.Empty;
+    public string Label { get; set; } = string.Empty;
+    public string? Description { get; set; }
+
+    /// <summary>Approve / Reject / Hold / Delegate — what the engine actually does.</summary>
+    public string EngineAction { get; set; } = string.Empty;
+    public string Tone { get; set; } = string.Empty;
+
+    public bool RequiresComment { get; set; }
+    public bool RequiresAttachment { get; set; }
+    public bool RequiresTargetUser { get; set; }
+    public bool AllowsValueChange { get; set; }
+    public bool WaitingOnRequester { get; set; }
+
+    public bool IsPrimary { get; set; }
+
+    /// <summary>False = the engine derives it (an auto-skip, say); it must never appear in a menu.</summary>
+    public bool IsSelectable { get; set; }
+
+    /// <summary>System types cannot have their Code or EngineAction edited.</summary>
+    public bool IsSystem { get; set; }
+
+    public bool IsActive { get; set; }
+    public string? Icon { get; set; }
+    public int SortOrder { get; set; }
+}
+
+/// <summary>
+/// The decisions offered at ONE step. A comma-separated list of codes; EMPTY restores the default
+/// (every selectable type), which is why it is a string rather than a list — "none configured" and
+/// "an empty list" have to be the same thing.
+/// </summary>
+public class SetStepDecisionsRequest
+{
+    public string? DecisionCodes { get; set; }
+}
+
 /// <summary>A reason. Required for reject, cancel and move-version — collected in the UI, because the database demands it.</summary>
 public class ReasonRequest
 {

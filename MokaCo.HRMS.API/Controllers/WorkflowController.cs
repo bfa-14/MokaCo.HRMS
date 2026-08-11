@@ -229,6 +229,55 @@ public class WorkflowController : ControllerBase
     public async Task<IActionResult> GetLongHolds([FromQuery] int olderThanDays = 7)
         => Ok(await _requests.GetLongHoldsAsync(olderThanDays));
 
+    /// <summary>
+    /// Decisions started and never signed — the other half of the oversight page, gated the same way
+    /// as the long holds beside it.
+    ///
+    /// A stale draft is the QUIETER failure: a hold at least tells the requester an answer is coming,
+    /// while a draft is invisible from their side — nothing has happened at all.
+    /// </summary>
+    [HttpGet("stale-drafts")]
+    [HasPermission("WORKFLOW_CONFIGURE")]
+    public async Task<IActionResult> GetStaleDrafts([FromQuery] int olderThanDays = 3)
+        => Ok(await _requests.GetStaleDraftsAsync(olderThanDays));
+
+    /* ---- the decision catalogue ----
+       What every decision dropdown in the product is built from. Reading it is chain configuration,
+       so it is gated with the rest of it. */
+
+    /// <summary>
+    /// All configurable decision types. Inactive ones are left out unless asked for: a retired type
+    /// must not reappear in a menu, but a setup screen still needs to see it to bring it back.
+    /// </summary>
+    [HttpGet("decision-types")]
+    [HasPermission("WORKFLOW_CONFIGURE")]
+    public async Task<IActionResult> GetDecisionTypes([FromQuery] bool includeInactive = false)
+        => Ok(await _definitions.GetDecisionTypesAsync(includeInactive));
+
+    /// <summary>
+    /// Restricts ONE step to a chosen set of decisions. An EMPTY list restores the default — every
+    /// selectable type — which is why the codes travel as one comma-separated string: "nothing
+    /// configured" and "an empty list" have to mean the same thing.
+    ///
+    /// The procedure refuses an unknown code, and its sentence reaches the client untouched.
+    /// </summary>
+    [HttpPut("definitions/steps/{id:int}/decisions")]
+    [HasPermission("WORKFLOW_CONFIGURE")]
+    public async Task<IActionResult> SetStepDecisions(int id, [FromBody] SetStepDecisionsRequest? request)
+    {
+        try
+        {
+            await _definitions.SetStepDecisionsAsync(id, request?.DecisionCodes);
+            // Which decisions a step offers changes what every approver on it sees next time they open it.
+            await NotifyWorkflowAsync();
+            return NoContent();
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
     /* ---- reversals: taking a decision back ----
        Both need NO permission, exactly like approve and reject. The database decides who may act —
        the last signer on the same UTC day for a retract, the General Manager and the Owner together

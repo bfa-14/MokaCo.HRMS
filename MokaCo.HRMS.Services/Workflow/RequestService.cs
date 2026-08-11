@@ -375,6 +375,9 @@ public class RequestService : IRequestService
     public Task<IEnumerable<LongHold>> GetLongHoldsAsync(int olderThanDays)
         => _repo.GetLongHoldsAsync(olderThanDays);
 
+    public Task<IEnumerable<StaleDraft>> GetStaleDraftsAsync(int olderThanDays)
+        => _repo.GetStaleDraftsAsync(olderThanDays);
+
     public Task<IEnumerable<OldVersionRequest>> GetOnOldVersionsAsync(int? requestTypeId)
         => _repo.GetOnOldVersionsAsync(requestTypeId);
 

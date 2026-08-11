@@ -33,4 +33,13 @@ public interface IDefinitionService
 
     /// <summary>Sets a DRAFT's population tier. Draft-only — a published version is refused with the procedure's message.</summary>
     Task<DefinitionMinTier?> SetMinTierAsync(int workflowDefinitionId, int? minRequesterTier);
+
+    /// <summary>The decision-type catalogue every decision dropdown is built from.</summary>
+    Task<IEnumerable<DecisionTypeConfig>> GetDecisionTypesAsync(bool includeInactive);
+
+    /// <summary>
+    /// Restricts one step to a set of decision codes. An empty list restores the default (every
+    /// selectable type); the procedure refuses an unknown code and that message travels verbatim.
+    /// </summary>
+    Task SetStepDecisionsAsync(int workflowStepId, string? decisionCodes);
 }

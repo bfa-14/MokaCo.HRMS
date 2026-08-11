@@ -101,6 +101,12 @@ public interface IRequestService
     /// <summary>Requests stuck on hold longer than the given number of days — HR's stuck-requests queue.</summary>
     Task<IEnumerable<LongHold>> GetLongHoldsAsync(int olderThanDays);
 
+    /// <summary>
+    /// Decisions somebody started and never signed. The quieter half of the oversight page — nobody
+    /// is waiting on an answer they know is coming, because nothing visible has happened at all.
+    /// </summary>
+    Task<IEnumerable<StaleDraft>> GetStaleDraftsAsync(int olderThanDays);
+
     Task<IEnumerable<OldVersionRequest>> GetOnOldVersionsAsync(int? requestTypeId);
     Task<MoveVersionResult?> MoveToVersionAsync(int requestInstanceId, MoveVersionRequest request, int actedByUserId);
 

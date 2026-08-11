@@ -86,6 +86,9 @@ public interface IRequestRepository
     /// <summary>Requests stuck on hold longer than the given number of days — HR's stuck-requests queue.</summary>
     Task<IEnumerable<LongHold>> GetLongHoldsAsync(int olderThanDays);
 
+    /// <summary>Decisions saved but never signed, older than the threshold (usp_Request_GetStaleDrafts).</summary>
+    Task<IEnumerable<StaleDraft>> GetStaleDraftsAsync(int olderThanDays);
+
     Task<IEnumerable<OldVersionRequest>> GetOnOldVersionsAsync(int? requestTypeId);
     Task<MoveVersionResult?> MoveToVersionAsync(int requestInstanceId, int? targetWorkflowDefinitionId, int actedByUserId, string reason);
 
