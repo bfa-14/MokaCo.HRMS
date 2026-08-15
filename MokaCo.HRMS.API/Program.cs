@@ -1,5 +1,10 @@
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
 using MokaCo.HRMS.Api.Auth;
@@ -128,6 +133,14 @@ builder.Services.AddScoped<IRosterService, RosterService>();
 builder.Services.AddScoped<IImportService, ImportService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
 builder.Services.AddScoped<ICorrectionService, CorrectionService>();
+
+// Machine pull: the server calling the terminal, as opposed to the iclock endpoint where it calls us.
+// The LOCKS are a singleton and must stay one — they are what stops the timer and the "Pull now"
+// button opening two sessions to the same machine, and a scoped registry would hand each caller its
+// own semaphore and therefore lock nothing at all.
+builder.Services.AddSingleton<DevicePullLocks>();
+builder.Services.AddScoped<IMachinePullService, MachinePullService>();
+builder.Services.AddHostedService<MachinePullWorker>();
 
 // --- DI: services (Report) ---
 builder.Services.AddScoped<IReportService, ReportService>();
@@ -310,7 +323,11 @@ if (app.Environment.IsDevelopment())
 // terminate TLS in front of the API (IIS/nginx) and let it forward on HTTP, NOT to drop this line:
 // the serial and every punch travel in clear text, and the serial is the only credential this
 // protocol has.
-app.UseHttpsRedirection();
+// /iclock is exempt because the terminals speak plain HTTP on the LAN and do not follow 307s; every
+// other endpoint keeps the redirect.
+app.UseWhen(
+    ctx => !ctx.Request.Path.StartsWithSegments("/iclock"),
+    branch => branch.UseHttpsRedirection());
 app.UseCors(CorsPolicy);
 
 // Before authentication on purpose: a flood should be refused at the door, not after we have done
@@ -322,5 +339,43 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 app.MapHub<LiveHub>("/hubs/live");
+
+// The one line an installer needs: exactly what to type into a terminal's Cloud Server / ADMS
+// screen. Both halves are RESOLVED, never assumed — the LAN IP is per-machine and changes with the
+// DHCP lease, and the port is whatever the profile actually bound. A guessed address here is
+// indistinguishable from a dead terminal, which is the failure this line exists to prevent.
+// Registered on ApplicationStarted because the server's real addresses do not exist until then.
+app.Lifetime.ApplicationStarted.Register(() =>
+{
+    var bound = app.Services.GetRequiredService<IServer>()
+        .Features.Get<IServerAddressesFeature>()?.Addresses ?? [];
+
+    // "http://0.0.0.0:5078" / "http://[::]:5078" / "http://localhost:5078" — all we want is the port.
+    var httpPort = bound
+        .Select(address => Uri.TryCreate(address, UriKind.Absolute, out var uri) ? uri : null)
+        .FirstOrDefault(uri => uri is not null && uri.Scheme == Uri.UriSchemeHttp)?.Port;
+
+    // Every operational IPv4 that is not loopback — on a machine with Wi-Fi and Ethernet both up,
+    // the installer needs to be told which addresses exist rather than handed one at random.
+    var lanIPs = NetworkInterface.GetAllNetworkInterfaces()
+        .Where(nic => nic.OperationalStatus == OperationalStatus.Up
+                      && nic.NetworkInterfaceType != NetworkInterfaceType.Loopback)
+        .SelectMany(nic => nic.GetIPProperties().UnicastAddresses)
+        .Select(unicast => unicast.Address)
+        .Where(ip => ip.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip))
+        .Select(ip => ip.ToString())
+        .Distinct()
+        .ToArray();
+
+    var target = httpPort is null
+        ? "no plain-HTTP binding — the terminals cannot reach this instance"
+        : lanIPs.Length == 0
+            ? $"http://<this machine's LAN IP>:{httpPort}"
+            : string.Join(" or ", lanIPs.Select(ip => $"http://{ip}:{httpPort}"));
+
+    app.Logger.LogInformation(
+        "iclock receiver listening — point terminals at {Target} (device Cloud Server / ADMS " +
+        "setting), serial must be registered on Attendance > Devices.", target);
+});
 
 app.Run();

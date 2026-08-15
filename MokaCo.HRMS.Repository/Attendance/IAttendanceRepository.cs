@@ -6,6 +6,14 @@ public interface IAttendanceRepository
 {
     /* -- the processor -- */
     Task<ProcessResult> ProcessRawLogsAsync(DateTime? workDate);
+
+    /// <summary>
+    /// Re-derives ONE day from all of its punches. The companion to a punch-interpretation change:
+    /// the ordinary processor is incremental, so a day already built is never revisited when the
+    /// rules for reading its punches change.
+    /// </summary>
+    Task<ProcessResult> ReprocessDayAsync(DateTime workDate);
+
     Task<MarkAbsenteesResult> MarkAbsenteesAsync(DateTime workDate);
     Task<MarkLeaveDaysResult> MarkLeaveDaysAsync(string periodYearMonth);
 

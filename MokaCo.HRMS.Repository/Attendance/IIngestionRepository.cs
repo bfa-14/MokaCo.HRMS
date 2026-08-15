@@ -20,4 +20,10 @@ public interface IIngestionRepository
 
     Task<IEnumerable<RawLog>> GetUnresolvedAsync(DateTime? fromDate, DateTime? toDate);
     Task<IEnumerable<RawLog>> GetByEmployeeDayAsync(int employeeId, DateTime workDate);
+
+    /// <summary>
+    /// Every punch on one day, resolved to people, machines and branches — what the attendance
+    /// screens read to answer "did my punch arrive, and has it become attendance yet".
+    /// </summary>
+    Task<IEnumerable<RawPunch>> GetPunchesByDateAsync(DateTime date, int? deviceId, bool unresolvedOnly);
 }

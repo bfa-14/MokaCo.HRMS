@@ -14,6 +14,18 @@ public class DeviceCreateRequest
     public int BranchId { get; set; }
 
     public int? DepartmentId { get; set; }
+
+    /* -- Connection: how the SERVER reaches this machine. See Device's pull block for push vs pull. -- */
+
+    /// <summary>The machine's LAN address. Optional — a device is registered before anybody knows where it will be mounted.</summary>
+    public string? PullIp { get; set; }
+
+    /// <summary>Defaulted here, not only in the database: a client that omits the field must not be read as asking for port 0.</summary>
+    public int PullPort { get; set; } = DevicePullDefaults.Port;
+
+    public int PullCommKey { get; set; } = DevicePullDefaults.CommKey;
+
+    public bool PullEnabled { get; set; }
 }
 
 public class DeviceUpdateRequest
@@ -25,6 +37,38 @@ public class DeviceUpdateRequest
 
     /// <summary>Deactivating a device makes the punch endpoint reject it — the kill switch for a lost or stolen terminal.</summary>
     public bool IsActive { get; set; }
+
+    /* -- Connection, as above -- */
+    public string? PullIp { get; set; }
+    public int PullPort { get; set; } = DevicePullDefaults.Port;
+    public int PullCommKey { get; set; } = DevicePullDefaults.CommKey;
+    public bool PullEnabled { get; set; }
+}
+
+/// <summary>
+/// Confirms which machine's log is to be erased.
+///
+/// A body on an otherwise id-only request, so the caller has to NAME the terminal it means. The UI
+/// asks for the same string; this is the server's own copy of the question, because an endpoint
+/// that destroys hardware state on nothing but a URL id is one mis-aimed request away from wiping
+/// the wrong machine.
+/// </summary>
+public class ClearMachineLogRequest
+{
+    public string? ConfirmSerial { get; set; }
+}
+
+/// <summary>
+/// The factory settings of a ZK-family terminal, in one place so the DTO defaults, the validator
+/// and the UI cannot drift apart. They are not policy — they are what the hardware ships with.
+/// </summary>
+public static class DevicePullDefaults
+{
+    /// <summary>The ZK standalone service port.</summary>
+    public const int Port = 4370;
+
+    /// <summary>No device-side password, which is how these terminals leave the factory.</summary>
+    public const int CommKey = 0;
 }
 
 /// <summary>

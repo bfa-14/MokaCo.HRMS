@@ -97,6 +97,34 @@ public class AttendanceController : ControllerBase
     }
 
     /// <summary>
+    /// RE-derives one day from all of its punches, under the punch-interpretation settings in force
+    /// right now.
+    ///
+    /// WHY THIS IS NOT /process WITH A DATE. That endpoint is incremental — it consumes only punches
+    /// it has not already consumed — so a day built yesterday under "trust the machine's In/Out
+    /// keys" stays exactly as it was when somebody switches to Alternate today. Nothing would
+    /// revisit it, and the new setting would appear simply not to work. This re-reads the day whole.
+    ///
+    /// The raw punches are NOT touched, here or by the procedure: they remain what the machine said,
+    /// and only the interpretation is rebuilt. A day a human has corrected is still left alone —
+    /// their decision outranks any amount of re-derivation.
+    ///
+    /// Same ATTENDANCE_MANAGE gate as /process, because both rewrite what people are recorded as
+    /// having worked.
+    /// </summary>
+    [HttpPost("reprocess")]
+    [HasPermission("ATTENDANCE_MANAGE")]
+    public async Task<IActionResult> Reprocess([FromQuery] DateTime? date)
+    {
+        if (date is null)
+            return BadRequest(new { error = "A date is required — re-processing rebuilds one day." });
+
+        var result = await _attendance.ReprocessDayAsync(date.Value);
+        await NotifyAttendanceAsync();
+        return Ok(result);
+    }
+
+    /// <summary>
     /// Writes records for people who were rostered but never punched at all. Run AFTER the processor:
     /// the processor only sees days that HAVE punches, so without this a fully-absent employee simply
     /// has no record, and payroll never learns they were missing.

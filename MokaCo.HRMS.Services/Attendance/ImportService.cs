@@ -33,6 +33,17 @@ public class ImportService : IImportService
     /// <summary>Every punch a terminal pushed itself.</summary>
     private const string DeviceSource = "Device";
 
+    /// <summary>
+    /// Every punch the SERVER went and fetched over TCP. Distinct from <see cref="DeviceSource"/> on
+    /// purpose: both came off the same hardware, but only one of them proves the terminal can reach
+    /// us, and when a machine is misbehaving that is the first thing anyone needs to know.
+    ///
+    /// It is NOT part of the dedup hash — the hash is (device, pin, time, type) and nothing else —
+    /// so the SAME punch arriving by push and by pull is still one punch. That is the property the
+    /// whole two-path design rests on.
+    /// </summary>
+    private const string PullSource = "Pull";
+
     /// <summary>Firmware is inconsistent about line endings, and about whether the last line has one.</summary>
     private static readonly string[] LineSeparators = { "\r\n", "\n", "\r" };
 
@@ -198,6 +209,17 @@ public class ImportService : IImportService
 
     public Task<ImportBatchDetail?> GetBatchAsync(int importBatchId) => _ingestion.GetBatchWithJsonAsync(importBatchId);
 
+    /// <summary>
+    /// Every punch on one day — the raw truth behind the attendance screens.
+    ///
+    /// A pass-through, and deliberately so: there is no rule to apply here. The processor's view of
+    /// a day is an interpretation (pairs, breaks, shortfalls); this is what the machines actually
+    /// said, and the moment this method starts filtering or reshaping, the two stop being
+    /// comparable and the screen loses the only thing it is for.
+    /// </summary>
+    public Task<IEnumerable<RawPunch>> GetPunchesByDateAsync(DateTime date, int? deviceId, bool unresolvedOnly)
+        => _ingestion.GetPunchesByDateAsync(date, deviceId, unresolvedOnly);
+
     public Task<IEnumerable<RawLog>> GetUnresolvedAsync(DateTime? fromDate, DateTime? toDate)
         => _ingestion.GetUnresolvedAsync(fromDate, toDate);
 
@@ -278,6 +300,64 @@ public class ImportService : IImportService
 
             var inserted = await _ingestion.InsertRawLogAsync(
                 deviceId, pin, punchTime, status, DeviceSource, hash, null);
+
+            if (inserted.WasDuplicate)
+            {
+                result.Duplicates++;
+                continue;
+            }
+
+            result.Inserted++;
+
+            if (inserted.WasUnresolved)
+                result.UnresolvedPins++;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Lands punches the SERVER read off a terminal over TCP (see ZkTecoClient).
+    ///
+    /// This is <see cref="PushAttlogAsync"/> with the parsing already done: the client hands over
+    /// structured punches instead of a text body, and from there the two paths are identical — same
+    /// dedup hash, same InsertRawLogAsync, same unresolved-PIN behaviour. That identity is the whole
+    /// design. Pull and push are two ways of MOVING a punch, not two kinds of punch, so a site that
+    /// runs both (or switches between them) cannot end up with a day counted twice.
+    ///
+    /// RE-READING IS THE NORMAL CASE, not an error. Nothing here ever clears the terminal's buffer —
+    /// deliberately, because clearing is destructive and unrecoverable if our write then fails — so
+    /// every cycle re-reads the machine's whole stored log and the dedup hash absorbs it. A steady
+    /// state of "1400 received, 0 inserted, 1400 duplicates" is the system working correctly.
+    ///
+    /// THE TIME IS THE TERMINAL'S OWN wall clock, stored unconverted, exactly as the push and Excel
+    /// paths store theirs. See TryParseAttlogLine for why converting only one path would move night
+    /// shifts onto the wrong day.
+    /// </summary>
+    public async Task<AttlogPushResult> LandPulledAsync(
+        int deviceId, IEnumerable<(string Pin, DateTime PunchTime, short PunchType)> punches)
+    {
+        var result = new AttlogPushResult();
+
+        foreach (var (pin, punchTime, punchType) in punches)
+        {
+            // The client already drops PIN-less records; this is the belt to that braces, because a
+            // blank PIN would land as an unresolvable orphan nobody can ever map to a person.
+            if (string.IsNullOrWhiteSpace(pin))
+                continue;
+
+            result.Received++;
+
+            // Same rule as the push path: 0=in and 1=out are what the processor understands, and a
+            // break or overtime key (2..5 on most firmware) is a REAL punch we keep with the
+            // terminal's own value rather than guessing a direction and inventing worked time.
+            if (punchType is not (0 or 1))
+                result.UnknownDirection++;
+
+            var hash = ComputeDedupHash(deviceId, pin, punchTime, punchType);
+
+            var inserted = await _ingestion.InsertRawLogAsync(
+                deviceId, pin, punchTime, punchType, PullSource, hash, null);
 
             if (inserted.WasDuplicate)
             {

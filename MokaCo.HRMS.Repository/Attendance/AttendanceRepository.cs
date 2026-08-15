@@ -31,6 +31,27 @@ public class AttendanceRepository : IAttendanceRepository
     }
 
     /// <summary>
+    /// RE-derives one day from ALL of its punches, rather than only the unconsumed ones.
+    ///
+    /// This is the companion to a settings change. <see cref="ProcessRawLogsAsync"/> is incremental
+    /// by design — it consumes what is outstanding — so a day already processed under one
+    /// interpretation is never revisited when that interpretation changes. Switching punch direction
+    /// to Alternate, or adjusting the debounce window, therefore means nothing to yesterday until
+    /// this is run against it.
+    ///
+    /// Manual and corrected rows stay untouched: a human's decision about a day outranks any amount
+    /// of re-derivation.
+    /// </summary>
+    public async Task<ProcessResult> ReprocessDayAsync(DateTime workDate)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleAsync<ProcessResult>(
+            "attendance.usp_Attendance_ReprocessDay",
+            new { WorkDate = workDate.Date },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    /// <summary>
     /// Writes records for people who were rostered but produced NO punches at all. The processor only
     /// sees days that have punches, so without this a fully-absent employee would have no record and
     /// payroll would never know they were missing. Run it AFTER the processor.

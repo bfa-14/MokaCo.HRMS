@@ -5,6 +5,14 @@ namespace MokaCo.HRMS.Services.Attendance;
 public interface IAttendanceService
 {
     Task<ProcessResult> ProcessAsync(DateTime? workDate);
+
+    /// <summary>
+    /// Re-derives ONE day under the current punch-interpretation settings. The ordinary processor
+    /// is incremental, so a day already built is never revisited when the rules for reading its
+    /// punches change — this is what makes such a change reach yesterday.
+    /// </summary>
+    Task<ProcessResult> ReprocessDayAsync(DateTime workDate);
+
     Task<MarkAbsenteesResult> MarkAbsenteesAsync(DateTime workDate);
     Task<MarkLeaveDaysResult> MarkLeaveDaysAsync(string periodYearMonth);
 

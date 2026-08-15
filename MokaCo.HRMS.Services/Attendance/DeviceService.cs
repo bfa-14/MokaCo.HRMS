@@ -24,10 +24,24 @@ public class DeviceService : IDeviceService
     public Task<Device?> GetBySerialAsync(string serialNumber) => _repo.GetBySerialAsync(serialNumber);
 
     public Task<int> CreateAsync(DeviceCreateRequest request)
-        => _repo.CreateAsync(request.SerialNumber, request.Name, request.BranchId, request.DepartmentId);
+        => _repo.CreateAsync(request.SerialNumber, request.Name, request.BranchId, request.DepartmentId,
+            NormaliseIp(request.PullIp), request.PullPort, request.PullCommKey, request.PullEnabled);
 
     public Task UpdateAsync(int deviceId, DeviceUpdateRequest request)
-        => _repo.UpdateAsync(deviceId, request.SerialNumber, request.Name, request.BranchId, request.DepartmentId, request.IsActive);
+        => _repo.UpdateAsync(deviceId, request.SerialNumber, request.Name, request.BranchId, request.DepartmentId, request.IsActive,
+            NormaliseIp(request.PullIp), request.PullPort, request.PullCommKey, request.PullEnabled);
+
+    public Task<IEnumerable<PullTarget>> GetPullTargetsAsync() => _repo.GetPullTargetsAsync();
+
+    public Task TouchPullAsync(int deviceId, string? error) => _repo.TouchPullAsync(deviceId, error);
+
+    /// <summary>
+    /// Blank and whitespace both mean "no address", and the proc's worklist filters on IS NULL — so a
+    /// field the user cleared has to arrive as null, not as "". Without this a cleared box would leave
+    /// the machine on the worklist forever, failing every cycle against an empty host.
+    /// </summary>
+    private static string? NormaliseIp(string? ip)
+        => string.IsNullOrWhiteSpace(ip) ? null : ip.Trim();
 
     public Task<IEnumerable<EmployeeDevice>> GetEnrollmentsAsync() => _repo.GetEnrollmentsAsync();
 

@@ -33,6 +33,15 @@ public class AttendanceService : IAttendanceService
     /// </summary>
     public Task<ProcessResult> ProcessAsync(DateTime? workDate) => _repo.ProcessRawLogsAsync(workDate);
 
+    /// <summary>
+    /// Re-derives one day under the CURRENT punch-interpretation settings.
+    ///
+    /// It exists because <see cref="ProcessAsync"/> is incremental: it consumes only punches it has
+    /// not seen, so changing how punches are READ — the direction mode, the debounce window — means
+    /// nothing to the days already built under the old reading. This is how yesterday catches up.
+    /// </summary>
+    public Task<ProcessResult> ReprocessDayAsync(DateTime workDate) => _repo.ReprocessDayAsync(workDate);
+
     /// <summary>Run AFTER the processor: it writes the records for people who were rostered but never punched at all.</summary>
     public Task<MarkAbsenteesResult> MarkAbsenteesAsync(DateTime workDate) => _repo.MarkAbsenteesAsync(workDate);
 

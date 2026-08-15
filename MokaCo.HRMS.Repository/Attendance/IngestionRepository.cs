@@ -104,6 +104,23 @@ public class IngestionRepository : IIngestionRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    /// <summary>
+    /// Every punch recorded on one DAY, resolved to people, machines and branches for reading.
+    ///
+    /// Scoped to a single date by design rather than taking a range: this backs a screen somebody
+    /// opens to ask "did today's punches arrive", and an unbounded range over a table that grows by
+    /// every punch of every employee forever is a page that works in testing and times out in year
+    /// two. That is also why the date has no default.
+    /// </summary>
+    public async Task<IEnumerable<RawPunch>> GetPunchesByDateAsync(DateTime date, int? deviceId, bool unresolvedOnly)
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<RawPunch>(
+            "attendance.usp_RawLog_GetByDate",
+            new { Date = date.Date, DeviceId = deviceId, UnresolvedOnly = unresolvedOnly },
+            commandType: CommandType.StoredProcedure);
+    }
+
     /// <summary>The raw punches behind one employee-day — what the machine ACTUALLY said, before any processing.</summary>
     public async Task<IEnumerable<RawLog>> GetByEmployeeDayAsync(int employeeId, DateTime workDate)
     {
