@@ -28,6 +28,12 @@ public interface IPayrollService
 
     // --- payslips, read from the other side ---
     Task<IEnumerable<MyPayslip>> GetMyPayslipsAsync(int userId);
+
+    /// <summary>
+    /// The caller's salary standing for the current period — null when the month has not been
+    /// generated, which is an answer rather than a failure.
+    /// </summary>
+    Task<MyPayslipStatus?> GetMyStatusAsync(int userId);
     Task<IEnumerable<EmployeePayslip>> GetPayslipsForEmployeeAsync(int employeeId);
     Task<PayslipLineLookup?> LookupLineAsync(string sourceType, int sourceId);
 

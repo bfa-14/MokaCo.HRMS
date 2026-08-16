@@ -29,7 +29,7 @@ public class BranchesController : ControllerBase
     public async Task<IActionResult> GetAll() => Ok(await _branches.GetAllAsync());
 
     [HttpPost]
-    [HasPermission("EMP_EDIT")]
+    [HasPermission("ORG_MANAGE")]
     public async Task<IActionResult> Create([FromBody] BranchCreateRequest request)
     {
         var id = await _branches.CreateAsync(request.Name);
@@ -38,7 +38,7 @@ public class BranchesController : ControllerBase
     }
 
     [HttpPut("{id:int}")]
-    [HasPermission("EMP_EDIT")]
+    [HasPermission("ORG_MANAGE")]
     public async Task<IActionResult> Update(int id, [FromBody] BranchUpdateRequest request)
     {
         await _branches.UpdateAsync(id, request.Name, request.IsActive);

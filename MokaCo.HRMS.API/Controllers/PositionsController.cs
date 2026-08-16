@@ -23,7 +23,7 @@ public class PositionsController : ControllerBase
     public async Task<IActionResult> GetAll() => Ok(await _positions.GetAllAsync());
 
     [HttpPost]
-    [HasPermission("EMP_EDIT")]
+    [HasPermission("ORG_MANAGE")]
     public async Task<IActionResult> Create([FromBody] PositionCreateRequest request)
     {
         var id = await _positions.CreateAsync(request.Title);
@@ -32,7 +32,7 @@ public class PositionsController : ControllerBase
     }
 
     [HttpPut("{id:int}")]
-    [HasPermission("EMP_EDIT")]
+    [HasPermission("ORG_MANAGE")]
     public async Task<IActionResult> Update(int id, [FromBody] PositionUpdateRequest request)
     {
         await _positions.UpdateAsync(id, request.Title, request.IsActive);

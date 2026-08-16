@@ -40,6 +40,36 @@ public class PayslipsController : ControllerBase
     }
 
     /// <summary>
+    /// "WHERE IS MY SALARY THIS MONTH" — one row, or null.
+    ///
+    /// AUTHENTICATION ONLY, NO PAYROLL PERMISSION, for the same reason as /api/me/payslips:
+    /// everybody is paid, so everybody must be able to ask. The scoping is not a permission but the
+    /// procedure, which resolves the employee from the TOKEN's user id — there is no id in the URL,
+    /// so there is nothing to change in order to ask about somebody else.
+    ///
+    /// NULL IS A REAL ANSWER. No row means the month has not been generated, and the card that
+    /// reads this says "not prepared yet" — it is not a 404, because the caller and the question are
+    /// both perfectly valid.
+    ///
+    /// Absolute route: this is self-service, not part of the /api/payroll/payslips management
+    /// surface this controller otherwise serves.
+    /// </summary>
+    [HttpGet("/api/payslips/my-status")]
+    public async Task<IActionResult> MyStatus()
+        => Ok(await _payroll.GetMyStatusAsync(User.UserId()));
+
+    /// <summary>
+    /// The caller's own payslips.
+    ///
+    /// The SAME list as GET /api/me/payslips, over the same procedure and the same model — this is
+    /// an alias at the address the salary screens ask for, not a second implementation. Approved
+    /// runs only, and an account not linked to an employee gets an empty list.
+    /// </summary>
+    [HttpGet("/api/payslips/mine")]
+    public async Task<IActionResult> Mine()
+        => Ok(await _payroll.GetMyPayslipsAsync(User.UserId()));
+
+    /// <summary>
     /// One payslip and its lines.
     ///
     /// The payslip is fetched BEFORE the ownership decision because the decision needs it: whose it

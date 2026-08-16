@@ -17,3 +17,19 @@ public class ExchangeRateCreateRequest
     public DateTime EffectiveDate { get; set; }
     public decimal Rate { get; set; }
 }
+
+/// <summary>
+/// PUT /api/exchange-rates/{id}.
+///
+/// THE PAIR AND THE TYPE ARE NOT EDITABLE. A rate row IS the answer to "what was Official USD→LBP
+/// on this date"; letting the pair or the type move would not correct the row, it would silently
+/// reassign it to a different question and leave the original unanswered. Only the figure and the
+/// date it takes effect can change — anything else is a new row.
+///
+/// EffectiveDate null means "leave the date as it is", which is the common edit: a rate mistyped.
+/// </summary>
+public class ExchangeRateUpdateRequest
+{
+    public decimal Rate { get; set; }
+    public DateTime? EffectiveDate { get; set; }
+}

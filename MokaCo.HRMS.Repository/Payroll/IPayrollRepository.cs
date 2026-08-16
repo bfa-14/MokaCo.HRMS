@@ -65,6 +65,13 @@ public interface IPayrollRepository
         int payslipId, string paymentMethod, string? paymentReference, int actedByUserId);
 
     /// <summary>
+    /// The caller's own salary standing for the current period — one row, or null when the month
+    /// has not been generated. Keyed by USER, not employee: the procedure resolves the link itself,
+    /// so a caller cannot ask about somebody else by changing a number.
+    /// </summary>
+    Task<MyPayslipStatus?> GetMyStatusAsync(int userId);
+
+    /// <summary>
     /// The statutory sheet for a run — per employee, in the run's PRIMARY currency because a
     /// contribution base is one legal figure rather than a pair.
     /// </summary>

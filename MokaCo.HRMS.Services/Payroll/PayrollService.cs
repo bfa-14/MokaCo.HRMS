@@ -110,6 +110,9 @@ public class PayrollService : IPayrollService
     public Task<IEnumerable<MyPayslip>> GetMyPayslipsAsync(int userId)
         => _repo.GetMyPayslipsAsync(userId);
 
+    public Task<MyPayslipStatus?> GetMyStatusAsync(int userId)
+        => _repo.GetMyStatusAsync(userId);
+
     public Task<IEnumerable<EmployeePayslip>> GetPayslipsForEmployeeAsync(int employeeId)
         => _repo.GetPayslipsForEmployeeAsync(employeeId);
 

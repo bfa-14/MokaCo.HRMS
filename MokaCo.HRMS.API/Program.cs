@@ -67,6 +67,8 @@ builder.Services.AddScoped<ISalaryComponentRepository, SalaryComponentRepository
 builder.Services.AddScoped<IDocumentRepository, DocumentRepository>();
 builder.Services.AddScoped<ILeaveLedgerRepository, LeaveLedgerRepository>();
 builder.Services.AddScoped<ILeaveAccrualRepository, LeaveAccrualRepository>();
+builder.Services.AddScoped<IPayrollTierRepository, PayrollTierRepository>();
+builder.Services.AddScoped<IApprovalTierRepository, ApprovalTierRepository>();
 
 // --- DI: repositories (Attendance) ---
 builder.Services.AddScoped<ISettingRepository, SettingRepository>();
@@ -124,6 +126,8 @@ builder.Services.AddScoped<ISalaryComponentService, SalaryComponentService>();
 builder.Services.AddScoped<IDocumentService, DocumentService>();
 builder.Services.AddScoped<ILeaveLedgerService, LeaveLedgerService>();
 builder.Services.AddScoped<ILeaveAccrualService, LeaveAccrualService>();
+builder.Services.AddScoped<IPayrollTierService, PayrollTierService>();
+builder.Services.AddScoped<IApprovalTierService, ApprovalTierService>();
 
 // --- DI: services (Attendance) ---
 builder.Services.AddScoped<ISettingService, SettingService>();

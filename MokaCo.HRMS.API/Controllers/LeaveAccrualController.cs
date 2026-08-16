@@ -26,7 +26,7 @@ public class LeaveAccrualController : ControllerBase
     /// scheduled run — safe to call repeatedly because the run is idempotent.
     /// </summary>
     [HttpPost("run")]
-    [HasPermission("EMP_EDIT")]
+    [HasPermission("LEAVE_POLICY_MANAGE")]
     public async Task<IActionResult> Run([FromQuery] int year, [FromQuery] int month)
     {
         if (year < 2000 || year > 2100)

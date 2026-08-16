@@ -278,6 +278,22 @@ WHERE l.PayslipId = @PayslipId AND l.SourceId IS NOT NULL AND x.RequestInstanceI
             commandType: CommandType.StoredProcedure);
     }
 
+    // ────────────────────────── the caller's own salary ──────────────────────────
+    // KEYED BY USER ID, WHICH THE PROCEDURE RESOLVES TO AN EMPLOYEE ITSELF. No employee id crosses
+    // the wire, so there is no parameter for a caller to change in order to read somebody else's
+    // pay — the question these two answer is only ever "mine".
+
+    public async Task<MyPayslipStatus?> GetMyStatusAsync(int userId)
+    {
+        using var db = _factory.Create();
+        // QuerySingleOrDefault, not Single: no row is the ordinary answer before the month is
+        // generated, and the controller turns it into null rather than an error.
+        return await db.QuerySingleOrDefaultAsync<MyPayslipStatus>(
+            "payroll.usp_Payslip_GetMyStatus",
+            new { UserId = userId },
+            commandType: CommandType.StoredProcedure);
+    }
+
     // ─────────────────────────────── advances ───────────────────────────────
 
     public async Task<IEnumerable<SalaryAdvance>> GetAdvancesAsync(int? employeeId, bool openOnly)
