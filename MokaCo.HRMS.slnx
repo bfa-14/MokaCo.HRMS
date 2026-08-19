@@ -3,4 +3,7 @@
   <Project Path="MokaCo.HRMS.Model/MokaCo.HRMS.Model.csproj" Id="02c96c0b-54bd-4b38-a568-0b9a1a87ac3e" />
   <Project Path="MokaCo.HRMS.Repository/MokaCo.HRMS.Repository.csproj" Id="fcecc1cf-a31e-4fd5-8eb2-b21ebca6d6da" />
   <Project Path="MokaCo.HRMS.Services/MokaCo.HRMS.Services.csproj" Id="8665ac18-67c0-43bf-841e-041bf3f5d20a" />
+  <Project Path="MokaCo.HRMS.Tests/MokaCo.HRMS.Tests.csproj">
+    <Build Solution="Debug|*" Project="false" />
+  </Project>
 </Solution>
