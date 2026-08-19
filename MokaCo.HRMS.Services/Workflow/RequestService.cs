@@ -49,8 +49,16 @@ public class RequestService : IRequestService
     /// <summary>
     /// The password check itself, given an already-decided requirement. Split out because a WITHDRAWAL
     /// asks a different question from a decision — see WithdrawExitPermissionDecisionAsync.
+    ///
+    /// <paramref name="failureStatus"/> IS THE STATUS A BAD PASSWORD EARNS, and it is a parameter
+    /// because 401 means two different things to a browser client. On a signature it has always
+    /// meant "that password is wrong"; but a client cannot tell that apart from "your session
+    /// expired", and treating one as the other logs a working user out mid-signature. The
+    /// WITHDRAWAL path therefore passes 400 — a wrong password is a bad request, not an unauthorised
+    /// session — leaving 401 to mean only what the token layer means by it.
     /// </summary>
-    private async Task<bool> VerifyPasswordAsync(int userId, string? password, bool required, string demand)
+    private async Task<bool> VerifyPasswordAsync(
+        int userId, string? password, bool required, string demand, int failureStatus = 401)
     {
         if (!required)
         {
@@ -60,11 +68,11 @@ public class RequestService : IRequestService
         }
 
         if (string.IsNullOrEmpty(password))
-            throw new WorkflowException(401, demand);
+            throw new WorkflowException(failureStatus, demand);
 
         var user = await _users.GetByIdAsync(userId);
         if (user is null || !_hasher.Verify(password, user.PasswordHash))
-            throw new WorkflowException(401, "That password is not correct.");
+            throw new WorkflowException(failureStatus, "That password is not correct.");
 
         return true;
     }
@@ -435,6 +443,19 @@ public class RequestService : IRequestService
     }
 
     /// <summary>
+    /// Hands the current step to its deputy role, or takes it back.
+    ///
+    /// Nothing is checked here. WHO may delegate is the narrowest authorisation in the engine —
+    /// the step's own main approver, and nobody else, not even the deputy — and the procedure
+    /// applies it against the same tables fn_CanUserActOnStep reads. Its refusals name the person
+    /// who WOULD be allowed, so they travel to the caller untouched.
+    /// </summary>
+    public Task<DeputyDelegationResult?> DelegateStepToDeputyAsync(
+        int requestInstanceId, int stepNo, int actedByUserId, bool undo)
+        => WorkflowSqlErrors.MapAsync(
+            () => _repo.DelegateStepToDeputyAsync(requestInstanceId, stepNo, actedByUserId, undo));
+
+    /// <summary>
     /// THE WITHDRAWAL'S OWN SIGNATURE QUESTION, read from the STEP — not the request's
     /// SignatureRequired. They differ: a decision signed with a password must be signed to undo, even
     /// where the caller's role would no longer demand one for a fresh decision. Reading the wrong flag
@@ -452,7 +473,11 @@ public class RequestService : IRequestService
             actedByUserId,
             password,
             target?.WithdrawNeedsSignature ?? false,
-            "Undoing a signed decision must itself be signed with your password.");
+            "Undoing a signed decision must itself be signed with your password.",
+            // 400, NOT 401. A wrong password here is a bad request; 401 is reserved for a session
+            // the token layer has rejected, and the client logs out on that. Sending 401 for a
+            // typo would sign the user out of a session that was working perfectly.
+            failureStatus: 400);
     }
 
     public Task<ApproveResult?> ReopenClosedAsync(int requestInstanceId, int actedByUserId, string reason)

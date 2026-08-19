@@ -416,22 +416,66 @@ public class RequestsController : ControllerBase
         }
     }
 
+    /* WITHDRAWAL IS OPEN TO EVERY REQUEST TYPE.
+       It used to be an allow-list of the five types that stamp no figure at decision time, because
+       the generic procedure cleared the step's ValueBefore without restoring the payload — so
+       withdrawing an ApprovedWithChanges left the changed figure standing as though the next
+       approver had chosen it (FIX_PROMPTS F10). The list is gone: every type now routes to a
+       withdrawal, and workflow.usp_Request_WithdrawDecision is the authority on whether the undo is
+       possible at all. EXIT_PERMISSION still takes its own wrapper below, which additionally puts
+       ApprovedMinutes back. */
+
     /// <summary>
-    /// THE TYPES THE ENGINE MAY SAFELY UNSIGN.
+    /// Hands the CURRENT step to its deputy role, so whoever holds that role may sign in the main
+    /// approver's place.
     ///
-    /// None of these stamps a figure on its payload when it is decided, so handing the step back is
-    /// the whole of the undo. The figure-stamping types (leave, expense, overtime, salary advance,
-    /// payroll adjustment) are deliberately absent: the generic procedure clears the step's ValueBefore
-    /// without restoring the payload, so withdrawing an ApprovedWithChanges would leave the changed
-    /// figure standing as though the next approver had chosen it. They stay refused until each typed
-    /// _Decide snapshots its own figure (FIX_PROMPTS F10).
+    /// NO PERMISSION ATTRIBUTE, deliberately, and for the same reason withdraw-decision carries
+    /// none: whether this caller may delegate is the PROCEDURE's decision, and it is the narrowest
+    /// one in the engine — only the step's own main approver, only while this is the step actually
+    /// waiting, only where a deputy role with an active member is configured. A permission check
+    /// here could 403 the single person entitled to act.
     ///
-    /// EXIT_PERMISSION is not here either — it has its own wrapper that restores ApprovedMinutes.
+    /// NOT THE PERSON-TO-PERSON DELEGATION on the same step. That one names a user; this one opens
+    /// the step to a ROLE — and the deputy can often already act without it, because an absent main
+    /// approver is enough on its own. Delegating is the approver choosing to stand down.
     /// </summary>
-    private static readonly HashSet<string> EngineWithdrawable = new(StringComparer.OrdinalIgnoreCase)
+    [HttpPost("{id:int}/steps/{stepNo:int}/delegate-deputy")]
+    public Task<IActionResult> DelegateToDeputy(int id, int stepNo)
+        => DeputyDelegationAsync(id, stepNo, undo: false);
+
+    /// <summary>
+    /// Takes the step back from the deputy.
+    ///
+    /// NOT a withdrawal, and asks for no password: nothing was decided, only offered. If the deputy
+    /// has already signed, this is not the way back — the step is no longer waiting and the
+    /// procedure refuses; taking back a DECISION is withdraw-decision, which does ask for one.
+    /// </summary>
+    [HttpDelete("{id:int}/steps/{stepNo:int}/delegate-deputy")]
+    public Task<IActionResult> ReclaimFromDeputy(int id, int stepNo)
+        => DeputyDelegationAsync(id, stepNo, undo: true);
+
+    /// <summary>
+    /// Both directions of the one act, so the two routes cannot drift into handling the same
+    /// refusals differently.
+    /// </summary>
+    private async Task<IActionResult> DeputyDelegationAsync(int id, int stepNo, bool undo)
     {
-        "AVAILABILITY_CHANGE", "ONBOARDING", "SHIFT_SWAP", "TIP_DISTRIBUTION", "SEPARATION",
-    };
+        try
+        {
+            var result = await _requests.DelegateStepToDeputyAsync(id, stepNo, User.UserId(), undo);
+            if (result is null)
+                return NotFound();
+
+            // The step changes hands: it appears in, or disappears from, the deputy role's inbox.
+            await NotifyWorkflowAsync();
+            return Ok(result);
+        }
+        catch (WorkflowException ex)
+        {
+            // Verbatim: "Only the step's approver can delegate it to the deputy."
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
 
     /// <summary>
     /// Takes back a decision the caller made on a step, while the request is still open and nobody has
@@ -439,12 +483,21 @@ public class RequestsController : ControllerBase
     /// the same as approve/reject; its refusal comes back as a clean status, message intact. The reason
     /// is required.
     ///
-    /// Exit permissions go through their own procedure, which also puts the minutes back. The types
-    /// that stamp no figure go through the engine's own withdrawal. Everything else is still refused —
-    /// see EngineWithdrawable for why.
+    /// EVERY REQUEST TYPE may be withdrawn. Exit permissions go through their own procedure, which
+    /// also puts the minutes back; everything else goes through the engine's own withdrawal.
+    ///
+    /// THE PASSWORD IS VERIFIED BEFORE ANYTHING IS WRITTEN, and @SignedWithPassword carries the
+    /// RESULT of that check — never the client's claim — exactly as approve does. The question asked
+    /// is the STEP's WithdrawNeedsSignature, not the request's: a decision signed with a password
+    /// must be signed to undo, even where a fresh decision would no longer need one.
+    ///
+    /// NO PERMISSION ATTRIBUTE, deliberately. [Authorize] is the whole gate: whether this caller may
+    /// take this step back is the PROCEDURE's decision (their own decision, request still open,
+    /// nobody later has acted), and a permission check here could 403 a legitimate approver for
+    /// holding the wrong code — refusing the one person entitled to act.
     /// </summary>
-    [HttpPost("{id:int}/steps/{stepNo:int}/withdraw")]
-    public async Task<IActionResult> Withdraw(int id, int stepNo, [FromBody] ReasonRequest request)
+    [HttpPost("{id:int}/steps/{stepNo:int}/withdraw-decision")]
+    public async Task<IActionResult> WithdrawDecision(int id, int stepNo, [FromBody] ReasonRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Reason))
             return BadRequest(new { error = "A reason is required to withdraw a decision." });
@@ -462,17 +515,14 @@ public class RequestsController : ControllerBase
 
             var typeCode = detail.Header.RequestTypeCode;
 
-            object? result;
-            if (typeCode == "EXIT_PERMISSION")
-                // The typed wrapper: it also puts ApprovedMinutes back to what it was before the
-                // withdrawn decision changed it.
-                result = await _requests.WithdrawExitPermissionDecisionAsync(
+            // The only branch left: exit permissions take the typed wrapper, which also puts
+            // ApprovedMinutes back to what it was before the withdrawn decision changed it.
+            // Everything else — including the figure-stamping types — takes the engine's own.
+            object? result = typeCode == "EXIT_PERMISSION"
+                ? await _requests.WithdrawExitPermissionDecisionAsync(
+                    id, stepNo, User.UserId(), request.Reason.Trim(), request.Password)
+                : await _requests.WithdrawDecisionAsync(
                     id, stepNo, User.UserId(), request.Reason.Trim(), request.Password);
-            else if (EngineWithdrawable.Contains(typeCode))
-                result = await _requests.WithdrawDecisionAsync(
-                    id, stepNo, User.UserId(), request.Reason.Trim(), request.Password);
-            else
-                return BadRequest(new { error = "Withdrawing is not supported for this request type yet." });
 
             // Withdrawing hands the step back — it reappears in an inbox as work to redo.
             await NotifyWorkflowAsync();

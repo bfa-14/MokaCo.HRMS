@@ -27,6 +27,22 @@ public class Setting
     /// <summary>What this setting controls, in words. This IS the label the user reads, so it is not optional in practice.</summary>
     public string? Description { get; set; }
 
+    /// <summary>
+    /// Which band of the Settings page this belongs to — "Attendance", "Payroll", "Notifications".
+    ///
+    /// THE GROUPING LIVES IN THE DATABASE, which is the whole point of it: a new feature adds its
+    /// keys with a Section and they arrive on screen under their own heading, with no frontend
+    /// change. usp_Setting_GetAll orders by it, and usp_Setting_Upsert deliberately does not touch
+    /// it — saving a value must never move the setting somewhere else on the page.
+    ///
+    /// Null for a key inserted through the plain upsert path, which is how an unfiled setting still
+    /// renders rather than disappearing.
+    /// </summary>
+    public string? Section { get; set; }
+
+    /// <summary>Where it sits within its section. The reading order somebody would set these in — host before port before password.</summary>
+    public int? SortOrder { get; set; }
+
     public DateTime? ModifiedAt { get; set; }
     public int? ModifiedBy { get; set; }
 }

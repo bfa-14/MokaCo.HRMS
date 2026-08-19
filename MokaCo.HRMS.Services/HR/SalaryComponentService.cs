@@ -13,17 +13,35 @@ public class SalaryComponentService : ISalaryComponentService
     public Task<IEnumerable<SalaryComponent>> GetByEmployeeAsync(int employeeId)
         => _repo.GetByEmployeeAsync(employeeId);
 
+    /* THESE THREE ARE MAPPED, and it is not decoration. A DB TRIGGER on hr.SALARY_COMPONENT
+       refuses a BASIC outside the employee's tier band, with a sentence naming the band. Unmapped,
+       that arrived as an unhandled SqlException — a 500, and a screen saying "Something went wrong"
+       about a rule the user could have satisfied. Mapping turns it into a 400 carrying the
+       trigger's own words, which is the only version of the refusal worth showing.
+
+       Delete is mapped too: it is the same table and the same class of guard, and a 500 from one of
+       three sibling writes is exactly the inconsistency nobody finds until it happens. */
+
     public Task<int> CreateAsync(SalaryComponentCreateRequest request)
-        => _repo.CreateAsync(
+        => WorkflowSqlErrors.MapAsync(() => _repo.CreateAsync(
             request.EmployeeId, request.ComponentTypeId, request.Amount,
-            request.CurrencyCode, request.EffectiveFrom, request.EffectiveTo);
+            request.CurrencyCode, request.EffectiveFrom, request.EffectiveTo));
 
     public Task UpdateAsync(int salaryComponentId, SalaryComponentUpdateRequest request)
-        => _repo.UpdateAsync(
-            salaryComponentId, request.Amount, request.CurrencyCode,
-            request.EffectiveFrom, request.EffectiveTo);
+        => WorkflowSqlErrors.MapAsync(async () =>
+        {
+            await _repo.UpdateAsync(
+                salaryComponentId, request.Amount, request.CurrencyCode,
+                request.EffectiveFrom, request.EffectiveTo);
+            return true;
+        });
 
-    public Task DeleteAsync(int salaryComponentId) => _repo.DeleteAsync(salaryComponentId);
+    public Task DeleteAsync(int salaryComponentId)
+        => WorkflowSqlErrors.MapAsync(async () =>
+        {
+            await _repo.DeleteAsync(salaryComponentId);
+            return true;
+        });
 
     // ── salary administration ────────────────────────────────────────────────
     //

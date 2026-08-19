@@ -44,6 +44,17 @@ public class MachinePullWorker : BackgroundService
     /// </summary>
     private bool _warnedAboutAutoProcess;
 
+    /// <summary>
+    /// The (enabled, interval) pair the log last reported, so the configuration is announced when it
+    /// CHANGES rather than restated every cycle.
+    ///
+    /// Null until the first read, which is what makes the first cycle always announce itself. The
+    /// alternative — a line per cycle — is 1,440 identical lines a day at the one-minute interval this
+    /// deployment uses, and a log nobody can read is the same as no log, which is the problem being
+    /// fixed here in the first place.
+    /// </summary>
+    private (bool Enabled, int Minutes)? _lastLoggedConfig;
+
     public MachinePullWorker(IServiceScopeFactory scopes, ILogger<MachinePullWorker> logger)
     {
         _scopes = scopes;
@@ -52,6 +63,18 @@ public class MachinePullWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // THE FIRST LINE IN THE LOG, and it exists because its absence was the whole problem. This
+        // worker was silent in every state where it decides NOT to pull, so a worker running
+        // perfectly and a worker that had never been constructed produced identical evidence: none.
+        // Logged BEFORE the startup delay and before any database call, so it appears even when the
+        // settings are unreadable — "it is alive" and "it is configured" are separate facts and this
+        // is the first of them.
+        _logger.LogInformation(
+            "Machine pull worker started. First cycle in {DelaySeconds}s. MachinePullEnabled and " +
+            "MachinePullMinutes are re-read before EVERY cycle, so changing them on the Settings page " +
+            "takes effect without restarting the API.",
+            (int)StartupDelay.TotalSeconds);
+
         try
         {
             await Task.Delay(StartupDelay, stoppingToken);
@@ -66,6 +89,10 @@ public class MachinePullWorker : BackgroundService
             // Re-read EVERY cycle rather than caching: the whole point of putting these on the
             // Settings page is that changing them takes effect without a restart.
             var (enabled, minutes, autoProcess) = await ReadSettingsAsync(stoppingToken);
+
+            // Says, in the log, what this cycle is about to do and why — including the case where the
+            // answer is "nothing", which is the one that used to leave no trace at all.
+            LogConfigurationChange(enabled, minutes);
 
             if (enabled)
             {
@@ -82,7 +109,10 @@ public class MachinePullWorker : BackgroundService
                     // The backstop. Anything that escapes the per-device handling is logged and the
                     // loop continues — a worker that dies here would stop pulling silently, and the
                     // only symptom would be attendance quietly going stale.
-                    _logger.LogError(ex, "Machine pull cycle failed outright. The loop continues; the next cycle is in {Minutes} minute(s).", minutes);
+                    _logger.LogError(ex,
+                        "Machine pull cycle failed outright. The worker CONTINUES and will try again " +
+                        "in {Minutes} minute(s).",
+                        minutes);
                 }
             }
 
@@ -94,6 +124,36 @@ public class MachinePullWorker : BackgroundService
             {
                 return;
             }
+        }
+    }
+
+    /// <summary>
+    /// Announces the switch and the interval whenever either changes — and on the first cycle.
+    ///
+    /// THE OFF CASE IS A WARNING, deliberately. "It never pulls" is almost always this setting, and
+    /// it is the one state where the worker does its job perfectly by doing nothing at all. A line
+    /// at Information would sit unread among the request logs; at Warning it is what somebody finds
+    /// when they go looking for why attendance stopped moving.
+    /// </summary>
+    private void LogConfigurationChange(bool enabled, int minutes)
+    {
+        if (_lastLoggedConfig is { } last && last.Enabled == enabled && last.Minutes == minutes)
+            return;
+
+        _lastLoggedConfig = (enabled, minutes);
+
+        if (enabled)
+        {
+            _logger.LogInformation(
+                "Machine pull is ON, interval {Minutes} minute(s).", minutes);
+        }
+        else
+        {
+            _logger.LogWarning(
+                "Machine pull is OFF (setting MachinePullEnabled), so no machine will be read. The " +
+                "setting is re-read every {Minutes} minute(s); this line is logged again the moment " +
+                "it changes.",
+                minutes);
         }
     }
 
@@ -111,10 +171,20 @@ public class MachinePullWorker : BackgroundService
         var pull = scope.ServiceProvider.GetRequiredService<IMachinePullService>();
         var live = scope.ServiceProvider.GetRequiredService<ILiveNotifier>();
 
+        // RE-READ EVERY CYCLE, like the settings and for the same reason: a machine plugged in, or
+        // switched on for pulling, this afternoon must be read this afternoon. Nothing here is cached
+        // across cycles, and the fresh scope above is what keeps the connection short-lived too.
         var targets = (await pull.GetTargetsAsync()).ToList();
 
         if (targets.Count == 0)
+        {
+            // The other silence that looked exactly like a dead worker. The three criteria are spelled
+            // out because they are precisely the three boxes to go and look at on the Devices page.
+            _logger.LogWarning(
+                "Machine pull found NO machines to read. A machine is on the worklist only when it is " +
+                "active, has pulling switched on, and has an IP address recorded.");
             return;
+        }
 
         var landed = 0;
         var duplicates = 0;
@@ -147,6 +217,15 @@ public class MachinePullWorker : BackgroundService
             landed += result.Inserted;
             duplicates += result.Duplicates;
             unresolved += result.UnresolvedPins;
+
+            // WHICH TERMINAL PRODUCED WHAT — the one thing the cycle summary below cannot tell you.
+            // Logged even when it pulled nothing, because "reached it and it was empty" and "never
+            // reached it" are different answers, and only one of them needs somebody to go and look.
+            _logger.LogInformation(
+                "Machine pull — {Machine} ({Ip}): pulled {Inserted} new punch(es) of {Received} read " +
+                "({Duplicates} already known, {Unresolved} on unmapped PIN(s)).",
+                target.Label, target.PullIp, result.Inserted, result.Received,
+                result.Duplicates, result.UnresolvedPins);
         }
 
         _logger.LogInformation(

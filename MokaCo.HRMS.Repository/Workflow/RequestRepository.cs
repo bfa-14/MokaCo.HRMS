@@ -439,6 +439,22 @@ ORDER BY ri.RequestInstanceId;";
     /// time; for the others the figure would be left at the withdrawn value (see FIX_PROMPTS F10),
     /// which is why the controller routes by type rather than sending everything here.
     /// </summary>
+    public async Task<DeputyDelegationResult?> DelegateStepToDeputyAsync(
+        int requestInstanceId, int stepNo, int actedByUserId, bool undo)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<DeputyDelegationResult>(
+            "workflow.usp_Step_DelegateToDeputy",
+            new
+            {
+                RequestInstanceId = requestInstanceId,
+                StepNo = stepNo,
+                ActedByUserId = actedByUserId,
+                Undo = undo,
+            },
+            commandType: CommandType.StoredProcedure);
+    }
+
     public async Task<ApproveResult?> WithdrawDecisionAsync(int requestInstanceId, int stepNo, int actedByUserId, string reason, bool signedWithPassword = false)
     {
         using var db = _factory.Create();

@@ -34,4 +34,13 @@ public interface IAttendanceRepository
     Task<AttendanceSummary?> GetMonthlySummaryAsync(int employeeId, string periodYearMonth);
     Task<IEnumerable<AttendanceSummary>> GetMonthlySummaryAllAsync(string periodYearMonth);
     Task<IEnumerable<AttendanceBranchSummary>> GetMonthlyByBranchAsync(string periodYearMonth, int? employeeId);
+
+    /* -- roster sign-off -- */
+
+    /// <summary>
+    /// Where one branch-month of roster has got to. NULL when no row exists yet, which is the
+    /// ordinary state of a month nobody has put up for approval — not an error, and not a "Draft"
+    /// this layer should invent on the procedure's behalf.
+    /// </summary>
+    Task<RosterMonthStatus?> GetRosterMonthAsync(int branchId, DateTime monthDate);
 }

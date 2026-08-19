@@ -331,6 +331,25 @@ WHERE l.PayslipId = @PayslipId AND l.SourceId IS NOT NULL AND x.RequestInstanceI
             commandType: CommandType.StoredProcedure);
     }
 
+    public async Task<PayrollAdjustmentBulkResult?> CreateAdjustmentsBulkAsync(
+        PayrollAdjustmentBulkRequest request, int createdByUserId)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<PayrollAdjustmentBulkResult>(
+            "payroll.usp_Adjustment_CreateBulk",
+            new
+            {
+                request.ComponentTypeId,
+                request.Amount,
+                request.CurrencyCode,
+                request.TargetPeriod,
+                request.Reason,
+                CreatedByUserId = createdByUserId,
+                request.BranchId,
+            },
+            commandType: CommandType.StoredProcedure);
+    }
+
     public async Task<PayrollAdjustmentDeleteResult?> DeleteAdjustmentAsync(int payrollAdjustmentId, int actedByUserId)
     {
         using var db = _factory.Create();

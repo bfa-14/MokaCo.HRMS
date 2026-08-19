@@ -44,6 +44,56 @@ public class PayrollAdjustment
 // same-named type in this namespace would also have made the two ambiguous to any file that
 // happened to import both.
 
+/// <summary>
+/// One adjustment for EVERY active employee at once — payroll.usp_Adjustment_CreateBulk.
+///
+/// THE ONE DIRECT-CREATE LEFT, and it is not a hole in the request chain. A single adjustment is
+/// still raised, signed, and written by its approval; what the chain has no sensible answer for is
+/// "a bonus for the whole company", which through it would mean one request per head. So the act
+/// carries PAYROLL_APPROVE — the same trust that locks a run — rather than being a form anyone who
+/// may merely prepare payroll can submit.
+///
+/// <see cref="PayrollAdjustment.RequestInstanceId"/> is null on every row this writes, and the grid
+/// already reads that as "Direct entry": there are no signatures to link to, and the honest display
+/// is the one that says so rather than inventing a chain.
+///
+/// NOT NAMED PayrollAdjustmentCreateRequest, deliberately — Model.Workflow already owns that name
+/// for the request shape, and a same-named type here would make the two ambiguous to any file that
+/// happened to import both.
+/// </summary>
+public class PayrollAdjustmentBulkRequest
+{
+    public int ComponentTypeId { get; set; }
+
+    /// <summary>Always POSITIVE. The component type's sign decides direction, as everywhere else.</summary>
+    public decimal Amount { get; set; }
+
+    public string CurrencyCode { get; set; } = string.Empty;
+
+    /// <summary>Format 2026-09 — the period whose generation will pick these up.</summary>
+    public string TargetPeriod { get; set; } = string.Empty;
+
+    /// <summary>Required: it lands on every payslip line this produces, and it is part of the re-run key.</summary>
+    public string Reason { get; set; } = string.Empty;
+
+    /// <summary>Null means EVERY branch — the default, and the common case.</summary>
+    public int? BranchId { get; set; }
+
+    // No CreatedByUserId. The creator is the token's user, never a number from the body.
+}
+
+/// <summary>
+/// How many rows the bulk create actually wrote.
+///
+/// NOT the same as the headcount, and the difference is the point: the procedure skips anyone who
+/// already carries this component, period and reason, so a second run returns zero rather than
+/// paying everybody twice. Reporting this number is reporting what happened, not what was asked.
+/// </summary>
+public class PayrollAdjustmentBulkResult
+{
+    public int EmployeesGiven { get; set; }
+}
+
 /// <summary>What usp_Adjustment_Delete returns — 0 when nothing was removed.</summary>
 public class PayrollAdjustmentDeleteResult
 {

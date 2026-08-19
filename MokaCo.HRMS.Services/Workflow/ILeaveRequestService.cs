@@ -20,6 +20,9 @@ public interface ILeaveRequestService
     /// <summary>
     /// Approves, optionally granting fewer days. The signature is verified FIRST, so a wrong password
     /// changes nothing at all — and who may approve stays the database's decision, surfaced verbatim.
+    ///
+    /// MakeDiscretionary rides along untouched: it asks for the leave to be granted without deducting
+    /// it, and the result reports whether that is what happened.
     /// </summary>
     Task<LeaveRequestDecideResult?> DecideAsync(int requestInstanceId, int actedByUserId, LeaveRequestDecideRequest request);
 

@@ -76,6 +76,40 @@ public class ApprovalTiersController : ControllerBase
     }
 
     /// <summary>
+    /// Sets the BASIC-SALARY BAND for a tier — what a basic salary at this rank may be.
+    ///
+    /// PAYROLL_RUN, not EMP_EDIT. Renaming a tier is labelling; this decides what anybody at that
+    /// rank may be paid, and a database trigger enforces it on every salary-component write. Whoever
+    /// runs payroll is who may move the band.
+    ///
+    /// Either bound may be null — "no bound" is a real setting, and both null clears the band. The
+    /// procedure refuses a min above a max and an unknown currency by name; those sentences travel
+    /// back as 400s untouched.
+    /// </summary>
+    [HttpPut("{tierNo:int}/salary-range")]
+    [HasPermission("PAYROLL_RUN")]
+    public async Task<IActionResult> SetSalaryRange(
+        int tierNo, [FromBody] ApprovalTierSalaryRangeRequest request)
+    {
+        try
+        {
+            var updated = await _tiers.SetSalaryRangeAsync(
+                tierNo, request.MinBasicSalary, request.MaxBasicSalary, request.SalaryCurrency);
+            // As with the rename: a tier the procedure does not know raises its own sentence and
+            // leaves through the catch, so a null here really is "no such tier".
+            if (updated is null) return NotFound();
+
+            // The band is read by the salary form's hint and enforced on every pay write.
+            await _live.NotifyAsync("hr", "payroll", "workflow");
+            return Ok(updated);
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// Removes a tier. The procedure REFUSES while anyone still holds it and names who, so the
     /// refusal travels back verbatim — "cannot delete" alone would leave the user nothing to do.
     /// </summary>

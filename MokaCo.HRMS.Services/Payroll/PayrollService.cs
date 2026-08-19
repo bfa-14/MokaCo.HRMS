@@ -153,6 +153,18 @@ public class PayrollService : IPayrollService
         => _repo.GetAdjustmentsAsync(targetPeriod);
 
     /// <summary>
+    /// One adjustment for every active employee.
+    ///
+    /// Nothing is validated here. The procedure refuses a non-positive amount, an empty reason, an
+    /// unknown component and an unknown currency in its own words, and MapAsync turns each of those
+    /// into a 400 with the sentence intact — which is the same bargain every other write on this
+    /// service makes.
+    /// </summary>
+    public Task<PayrollAdjustmentBulkResult?> CreateAdjustmentsBulkAsync(
+        PayrollAdjustmentBulkRequest request, int createdByUserId)
+        => WorkflowSqlErrors.MapAsync(() => _repo.CreateAdjustmentsBulkAsync(request, createdByUserId));
+
+    /// <summary>
     /// Deletes — or rather, relays the refusal. A consumed row is history; an unconsumed row that a
     /// request authorised is the residue of signatures. Both say what to do instead.
     /// </summary>

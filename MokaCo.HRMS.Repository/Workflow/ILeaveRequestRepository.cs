@@ -17,10 +17,14 @@ public interface ILeaveRequestRepository
     /// <summary>
     /// Approves, optionally granting fewer days than requested. Posts the ledger movement ONCE, when
     /// the request closes Approved. Returns the granted figure and the resulting balance.
+    ///
+    /// <paramref name="makeDiscretionary"/> waives that posting: the leave is approved but never
+    /// deducted. It is the FINAL approver's answer that counts, since only the closing decision
+    /// touches the ledger at all.
     /// </summary>
     Task<LeaveRequestDecideResult?> DecideAsync(
         int requestInstanceId, int actedByUserId, decimal? approvedDays,
-        string? comment, bool signedWithPassword);
+        string? comment, bool signedWithPassword, bool makeDiscretionary);
 
     /// <summary>The leave payload behind a request, with the employee's current balance. Null when the request is not a leave one.</summary>
     Task<LeaveRequestPayload?> GetPayloadAsync(int requestInstanceId);

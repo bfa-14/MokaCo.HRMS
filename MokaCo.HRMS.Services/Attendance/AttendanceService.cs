@@ -102,4 +102,11 @@ public class AttendanceService : IAttendanceService
 
     public Task<IEnumerable<AttendanceBranchSummary>> GetSummaryByBranchAsync(string periodYearMonth, int? employeeId)
         => _repo.GetMonthlyByBranchAsync(periodYearMonth, employeeId);
+
+    /// <summary>
+    /// Where one branch-month of roster has got to. A pure read — the roster is put up for approval
+    /// through the workflow engine and activated by it, never from here.
+    /// </summary>
+    public Task<RosterMonthStatus?> GetRosterMonthAsync(int branchId, DateTime monthDate)
+        => _repo.GetRosterMonthAsync(branchId, monthDate);
 }

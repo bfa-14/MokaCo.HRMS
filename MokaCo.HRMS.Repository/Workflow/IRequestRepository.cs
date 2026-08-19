@@ -112,6 +112,17 @@ public interface IRequestRepository
     Task<ApproveResult?> WithdrawDecisionAsync(int requestInstanceId, int stepNo, int actedByUserId, string reason, bool signedWithPassword = false);
 
     /// <summary>
+    /// Hands the current step to its deputy role, or takes it back — workflow.usp_Step_DelegateToDeputy.
+    ///
+    /// ONE PROCEDURE FOR BOTH DIRECTIONS, switched by <paramref name="undo"/>, and that is the
+    /// procedure's design rather than a convenience here: the delegate and the reclaim share every
+    /// gate they apply (request open, this is the waiting step, the caller is the main approver, a
+    /// deputy role with an active member exists) and only differ in what they write.
+    /// </summary>
+    Task<DeputyDelegationResult?> DelegateStepToDeputyAsync(
+        int requestInstanceId, int stepNo, int actedByUserId, bool undo);
+
+    /// <summary>
     /// Reopens a REJECTED or CANCELLED request (usp_Request_ReopenClosed), returning it to the step
     /// that closed it. The proc refuses an approved request and demands a reason, raising otherwise.
     /// </summary>

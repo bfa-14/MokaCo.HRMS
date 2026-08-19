@@ -45,8 +45,13 @@ public interface IPayrollService
 
     // --- adjustments ---
     Task<IEnumerable<PayrollAdjustment>> GetAdjustmentsAsync(string targetPeriod);
-    // No CreateAdjustmentAsync: adjustments are raised as requests (IPayrollAdjustmentService), and
-    // the underlying procedure refuses direct creation.
+    // No CreateAdjustmentAsync for ONE employee: a single adjustment is raised as a request
+    // (IPayrollAdjustmentService), and the underlying procedure refuses direct creation.
+
+    /// <summary>One adjustment for every active employee. PAYROLL_APPROVE, and its own procedure.</summary>
+    Task<PayrollAdjustmentBulkResult?> CreateAdjustmentsBulkAsync(
+        PayrollAdjustmentBulkRequest request, int createdByUserId);
+
     Task<PayrollAdjustmentDeleteResult?> DeleteAdjustmentAsync(int payrollAdjustmentId, int actedByUserId);
 
     // --- reference ---

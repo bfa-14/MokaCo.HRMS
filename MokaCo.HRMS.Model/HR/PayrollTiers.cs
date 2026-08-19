@@ -66,6 +66,25 @@ public class ApprovalTier
     public string Name { get; set; } = string.Empty;
     /// <summary>The Arabic name. NULL falls back to <see cref="Name"/> on screen.</summary>
     public string? NameAr { get; set; }
+
+    /* ── THE BASIC-SALARY BAND FOR THIS TIER ──
+       Policy, not a payslip figure: it says what a basic salary at this rank may be, and a DB
+       TRIGGER on the salary-component write refuses one outside it. That refusal is where the band
+       actually bites, which is why these are surfaced to the UI — a rule the user can only discover
+       by being refused is a rule the form should have shown them first. */
+
+    /// <summary>The floor. NULL = no lower bound for this tier.</summary>
+    public decimal? MinBasicSalary { get; set; }
+
+    /// <summary>The ceiling. NULL = no upper bound — "and above".</summary>
+    public decimal? MaxBasicSalary { get; set; }
+
+    /// <summary>
+    /// Which currency the two figures are stated in. NULL when the tier has no band at all; a band
+    /// compared against a basic in another currency is meaningless, so the trigger owns that check
+    /// and nothing here converts anything.
+    /// </summary>
+    public string? SalaryCurrency { get; set; }
 }
 
 /// <summary>POST/PUT /api/payroll/tax-brackets. The id travels in the route, never the body.</summary>
@@ -106,4 +125,23 @@ public class ApprovalTierNameRequest
 {
     public string Name { get; set; } = string.Empty;
     public string? NameAr { get; set; }
+}
+
+/// <summary>
+/// PUT /api/hr/approval-tiers/{tierNo}/salary-range — the number is the route, so only the band.
+///
+/// SEPARATE FROM THE RENAME on purpose. Renaming is EMP_EDIT, a labelling act; setting the band is
+/// PAYROLL_RUN, because it decides what anybody at that rank may be paid. One endpoint carrying
+/// both would have to demand the higher trust for the lesser act.
+///
+/// EITHER BOUND MAY BE NULL, and null means "no bound", not "leave alone" — an open-ended tier is a
+/// real setting. Sending both null clears the band.
+/// </summary>
+public class ApprovalTierSalaryRangeRequest
+{
+    public decimal? MinBasicSalary { get; set; }
+    public decimal? MaxBasicSalary { get; set; }
+
+    /// <summary>Which currency the bounds are stated in. The procedure refuses an unknown one.</summary>
+    public string SalaryCurrency { get; set; } = string.Empty;
 }

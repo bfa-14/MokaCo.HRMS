@@ -35,6 +35,16 @@ public class ApprovalTierService : IApprovalTierService
             await _repo.SetNameAsync(tierNo, name, nameAr) ?? await ReadBackAsync(tierNo));
 
     /// <summary>
+    /// The basic-salary band. Read back on the same terms as the rename above: a procedure that did
+    /// the work and did not select the row must not be reported as a tier that does not exist.
+    /// </summary>
+    public Task<ApprovalTier?> SetSalaryRangeAsync(
+        int tierNo, decimal? minBasicSalary, decimal? maxBasicSalary, string salaryCurrency)
+        => WorkflowSqlErrors.MapAsync(async () =>
+            await _repo.SetSalaryRangeAsync(tierNo, minBasicSalary, maxBasicSalary, salaryCurrency)
+            ?? await ReadBackAsync(tierNo));
+
+    /// <summary>
     /// The tier as it now stands, from the dictionary read — used only when a setter wrote without
     /// selecting anything back. Deliberately the existing GetAll rather than a new by-number
     /// procedure: the dictionary is nine rows at most, and this path should never run at all.

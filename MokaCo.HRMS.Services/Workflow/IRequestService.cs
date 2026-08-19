@@ -131,6 +131,16 @@ public interface IRequestService
     /// </summary>
     Task<ApproveResult?> WithdrawDecisionAsync(int requestInstanceId, int stepNo, int actedByUserId, string reason, string? password = null);
 
+    /// <summary>
+    /// Hands the current step to its deputy role, or takes it back.
+    ///
+    /// NO PASSWORD, and that is not an omission. Delegating decides nothing — it offers the step
+    /// to whoever holds the deputy role — so there is no signed act to protect. The signature
+    /// question arrives later, when the deputy actually decides.
+    /// </summary>
+    Task<DeputyDelegationResult?> DelegateStepToDeputyAsync(
+        int requestInstanceId, int stepNo, int actedByUserId, bool undo);
+
     /// <summary>Reopens a rejected/cancelled request. The database refuses an approved one and demands a reason; that comes back as a WorkflowException.</summary>
     Task<ApproveResult?> ReopenClosedAsync(int requestInstanceId, int actedByUserId, string reason);
 

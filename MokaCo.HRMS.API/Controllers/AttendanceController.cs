@@ -67,6 +67,27 @@ public class AttendanceController : ControllerBase
         return record is null ? NotFound() : Ok(record);
     }
 
+    /// <summary>
+    /// WHERE ONE BRANCH-MONTH OF ROSTER HAS GOT TO — Draft, Pending or Approved, plus the
+    /// ROSTER_APPROVAL request carrying it and that request's own status.
+    ///
+    /// Returns NULL when the branch-month has no row yet. That is the ordinary state of a month
+    /// nobody has put up, not a 404: the caller asked a question about a month that exists, and
+    /// "nothing has happened to it" is a real answer. The roster banner is written to read it that
+    /// way.
+    ///
+    /// ATTENDANCE_VIEW — reading where the roster stands is reading, even though putting it up for
+    /// approval needs ATTENDANCE_MANAGE.
+    ///
+    /// `month` is the month's FIRST DAY ('yyyy-MM-01'), the same value the ROSTER_APPROVAL create
+    /// takes; both ends normalise it, so the banner and the request cannot be talking about
+    /// different things.
+    /// </summary>
+    [HttpGet("roster-month")]
+    [HasPermission("ATTENDANCE_VIEW")]
+    public async Task<IActionResult> GetRosterMonth([FromQuery] int branchId, [FromQuery] DateTime month)
+        => Ok(await _attendance.GetRosterMonthAsync(branchId, month));
+
     /// <summary>Days the machine could not read confidently. Not errors — requests for a human to look.</summary>
     [HttpGet("anomalies")]
     [HasPermission("ATTENDANCE_VIEW")]

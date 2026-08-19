@@ -8,10 +8,12 @@ public interface IEmployeeRepository
     Task<EmployeeProfile?> GetProfileAsync(int employeeId);
     Task<int> CreateAsync(
         int? userId, int branchId, int departmentId, int positionId, string fullName,
-        string? nationalId, string? nssfNumber, DateTime hireDate, int? createdBy);
+        string? nationalId, string? nssfNumber, DateTime hireDate, int? createdBy,
+        string? email, string? phoneNumber);
     Task UpdateAsync(
         int employeeId, int branchId, int departmentId, int positionId, string fullName,
-        string? nationalId, string? nssfNumber, DateTime hireDate, DateTime? terminationDate, int? modifiedBy);
+        string? nationalId, string? nssfNumber, DateTime hireDate, DateTime? terminationDate, int? modifiedBy,
+        string? email, string? phoneNumber);
     Task SoftDeleteAsync(int employeeId, int? modifiedBy);
 
     // ---- employee <-> user account linking ----

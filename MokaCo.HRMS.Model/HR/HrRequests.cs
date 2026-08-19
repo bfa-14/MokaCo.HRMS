@@ -61,6 +61,9 @@ public class EmployeeCreateRequest
     public string? NationalId { get; set; }
     public string? NssfNumber { get; set; }
     public DateTime HireDate { get; set; }
+    /// <summary>Optional. Blank is stored as NULL by the procedure.</summary>
+    public string? Email { get; set; }
+    public string? PhoneNumber { get; set; }
 }
 
 public class EmployeeUpdateRequest
@@ -73,6 +76,9 @@ public class EmployeeUpdateRequest
     public string? NssfNumber { get; set; }
     public DateTime HireDate { get; set; }
     public DateTime? TerminationDate { get; set; }
+    /// <summary>Optional. Blank is stored as NULL by the procedure — CLEARING one is a real edit.</summary>
+    public string? Email { get; set; }
+    public string? PhoneNumber { get; set; }
 }
 
 /// <summary>Body of PUT /api/employees/{id}/approval-tier — the requester's tier (1/2/3).</summary>

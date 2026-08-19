@@ -107,8 +107,20 @@ public interface IPayrollRepository
     // --- adjustments ---
     Task<IEnumerable<PayrollAdjustment>> GetAdjustmentsAsync(string targetPeriod);
 
-    // Creation lives in IPayrollAdjustmentRepository (workflow.usp_PayrollAdjustment_Create): the
-    // row is written by the final approval of a request, and payroll.usp_Adjustment_Create refuses.
+    // Creation of ONE adjustment lives in IPayrollAdjustmentRepository
+    // (workflow.usp_PayrollAdjustment_Create): the row is written by the final approval of a
+    // request, and payroll.usp_Adjustment_Create refuses. The bulk create below is the single
+    // exception, and it is a different act — see its own note.
+
+    /// <summary>
+    /// One adjustment for every active employee — payroll.usp_Adjustment_CreateBulk.
+    ///
+    /// The procedure owns all of it: who counts as active (not deleted, and not terminated before
+    /// the target period starts), the branch narrowing, and the skip that makes a re-run safe. It
+    /// returns the number of rows it wrote, which is why this is a Query and not an Execute.
+    /// </summary>
+    Task<PayrollAdjustmentBulkResult?> CreateAdjustmentsBulkAsync(
+        PayrollAdjustmentBulkRequest request, int createdByUserId);
 
     Task<PayrollAdjustmentDeleteResult?> DeleteAdjustmentAsync(int payrollAdjustmentId, int actedByUserId);
 

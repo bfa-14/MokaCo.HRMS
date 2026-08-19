@@ -227,4 +227,20 @@ public class AttendanceRepository : IAttendanceRepository
             new { PeriodYearMonth = periodYearMonth, EmployeeId = employeeId },
             commandType: CommandType.StoredProcedure);
     }
+
+    public async Task<RosterMonthStatus?> GetRosterMonthAsync(int branchId, DateTime monthDate)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<RosterMonthStatus>(
+            "attendance.usp_RosterMonth_Get",
+            new
+            {
+                BranchId = branchId,
+                /* Normalised the same way RosterApprovalRepository normalises it. The status of a
+                   month and the request raised on it must be looked up under one date, or the
+                   banner reads Draft for a month that is actually pending. */
+                MonthDate = new DateTime(monthDate.Year, monthDate.Month, 1),
+            },
+            commandType: CommandType.StoredProcedure);
+    }
 }

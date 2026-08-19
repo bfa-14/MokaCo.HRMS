@@ -43,6 +43,24 @@ public class ApprovalTierRepository : IApprovalTierRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    public async Task<ApprovalTier?> SetSalaryRangeAsync(
+        int tierNo, decimal? minBasicSalary, decimal? maxBasicSalary, string salaryCurrency)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<ApprovalTier>(
+            "hr.usp_ApprovalTier_SetSalaryRange",
+            new
+            {
+                TierNo = tierNo,
+                // Passed through as sent. NULL is the caller's "no bound", not an omission for the
+                // procedure to fill in — clearing a band has to be expressible.
+                MinBasicSalary = minBasicSalary,
+                MaxBasicSalary = maxBasicSalary,
+                SalaryCurrency = salaryCurrency,
+            },
+            commandType: CommandType.StoredProcedure);
+    }
+
     public async Task DeleteAsync(int tierNo)
     {
         using var db = _factory.Create();

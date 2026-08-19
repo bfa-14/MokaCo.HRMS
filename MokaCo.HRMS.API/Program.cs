@@ -66,12 +66,13 @@ builder.Services.AddScoped<ILeaveTypeRepository, LeaveTypeRepository>();
 builder.Services.AddScoped<ISalaryComponentRepository, SalaryComponentRepository>();
 builder.Services.AddScoped<IDocumentRepository, DocumentRepository>();
 builder.Services.AddScoped<ILeaveLedgerRepository, LeaveLedgerRepository>();
-builder.Services.AddScoped<ILeaveAccrualRepository, LeaveAccrualRepository>();
+builder.Services.AddScoped<ILeaveYearRepository, LeaveYearRepository>();
 builder.Services.AddScoped<IPayrollTierRepository, PayrollTierRepository>();
 builder.Services.AddScoped<IApprovalTierRepository, ApprovalTierRepository>();
 
 // --- DI: repositories (Attendance) ---
 builder.Services.AddScoped<ISettingRepository, SettingRepository>();
+builder.Services.AddScoped<IEmailRepository, EmailRepository>();
 builder.Services.AddScoped<ISystemRepository, SystemRepository>();
 builder.Services.AddScoped<IDeviceRepository, DeviceRepository>();
 builder.Services.AddScoped<IShiftRepository, ShiftRepository>();
@@ -90,6 +91,7 @@ builder.Services.AddScoped<IAttachmentRepository, AttachmentRepository>();
 builder.Services.AddScoped<IExitPermissionRepository, ExitPermissionRepository>();
 builder.Services.AddScoped<ILeaveRequestRepository, LeaveRequestRepository>();
 builder.Services.AddScoped<ITipDistributionRepository, TipDistributionRepository>();
+builder.Services.AddScoped<IRosterApprovalRepository, RosterApprovalRepository>();
 builder.Services.AddScoped<IShiftSwapRepository, ShiftSwapRepository>();
 builder.Services.AddScoped<IOvertimeRepository, OvertimeRepository>();
 builder.Services.AddScoped<IExpenseRepository, ExpenseRepository>();
@@ -125,7 +127,7 @@ builder.Services.AddScoped<ILeaveTypeService, LeaveTypeService>();
 builder.Services.AddScoped<ISalaryComponentService, SalaryComponentService>();
 builder.Services.AddScoped<IDocumentService, DocumentService>();
 builder.Services.AddScoped<ILeaveLedgerService, LeaveLedgerService>();
-builder.Services.AddScoped<ILeaveAccrualService, LeaveAccrualService>();
+builder.Services.AddScoped<ILeaveYearService, LeaveYearService>();
 builder.Services.AddScoped<IPayrollTierService, PayrollTierService>();
 builder.Services.AddScoped<IApprovalTierService, ApprovalTierService>();
 
@@ -146,6 +148,11 @@ builder.Services.AddSingleton<DevicePullLocks>();
 builder.Services.AddScoped<IMachinePullService, MachinePullService>();
 builder.Services.AddHostedService<MachinePullWorker>();
 
+// Outgoing mail: the OUTBOX is drained by a worker, never sent inline from the act that caused it.
+// Closing a request must commit whether or not a mail server is reachable, so the closing writes a
+// row and this turns rows into mail a minute later. No SmtpHost configured = it quietly does nothing.
+builder.Services.AddHostedService<EmailWorker>();
+
 // --- DI: services (Report) ---
 builder.Services.AddScoped<IReportService, ReportService>();
 
@@ -157,6 +164,7 @@ builder.Services.AddScoped<IExitPermissionService, ExitPermissionService>();
 builder.Services.AddScoped<ILeaveRequestService, LeaveRequestService>();
 builder.Services.AddScoped<IDecisionSignatureService, DecisionSignatureService>();
 builder.Services.AddScoped<ITipDistributionService, TipDistributionService>();
+builder.Services.AddScoped<IRosterApprovalService, RosterApprovalService>();
 builder.Services.AddScoped<IShiftSwapService, ShiftSwapService>();
 builder.Services.AddScoped<IOvertimeService, OvertimeService>();
 builder.Services.AddScoped<IExpenseService, ExpenseService>();
@@ -173,13 +181,10 @@ builder.Services.AddScoped<IPayrollService, PayrollService>();
 // --- Scheduled jobs (Quartz.NET, in-memory RAMJobStore — no DB job store) ---
 builder.Services.AddQuartz(q =>
 {
-    var accrualJobKey = new JobKey("MonthlyAccrualJob");
-    q.AddJob<MonthlyAccrualJob>(opts => opts.WithIdentity(accrualJobKey));
-    q.AddTrigger(t => t
-        .ForJob(accrualJobKey)
-        .WithIdentity("MonthlyAccrualTrigger")
-        // seconds-first cron: 00:30 on day 1 of every month
-        .WithCronSchedule("0 30 0 1 * ?"));
+    /* NO MONTHLY LEAVE ACCRUAL JOB. Entitlement is granted by the YEARLY OPENING
+       (POST /api/leave/year-open → hr.usp_LeaveYear_Open), which is deliberately manual: it is a
+       once-a-year act somebody decides to take, and its per-type summary is the point of taking it.
+       The old monthly job read hr.LEAVE_TYPE.AccrualPerMonth, a column that no longer exists. */
 
     // Attendance: process punches, mark absentees, reclassify approved leave.
     // The store is in-memory, so a run missed while the API was down is LOST, not caught up —

@@ -31,4 +31,10 @@ public interface IAttendanceService
     Task<AttendanceSummary?> GetSummaryAsync(int employeeId, string periodYearMonth);
     Task<IEnumerable<AttendanceSummary>> GetSummaryAllAsync(string periodYearMonth);
     Task<IEnumerable<AttendanceBranchSummary>> GetSummaryByBranchAsync(string periodYearMonth, int? employeeId);
+
+    /// <summary>
+    /// Where one branch-month of roster has got to — Draft, Pending or Approved. NULL when no row
+    /// exists yet, which is the ordinary state of a month nobody has put up for approval.
+    /// </summary>
+    Task<RosterMonthStatus?> GetRosterMonthAsync(int branchId, DateTime monthDate);
 }
