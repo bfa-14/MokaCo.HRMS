@@ -59,6 +59,16 @@ public class LeaveRequestDecideResult
 
     /// <summary>Approved into the negative. Informative — the approver already decided; this is for the record and the UI.</summary>
     public bool BalanceIsNegative { get; set; }
+
+    /// <summary>
+    /// The leave was granted DISCRETIONARILY: approved as leave, but no usage was posted to the
+    /// ledger, so the balance is untouched. Decided per request by the approver, not by the type.
+    ///
+    /// This reports what the procedure actually DID, which is not the same as what was asked for:
+    /// a non-final approver may tick the box, but only the decision that closes the request Approved
+    /// reaches the ledger, so every earlier step returns false here.
+    /// </summary>
+    public bool DiscretionaryGranted { get; set; }
 }
 
 /// <summary>The leave payload behind a request (usp_LeaveRequest_GetPayload), with the employee's balance for that type.</summary>
@@ -96,6 +106,35 @@ public class LeaveRequestPayload
 
     /// <summary>The employee's CURRENT balance for this leave type — the all-time ledger sum.</summary>
     public decimal CurrentBalance { get; set; }
+
+    /// <summary>
+    /// This leave was granted discretionarily — approved, but never deducted from the balance. A
+    /// property of THE REQUEST, decided by the approver, not of the leave type.
+    ///
+    /// False on everything still in flight: it becomes true only when the approval that closed the
+    /// request chose to waive the deduction, which is why AppliedToLedgerAt can stay null on an
+    /// approved request without that being a fault.
+    /// </summary>
+    public bool IsDiscretionary { get; set; }
+
+    /* ── THE NOTICE, as it stood when the request was raised ──
+       The same three figures LeaveRequestCreated reports back to the REQUESTER, carried on the
+       payload so the APPROVER sees them too. Advisory, exactly as they are at submit: short notice
+       has never blocked anything, and nothing here changes that — usp_LeaveRequest_Decide does not
+       consult them. They are reported so a signer can weigh the request, not so one can be refused
+       automatically. */
+
+    /// <summary>Days between the request being raised and the leave starting.</summary>
+    public int NoticeGivenDays { get; set; }
+
+    /// <summary>The notice this type prefers, in days. 0 when it has no preference.</summary>
+    public int NoticePreferredDays { get; set; }
+
+    /// <summary>
+    /// Raised at shorter notice than the type prefers. ALWAYS FALSE when the type has no
+    /// preference, so a type that never set one cannot look like it was breached.
+    /// </summary>
+    public bool NoticeShorterThanPreferred { get; set; }
 }
 
 /// <summary>One row of an employee's own leave history (usp_LeaveRequest_GetForEmployee).</summary>
@@ -183,4 +222,18 @@ public class LeaveRequestDecideRequest
 
     /// <summary>Sent only when the step or the caller's role demands a signature. Verified before anything is written.</summary>
     public string? Password { get; set; }
+
+    /// <summary>
+    /// Grant the leave WITHOUT deducting it from the balance — paid time off the books, as a
+    /// one-off favour rather than a property of the leave type.
+    ///
+    /// Defaults to false, which is what every existing caller sends by omitting it: an absent field
+    /// binds to false and the procedure's own @MakeDiscretionary default is 0, so the ordinary
+    /// deduction is what happens unless somebody actively asks otherwise.
+    ///
+    /// Every approver in the chain may set it, but only the FINAL approval posts (or waives) the
+    /// ledger movement — so it is the last approver's answer that takes effect, and the result's
+    /// <see cref="LeaveRequestDecideResult.DiscretionaryGranted"/> says what was actually done.
+    /// </summary>
+    public bool MakeDiscretionary { get; set; }
 }

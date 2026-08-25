@@ -156,6 +156,46 @@ public class RequestStep
     public int? DelegatedFromUserId { get; set; }
     public string? DelegatedFromUsername { get; set; }
     public DateTime? DelegatedAt { get; set; }
+
+    /// <summary>
+    /// DEPUTY DELEGATION — a DIFFERENT act from the person-to-person delegation directly above,
+    /// and the two must never be read as one field. That one hands the step to a NAMED user; this
+    /// one opens it to the step's <see cref="FallbackRoleId"/>, so whoever currently holds that role
+    /// may sign. Non-null <see cref="DelegatedToDeputyAt"/> IS the "handed to the deputy" signal —
+    /// do not infer it from the fallback role merely existing, which is only a configuration.
+    /// </summary>
+    public DateTime? DelegatedToDeputyAt { get; set; }
+    public int? DeputyDelegatedByUserId { get; set; }
+    public string? DeputyDelegatedByUsername { get; set; }
+
+    /// <summary>
+    /// True when the step's MAIN approver cannot act at all — no resolved user, the requester
+    /// themselves, or marked absent; and for a role step, no active non-absent member.
+    ///
+    /// THE DEPUTY MAY ALREADY SIGN WHEN THIS IS TRUE, with nothing delegated. Delegating is the
+    /// approver choosing to stand down; absence is the system noticing they already have, and
+    /// either one is enough. A screen that offers the deputy nothing until someone delegates would
+    /// strand every request whose approver is on leave — which is the case the deputy exists for.
+    ///
+    /// Computed by usp_Request_GetById rather than worked out here, because
+    /// workflow.fn_CanUserActOnStep asks this same question when it decides whether to LET the
+    /// deputy act. Two places computing "absent" differently is how a screen starts offering a
+    /// button the server then refuses.
+    /// </summary>
+    public bool MainApproverAbsent { get; set; }
+}
+
+/// <summary>
+/// What workflow.usp_Step_DelegateToDeputy returns — the step's deputy state after the act.
+///
+/// The same shape for both directions: after a reclaim both nullable members come back null,
+/// which is exactly what the caller needs to re-render without a second read.
+/// </summary>
+public class DeputyDelegationResult
+{
+    public int StepNo { get; set; }
+    public DateTime? DelegatedToDeputyAt { get; set; }
+    public int? DeputyDelegatedByUserId { get; set; }
 }
 
 /// <summary>
@@ -328,6 +368,39 @@ public class ForUserRequest
 
     /// <summary>How many notes the conversation carries, so the card can show a count without a second call.</summary>
     public int NoteCount { get; set; }
+
+    /// <summary>
+    /// DEPUTY DELEGATION ON THE CURRENT STEP — the four the hub card needs to offer the act
+    /// without a second call per row.
+    ///
+    /// ALL FOUR DESCRIBE THE CURRENT STEP ONLY, and are answered FOR THE CALLER. The card acts on
+    /// that step and no other, so a flag about an earlier one would be a button pointing at the past.
+    /// </summary>
+    /// <remarks>Null when the current step has no deputy role configured — which is most steps.</remarks>
+    public string? FallbackRoleName { get; set; }
+
+    /// <summary>When the step was handed to the deputy. NULL IS THE SIGNAL that it was not —
+    /// a configured <see cref="FallbackRoleName"/> alone only means a deputy exists.</summary>
+    public DateTime? DelegatedToDeputyAt { get; set; }
+
+    /// <summary>
+    /// True when THIS caller may hand the current step to its deputy: they are its MAIN approver,
+    /// the request and step are open, a deputy role is configured, and it is not delegated yet.
+    ///
+    /// NOT the same question as <see cref="WaitingOnMe"/>, and the difference matters: that one is
+    /// fn_CanUserActOnStep, which is true for the DEPUTY as well. A deputy who may sign must not be
+    /// offered a button to delegate the step to themselves, so the two flags are read separately.
+    /// </summary>
+    public bool CanDelegate { get; set; }
+
+    /// <summary>
+    /// True when THIS caller may take the current step back from the deputy — they are its main
+    /// approver and it is currently delegated.
+    ///
+    /// Once the deputy SIGNS, the step is no longer open and this goes false: taking back a decision
+    /// is withdraw-decision, a different act with a different gate and a password question of its own.
+    /// </summary>
+    public bool CanReclaim { get; set; }
 }
 
 /// <summary>The hub's tab-badge counts, in one round trip (usp_Request_GetCountsForUser).</summary>
@@ -496,6 +569,31 @@ public class PutOnHoldRequest
 }
 
 /// <summary>
+/// What one reconciler sweep found and fixed.
+///
+/// <see cref="Repaired"/> and <see cref="StillUnapplied"/> are kept apart on purpose: the procedure
+/// that applies an effect is deliberately silent when it cannot (a swap whose rostered day has since
+/// been deleted, say), so "we called it" and "it worked" are different facts. Anything left in
+/// StillUnapplied needs a person, and a log line that blurred the two would hide exactly that.
+/// </summary>
+public class EffectReconcileResult
+{
+    public IReadOnlyList<int> Examined { get; set; } = Array.Empty<int>();
+    public IReadOnlyList<int> Repaired { get; set; } = Array.Empty<int>();
+    public IReadOnlyList<int> StillUnapplied { get; set; } = Array.Empty<int>();
+}
+
+/// <summary>
+/// Lifts a hold. The note is OPTIONAL — the hold's own reason already says what was being waited for,
+/// and the answer usually arrives as a request note rather than here. No password: resuming asserts
+/// nothing and decides nothing, it just hands the step back to the approver.
+/// </summary>
+public class ResumeRequest
+{
+    public string? Note { get; set; }
+}
+
+/// <summary>
 /// One note in a request's conversation (usp_RequestNote_GetForRequest). A note never changes state;
 /// it carries context, questions and answers, with enough about the author for the UI to show who
 /// was speaking in what capacity.
@@ -560,6 +658,84 @@ public class LongHold
 
     /// <summary>A one-line plain-language read on who the hold is stuck on and why.</summary>
     public string Detail { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// A decision somebody started and never signed (usp_Request_GetStaleDrafts) — the oversight page's
+/// other queue, beside the long holds.
+///
+/// A stale draft is a QUIETER problem than a hold: nobody is waiting on an answer they know is
+/// coming, because from the requester's side nothing has happened at all. Property names mirror the
+/// procedure's columns exactly, which is what lets Dapper map them.
+/// </summary>
+public class StaleDraft
+{
+    public int RequestInstanceId { get; set; }
+    public string RequestTypeName { get; set; } = string.Empty;
+    public string EmployeeName { get; set; } = string.Empty;
+    public string BranchName { get; set; } = string.Empty;
+    public string? Title { get; set; }
+    public int StepNo { get; set; }
+    public string StepName { get; set; } = string.Empty;
+
+    /// <summary>The chosen decision's LABEL, not its code. Null when the draft carries only a note.</summary>
+    public string? DraftDecision { get; set; }
+
+    public DateTime? DraftSavedAt { get; set; }
+
+    /// <summary>The username of whoever started it.</summary>
+    public string? SavedBy { get; set; }
+
+    /// <summary>Days since the draft was saved — how long it has sat unsigned.</summary>
+    public int DaysUnsigned { get; set; }
+
+    /// <summary>Days since the request was submitted. Longer than DaysUnsigned, and the number the requester feels.</summary>
+    public int DaysWaiting { get; set; }
+}
+
+/// <summary>
+/// One configurable decision type (usp_DecisionType_GetAll) — the catalogue every decision dropdown
+/// is built from. The flags are the contract: they decide which fields a decision demands and what
+/// the engine does with it.
+/// </summary>
+public class DecisionTypeConfig
+{
+    public int DecisionTypeId { get; set; }
+    public string Code { get; set; } = string.Empty;
+    public string Label { get; set; } = string.Empty;
+    public string? Description { get; set; }
+
+    /// <summary>Approve / Reject / Hold / Delegate — what the engine actually does.</summary>
+    public string EngineAction { get; set; } = string.Empty;
+    public string Tone { get; set; } = string.Empty;
+
+    public bool RequiresComment { get; set; }
+    public bool RequiresAttachment { get; set; }
+    public bool RequiresTargetUser { get; set; }
+    public bool AllowsValueChange { get; set; }
+    public bool WaitingOnRequester { get; set; }
+
+    public bool IsPrimary { get; set; }
+
+    /// <summary>False = the engine derives it (an auto-skip, say); it must never appear in a menu.</summary>
+    public bool IsSelectable { get; set; }
+
+    /// <summary>System types cannot have their Code or EngineAction edited.</summary>
+    public bool IsSystem { get; set; }
+
+    public bool IsActive { get; set; }
+    public string? Icon { get; set; }
+    public int SortOrder { get; set; }
+}
+
+/// <summary>
+/// The decisions offered at ONE step. A comma-separated list of codes; EMPTY restores the default
+/// (every selectable type), which is why it is a string rather than a list — "none configured" and
+/// "an empty list" have to be the same thing.
+/// </summary>
+public class SetStepDecisionsRequest
+{
+    public string? DecisionCodes { get; set; }
 }
 
 /// <summary>A reason. Required for reject, cancel and move-version — collected in the UI, because the database demands it.</summary>

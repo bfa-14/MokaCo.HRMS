@@ -1,8 +1,10 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.SqlClient;
 using Microsoft.Net.Http.Headers;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Model.Workflow;
+using MokaCo.HRMS.Services.Core;
 using MokaCo.HRMS.Services.Workflow;
 
 namespace MokaCo.HRMS.Api.Controllers;
@@ -23,13 +25,16 @@ public class RequestsController : ControllerBase
     private readonly IRequestService _requests;
     private readonly IWorkflowSupportService _support;
     private readonly ILiveNotifier _live;
+    private readonly IEmailService _email;
 
     public RequestsController(
-        IRequestService requests, IWorkflowSupportService support, ILiveNotifier live)
+        IRequestService requests, IWorkflowSupportService support, ILiveNotifier live,
+        IEmailService email)
     {
         _requests = requests;
         _support = support;
         _live = live;
+        _email = email;
     }
 
     /// <summary>
@@ -316,6 +321,34 @@ public class RequestsController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Lifts a hold — the step goes back to Pending with the same approver.
+    ///
+    /// [Authorize] ONLY, deliberately: the procedure allows the approver who set the hold OR the
+    /// person who raised the request, because a hold marked "waiting on the requester" is answered by
+    /// the requester and answering it IS the resume. A permission gate here would lock out exactly the
+    /// person the hold is waiting for. The note is optional.
+    /// </summary>
+    [HttpPost("{id:int}/resume")]
+    public async Task<IActionResult> Resume(int id, [FromBody] ResumeRequest? request)
+    {
+        try
+        {
+            var result = await _requests.ResumeAsync(
+                id, User.UserId(),
+                string.IsNullOrWhiteSpace(request?.Note) ? null : request!.Note.Trim());
+            if (result is null) return NotFound();
+
+            // The step is somebody's again — an inbox and the dashboard's counts both move.
+            await NotifyWorkflowAsync();
+            return Ok(result);
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
     /// <summary>The request's conversation, oldest first. Visible to anyone who may see the request.</summary>
     [HttpGet("{id:int}/notes")]
     public async Task<IActionResult> GetNotes(int id) => Ok(await _requests.GetNotesAsync(id));
@@ -369,7 +402,14 @@ public class RequestsController : ControllerBase
 
         try
         {
-            var result = await _requests.CancelAsync(id, User.UserId(), request.Reason.Trim());
+            // The full caller, because who may cancel depends on the EMPLOYEE behind the login as
+            // well as the login itself — the employee a request is about may cancel their own.
+            var caller = new RequestCaller(
+                User.UserId(),
+                await ResolveEmployeeIdAsync(),
+                User.HasPermission("REQUEST_VIEW_ALL"));
+
+            var result = await _requests.CancelAsync(id, caller, request.Reason.Trim());
             if (result is null) return NotFound();
 
             await NotifyWorkflowAsync();
@@ -381,15 +421,88 @@ public class RequestsController : ControllerBase
         }
     }
 
+    /* WITHDRAWAL IS OPEN TO EVERY REQUEST TYPE.
+       It used to be an allow-list of the five types that stamp no figure at decision time, because
+       the generic procedure cleared the step's ValueBefore without restoring the payload — so
+       withdrawing an ApprovedWithChanges left the changed figure standing as though the next
+       approver had chosen it (FIX_PROMPTS F10). The list is gone: every type now routes to a
+       withdrawal, and workflow.usp_Request_WithdrawDecision is the authority on whether the undo is
+       possible at all. EXIT_PERMISSION still takes its own wrapper below, which additionally puts
+       ApprovedMinutes back. */
+
+    /// <summary>
+    /// Hands the CURRENT step to its deputy role, so whoever holds that role may sign in the main
+    /// approver's place.
+    ///
+    /// NO PERMISSION ATTRIBUTE, deliberately, and for the same reason withdraw-decision carries
+    /// none: whether this caller may delegate is the PROCEDURE's decision, and it is the narrowest
+    /// one in the engine — only the step's own main approver, only while this is the step actually
+    /// waiting, only where a deputy role with an active member is configured. A permission check
+    /// here could 403 the single person entitled to act.
+    ///
+    /// NOT THE PERSON-TO-PERSON DELEGATION on the same step. That one names a user; this one opens
+    /// the step to a ROLE — and the deputy can often already act without it, because an absent main
+    /// approver is enough on its own. Delegating is the approver choosing to stand down.
+    /// </summary>
+    [HttpPost("{id:int}/steps/{stepNo:int}/delegate-deputy")]
+    public Task<IActionResult> DelegateToDeputy(int id, int stepNo)
+        => DeputyDelegationAsync(id, stepNo, undo: false);
+
+    /// <summary>
+    /// Takes the step back from the deputy.
+    ///
+    /// NOT a withdrawal, and asks for no password: nothing was decided, only offered. If the deputy
+    /// has already signed, this is not the way back — the step is no longer waiting and the
+    /// procedure refuses; taking back a DECISION is withdraw-decision, which does ask for one.
+    /// </summary>
+    [HttpDelete("{id:int}/steps/{stepNo:int}/delegate-deputy")]
+    public Task<IActionResult> ReclaimFromDeputy(int id, int stepNo)
+        => DeputyDelegationAsync(id, stepNo, undo: true);
+
+    /// <summary>
+    /// Both directions of the one act, so the two routes cannot drift into handling the same
+    /// refusals differently.
+    /// </summary>
+    private async Task<IActionResult> DeputyDelegationAsync(int id, int stepNo, bool undo)
+    {
+        try
+        {
+            var result = await _requests.DelegateStepToDeputyAsync(id, stepNo, User.UserId(), undo);
+            if (result is null)
+                return NotFound();
+
+            // The step changes hands: it appears in, or disappears from, the deputy role's inbox.
+            await NotifyWorkflowAsync();
+            return Ok(result);
+        }
+        catch (WorkflowException ex)
+        {
+            // Verbatim: "Only the step's approver can delegate it to the deputy."
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
     /// <summary>
     /// Takes back a decision the caller made on a step, while the request is still open and nobody has
     /// acted after them. Needs NO permission — the database decides whether this caller may withdraw,
     /// the same as approve/reject; its refusal comes back as a clean status, message intact. The reason
-    /// is required. Only exit permissions support withdrawal today; the routing to the typed procedure
-    /// lives here, never in the engine.
+    /// is required.
+    ///
+    /// EVERY REQUEST TYPE may be withdrawn. Exit permissions go through their own procedure, which
+    /// also puts the minutes back; everything else goes through the engine's own withdrawal.
+    ///
+    /// THE PASSWORD IS VERIFIED BEFORE ANYTHING IS WRITTEN, and @SignedWithPassword carries the
+    /// RESULT of that check — never the client's claim — exactly as approve does. The question asked
+    /// is the STEP's WithdrawNeedsSignature, not the request's: a decision signed with a password
+    /// must be signed to undo, even where a fresh decision would no longer need one.
+    ///
+    /// NO PERMISSION ATTRIBUTE, deliberately. [Authorize] is the whole gate: whether this caller may
+    /// take this step back is the PROCEDURE's decision (their own decision, request still open,
+    /// nobody later has acted), and a permission check here could 403 a legitimate approver for
+    /// holding the wrong code — refusing the one person entitled to act.
     /// </summary>
-    [HttpPost("{id:int}/steps/{stepNo:int}/withdraw")]
-    public async Task<IActionResult> Withdraw(int id, int stepNo, [FromBody] ReasonRequest request)
+    [HttpPost("{id:int}/steps/{stepNo:int}/withdraw-decision")]
+    public async Task<IActionResult> WithdrawDecision(int id, int stepNo, [FromBody] ReasonRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Reason))
             return BadRequest(new { error = "A reason is required to withdraw a decision." });
@@ -405,10 +518,17 @@ public class RequestsController : ControllerBase
             if (detail is null)
                 return NotFound();
 
-            if (detail.Header.RequestTypeCode != "EXIT_PERMISSION")
-                return BadRequest(new { error = "Withdrawing is not supported for this request type yet." });
+            var typeCode = detail.Header.RequestTypeCode;
 
-            var result = await _requests.WithdrawExitPermissionDecisionAsync(id, stepNo, User.UserId(), request.Reason.Trim(), request.Password);
+            // The only branch left: exit permissions take the typed wrapper, which also puts
+            // ApprovedMinutes back to what it was before the withdrawn decision changed it.
+            // Everything else — including the figure-stamping types — takes the engine's own.
+            object? result = typeCode == "EXIT_PERMISSION"
+                ? await _requests.WithdrawExitPermissionDecisionAsync(
+                    id, stepNo, User.UserId(), request.Reason.Trim(), request.Password)
+                : await _requests.WithdrawDecisionAsync(
+                    id, stepNo, User.UserId(), request.Reason.Trim(), request.Password);
+
             // Withdrawing hands the step back — it reappears in an inbox as work to redo.
             await NotifyWorkflowAsync();
             return Ok(result);
@@ -467,6 +587,66 @@ public class RequestsController : ControllerBase
         {
             return StatusCode(ex.StatusCode, new { error = ex.Message });
         }
+    }
+
+    /// <summary>
+    /// Mails the employee the outcome of a request that has ENDED — by hand, on top of the automatic
+    /// pass that mails every request as it closes.
+    ///
+    /// WHY A BUTTON EXISTS AT ALL when this is automatic. The automatic pass only covers requests
+    /// that closed in the last seven days, only Approved and Rejected, and only where the employee
+    /// had an address AT THE TIME. Everything outside that is exactly the case somebody asks about:
+    /// a cancelled request, an address added after the fact, a mail that failed against a server
+    /// that was down. This is the answer to all of them, and it is the resend as well — the
+    /// procedure replaces any previous mail for the request rather than adding a second.
+    ///
+    /// NO PERMISSION BEYOND BEING SIGNED IN. Anyone who can open the request may send its outcome
+    /// to the person it is about, and the procedure guards everything that actually matters: the
+    /// request must have ENDED, and the employee must have an address. Neither of those is a trust
+    /// question, so neither is answered by a permission — and the mail says only what the request
+    /// already says, to the one person most entitled to hear it.
+    ///
+    /// IT QUEUES; IT DOES NOT SEND. The row goes into core.EMAIL_OUTBOX and the worker picks it up
+    /// within the minute, which is why the address is returned: the caller is rarely the employee,
+    /// and this is their one chance to notice the mail is going somewhere they did not expect while
+    /// correcting it still costs nothing.
+    /// </summary>
+    [HttpPost("{id:int}/send-email")]
+    public async Task<IActionResult> SendEmail(int id)
+    {
+        try
+        {
+            var queued = await _email.QueueForRequestAsync(id, User.UserId());
+            return queued is null ? NotFound() : Ok(queued);
+        }
+        catch (SqlException ex) when (ex.Number == 50000)
+        {
+            // "The request has not ended yet - the email goes out when it closes." and "This employee
+            // has no email address - add it on the employee page first." Both are the caller's to
+            // fix and both name the fix, so the sentence travels to the screen untouched.
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Where this request's mail got to — sent, failed with the server's reason, or still queued.
+    ///
+    /// A LIST — one entry per channel, because v2 queues an Email row and a WhatsApp row for the
+    /// same request and either can fail on its own.
+    ///
+    /// 204 WHEN NOTHING WAS EVER QUEUED, which is most requests: an empty status is the absence of
+    /// rows, not a value they could hold, and the screen shows nothing at all rather than "no email".
+    ///
+    /// AUTHENTICATED ONLY, the same as the send it reports on: a caller who may queue the mail must
+    /// be able to see what became of it, or the button answers nothing. It carries no visibility rule
+    /// of its own, so if the SMTP error text is ever judged too revealing, this and the send beside
+    /// it are the two methods to tighten together.
+    /// </summary>
+    [HttpGet("{id:int}/email-status")]
+    public async Task<IActionResult> EmailStatus(int id)
+    {
+        var rows = (await _email.GetStatusForRequestAsync(id)).ToList();
+        return rows.Count == 0 ? NoContent() : Ok(rows);
     }
 
     /// <summary>

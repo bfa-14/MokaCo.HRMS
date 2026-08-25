@@ -67,6 +67,27 @@ public class AttendanceController : ControllerBase
         return record is null ? NotFound() : Ok(record);
     }
 
+    /// <summary>
+    /// WHERE ONE BRANCH-MONTH OF ROSTER HAS GOT TO — Draft, Pending or Approved, plus the
+    /// ROSTER_APPROVAL request carrying it and that request's own status.
+    ///
+    /// Returns NULL when the branch-month has no row yet. That is the ordinary state of a month
+    /// nobody has put up, not a 404: the caller asked a question about a month that exists, and
+    /// "nothing has happened to it" is a real answer. The roster banner is written to read it that
+    /// way.
+    ///
+    /// ATTENDANCE_VIEW — reading where the roster stands is reading, even though putting it up for
+    /// approval needs ATTENDANCE_MANAGE.
+    ///
+    /// `month` is the month's FIRST DAY ('yyyy-MM-01'), the same value the ROSTER_APPROVAL create
+    /// takes; both ends normalise it, so the banner and the request cannot be talking about
+    /// different things.
+    /// </summary>
+    [HttpGet("roster-month")]
+    [HasPermission("ATTENDANCE_VIEW")]
+    public async Task<IActionResult> GetRosterMonth([FromQuery] int branchId, [FromQuery] DateTime month)
+        => Ok(await _attendance.GetRosterMonthAsync(branchId, month));
+
     /// <summary>Days the machine could not read confidently. Not errors — requests for a human to look.</summary>
     [HttpGet("anomalies")]
     [HasPermission("ATTENDANCE_VIEW")]
@@ -92,6 +113,34 @@ public class AttendanceController : ControllerBase
     public async Task<IActionResult> Process([FromQuery] DateTime? workDate)
     {
         var result = await _attendance.ProcessAsync(workDate);
+        await NotifyAttendanceAsync();
+        return Ok(result);
+    }
+
+    /// <summary>
+    /// RE-derives one day from all of its punches, under the punch-interpretation settings in force
+    /// right now.
+    ///
+    /// WHY THIS IS NOT /process WITH A DATE. That endpoint is incremental — it consumes only punches
+    /// it has not already consumed — so a day built yesterday under "trust the machine's In/Out
+    /// keys" stays exactly as it was when somebody switches to Alternate today. Nothing would
+    /// revisit it, and the new setting would appear simply not to work. This re-reads the day whole.
+    ///
+    /// The raw punches are NOT touched, here or by the procedure: they remain what the machine said,
+    /// and only the interpretation is rebuilt. A day a human has corrected is still left alone —
+    /// their decision outranks any amount of re-derivation.
+    ///
+    /// Same ATTENDANCE_MANAGE gate as /process, because both rewrite what people are recorded as
+    /// having worked.
+    /// </summary>
+    [HttpPost("reprocess")]
+    [HasPermission("ATTENDANCE_MANAGE")]
+    public async Task<IActionResult> Reprocess([FromQuery] DateTime? date)
+    {
+        if (date is null)
+            return BadRequest(new { error = "A date is required — re-processing rebuilds one day." });
+
+        var result = await _attendance.ReprocessDayAsync(date.Value);
         await NotifyAttendanceAsync();
         return Ok(result);
     }

@@ -58,6 +58,25 @@ public interface IRequestRepository
     /// <summary>Parks a live request on hold. The procedure raises if the reason is blank or the caller is not the approver.</summary>
     Task PutOnHoldAsync(int requestInstanceId, int actedByUserId, string reason, bool waitingOnRequester);
 
+    /// <summary>
+    /// Lifts a hold (usp_Request_Resume) — the step goes back to Pending with the same approver. The
+    /// procedure allows the approver who set it OR the requester, and raises when the request is not
+    /// on hold or the caller is neither. The note is optional and recorded on the 'Resumed' signature.
+    /// </summary>
+    Task<ApproveResult?> ResumeAsync(int requestInstanceId, int actedByUserId, string? note);
+
+    /// <summary>
+    /// Approved requests whose type's effect never landed — leave with no ledger post, an advance or
+    /// adjustment with no row, a swap never applied. The reconciler's work list.
+    /// </summary>
+    Task<IEnumerable<int>> GetApprovedWithUnappliedEffectsAsync();
+
+    /// <summary>
+    /// Applies an approved request's type effects if they are still missing
+    /// (usp_Request_ApplyApprovalEffects). Idempotent, type-guarded, and silent when it cannot act.
+    /// </summary>
+    Task ApplyApprovalEffectsAsync(int requestInstanceId, int? actorUserId);
+
     /// <summary>The request's conversation, oldest first.</summary>
     Task<IEnumerable<RequestNote>> GetNotesAsync(int requestInstanceId);
 
@@ -66,6 +85,9 @@ public interface IRequestRepository
 
     /// <summary>Requests stuck on hold longer than the given number of days — HR's stuck-requests queue.</summary>
     Task<IEnumerable<LongHold>> GetLongHoldsAsync(int olderThanDays);
+
+    /// <summary>Decisions saved but never signed, older than the threshold (usp_Request_GetStaleDrafts).</summary>
+    Task<IEnumerable<StaleDraft>> GetStaleDraftsAsync(int olderThanDays);
 
     Task<IEnumerable<OldVersionRequest>> GetOnOldVersionsAsync(int? requestTypeId);
     Task<MoveVersionResult?> MoveToVersionAsync(int requestInstanceId, int? targetWorkflowDefinitionId, int actedByUserId, string reason);
@@ -84,6 +106,23 @@ public interface IRequestRepository
     Task<WithdrawDecisionResult?> WithdrawExitPermissionDecisionAsync(int requestInstanceId, int stepNo, int actedByUserId, string reason, bool signedWithPassword = false);
 
     /// <summary>
+    /// The ENGINE's withdrawal (usp_Request_WithdrawDecision): unsigns the step and hands it back,
+    /// restoring no typed figure. Correct only for request types that stamp none — the caller routes.
+    /// </summary>
+    Task<ApproveResult?> WithdrawDecisionAsync(int requestInstanceId, int stepNo, int actedByUserId, string reason, bool signedWithPassword = false);
+
+    /// <summary>
+    /// Hands the current step to its deputy role, or takes it back — workflow.usp_Step_DelegateToDeputy.
+    ///
+    /// ONE PROCEDURE FOR BOTH DIRECTIONS, switched by <paramref name="undo"/>, and that is the
+    /// procedure's design rather than a convenience here: the delegate and the reclaim share every
+    /// gate they apply (request open, this is the waiting step, the caller is the main approver, a
+    /// deputy role with an active member exists) and only differ in what they write.
+    /// </summary>
+    Task<DeputyDelegationResult?> DelegateStepToDeputyAsync(
+        int requestInstanceId, int stepNo, int actedByUserId, bool undo);
+
+    /// <summary>
     /// Reopens a REJECTED or CANCELLED request (usp_Request_ReopenClosed), returning it to the step
     /// that closed it. The proc refuses an approved request and demands a reason, raising otherwise.
     /// </summary>
@@ -94,7 +133,11 @@ public interface IRequestRepository
     /// (usp_Request_RetractLastDecision). The proc owns every rule — own signature, last one
     /// standing, same day, effects not yet consumed — and names which one failed.
     /// </summary>
-    Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason);
+    /// <param name="signedWithPassword">
+    /// The procedure REFUSES an unsigned retract of a signed decision, and one by a caller whose role
+    /// demands a signature — so this must carry the verified fact, never a default.
+    /// </param>
+    Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason, bool signedWithPassword = false);
 
     /// <summary>
     /// One half of a GM + Owner reopen (usp_Request_Reopen). Returns 'AwaitingSecond' when this was

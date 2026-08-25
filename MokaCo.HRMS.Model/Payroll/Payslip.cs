@@ -140,3 +140,40 @@ public class PayslipPaymentResult
     public string? PaymentReference { get; set; }
     public DateTime? PaidAt { get; set; }
 }
+
+/// <summary>
+/// "WHERE IS MY SALARY THIS MONTH" — payroll.usp_Payslip_GetMyStatus, one row or none.
+///
+/// The whole point is the ONE question an employee actually has, answered without opening anything:
+/// has this month been prepared, is it final, and has the money gone out. It is deliberately NOT a
+/// payslip — no lines, no gross, no employer cost — because the answer is needed by everybody every
+/// month while the document itself is only worth opening once.
+///
+/// NONE is a real answer, not an error: no row means the month has not been generated yet, and the
+/// controller returns null so the caller can say "not prepared yet" rather than show a failure.
+/// </summary>
+public class MyPayslipStatus
+{
+    public int PayslipId { get; set; }
+    /// <summary>The period this covers, e.g. "2026-08".</summary>
+    public string PeriodYearMonth { get; set; } = string.Empty;
+    public string? RunType { get; set; }
+    /// <summary>Draft / Review / Approved / Cancelled — the run's state, not the payment's.</summary>
+    public string RunStatus { get; set; } = string.Empty;
+    public decimal NetUsd { get; set; }
+    public decimal NetLbp { get; set; }
+    /// <summary>The "≈" comparable at this run's frozen rates. Never a payable figure.</summary>
+    public decimal NetPrimary { get; set; }
+    public string? PaymentMethod { get; set; }
+    public DateTime? PaidAt { get; set; }
+    /// <summary>
+    /// Prepared | Ready | Paid — the procedure's own reading of the two states above, so the screen
+    /// never has to re-derive "approved but unpaid" from a status and a null date and get it wrong.
+    /// </summary>
+    public string StatusCode { get; set; } = string.Empty;
+}
+
+/* "My payslips" is NOT modelled here. usp_Payslip_GetMine was already wired end to end — see
+   MyPayslip in PayrollReports.cs, IPayrollRepository.GetMyPayslipsAsync, and MeController's
+   GET /api/me/payslips. A second model over the same procedure would be two shapes for one answer,
+   and the day the procedure gained a column only one of them would learn about it. */

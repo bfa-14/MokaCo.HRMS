@@ -316,10 +316,53 @@ public class PayrollController : ControllerBase
         return Ok(await _payroll.GetAdjustmentsAsync(period));
     }
 
-    // THERE IS NO POST HERE ANY MORE. An adjustment is a request now — see
+    // THERE IS NO POST FOR ONE EMPLOYEE. A single adjustment is a request now — see
     // PayrollAdjustmentRequestsController — and payroll.usp_Adjustment_Create refuses outright,
-    // pointing at the request type. The route was removed rather than left to relay that refusal:
+    // pointing at the request type. That route was removed rather than left to relay the refusal:
     // a documented endpoint that can only ever fail is a lie about what the API offers.
+
+    /// <summary>
+    /// One adjustment for EVERY active employee — the company-wide bonus, the across-the-board
+    /// correction, the month everyone is given the same thing.
+    ///
+    /// WHY THIS IS NOT A REQUEST. The chain exists so that one person's pay is not changed without
+    /// a second signature. Applied here it would mean one request per head — two hundred approvals
+    /// for a single decision that was already taken once — so the trust is spent on the ACT instead:
+    /// PAYROLL_APPROVE, the same permission that locks a run and records a payment. HR may prepare
+    /// payroll and may raise an adjustment request; HR may not give the whole company a bonus.
+    ///
+    /// THE PERIOD IS SHAPE-CHECKED, and this is not a business rule being re-decided in C#. The
+    /// procedure casts @TargetPeriod + '-01' to a date to work out who was still employed; a period
+    /// of "Sept" fails that cast as a CONVERSION error, which is a 500 — a bug report for something
+    /// that is simply a malformed field. Every rule that is actually about payroll — the amount, the
+    /// reason, the component, the currency — is left to the procedure and arrives as its own words.
+    ///
+    /// THE ANSWER IS A COUNT OF ROWS WRITTEN, not of employees asked about: the procedure skips
+    /// anyone who already carries this component, period and reason, so running it twice reports
+    /// zero the second time rather than paying everybody twice.
+    /// </summary>
+    [HttpPost("adjustments/bulk")]
+    [HasPermission("PAYROLL_APPROVE")]
+    public async Task<IActionResult> CreateAdjustmentsBulk([FromBody] PayrollAdjustmentBulkRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.TargetPeriod) || !PeriodPattern.IsMatch(request.TargetPeriod))
+            return BadRequest(new { error = "The target period must look like 2026-09." });
+
+        try
+        {
+            var result = await _payroll.CreateAdjustmentsBulkAsync(request, User.UserId());
+            if (result is null)
+                return BadRequest(new { error = "The adjustments could not be created." });
+
+            await NotifyPayrollAsync();
+            return Ok(result);
+        }
+        catch (WorkflowException ex)
+        {
+            // Verbatim: "A reason is required - it appears on every payslip line."
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
 
     /// <summary>
     /// Removes an adjustment, which by now means: refuses, and says which kind of "no" it is.

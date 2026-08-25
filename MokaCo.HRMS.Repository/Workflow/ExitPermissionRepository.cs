@@ -73,6 +73,32 @@ public class ExitPermissionRepository : IExitPermissionRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    /// <summary>
+    /// THE TYPED DECISION (usp_ExitPermission_Decide). The procedure calls the engine FIRST and only
+    /// touches ApprovedMinutes once the engine has actually recorded a decision — so an unauthorised
+    /// or unsigned attempt leaves the figure exactly as it was.
+    ///
+    /// A null <paramref name="approvedMinutes"/> means "as it stands", which is the procedure's own
+    /// default. More than what currently stands is refused: an approver may cut the time away, never
+    /// extend it.
+    /// </summary>
+    public async Task<ExitPermissionDecisionResult?> DecideAsync(
+        int requestInstanceId, int actedByUserId, int? approvedMinutes, string? comment, bool signedWithPassword)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<ExitPermissionDecisionResult>(
+            "workflow.usp_ExitPermission_Decide",
+            new
+            {
+                RequestInstanceId = requestInstanceId,
+                ActedByUserId = actedByUserId,
+                ApprovedMinutes = approvedMinutes,
+                Comment = comment,
+                SignedWithPassword = signedWithPassword,
+            },
+            commandType: CommandType.StoredProcedure);
+    }
+
     public async Task<PostLeaveResult> PostLeaveUsageAsync(string periodYearMonth, int leaveTypeId, int? postedBy)
     {
         using var db = _factory.Create();

@@ -82,4 +82,15 @@ public class DefinitionService : IDefinitionService
     /// <summary>Draft-only; the procedure RAISERRORs on a published version, which becomes a clean 400 with the message.</summary>
     public Task<DefinitionMinTier?> SetMinTierAsync(int workflowDefinitionId, int? minRequesterTier)
         => WorkflowSqlErrors.MapAsync(() => _repo.SetMinTierAsync(workflowDefinitionId, minRequesterTier));
+
+    public Task<IEnumerable<DecisionTypeConfig>> GetDecisionTypesAsync(bool includeInactive)
+        => _repo.GetDecisionTypesAsync(includeInactive);
+
+    /// <summary>The procedure refuses an unknown decision code; that becomes a clean 400 carrying its own sentence.</summary>
+    public Task SetStepDecisionsAsync(int workflowStepId, string? decisionCodes)
+        => WorkflowSqlErrors.MapAsync<object?>(async () =>
+        {
+            await _repo.SetStepDecisionsAsync(workflowStepId, decisionCodes);
+            return null;
+        });
 }

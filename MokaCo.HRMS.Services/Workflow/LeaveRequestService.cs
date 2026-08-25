@@ -73,7 +73,10 @@ public class LeaveRequestService : ILeaveRequestService
         return await WorkflowSqlErrors.MapAsync(() => _repo.DecideAsync(
             requestInstanceId, actedByUserId, request.ApprovedDays,
             string.IsNullOrWhiteSpace(request.Comment) ? null : request.Comment.Trim(),
-            signed));
+            signed,
+            // Not gated here. Who may waive a deduction is the same question as who may approve at
+            // all, and that answer belongs to the procedure — this layer would only be guessing.
+            request.MakeDiscretionary));
     }
 
     public Task<LeaveRequestPayload?> GetPayloadAsync(int requestInstanceId)

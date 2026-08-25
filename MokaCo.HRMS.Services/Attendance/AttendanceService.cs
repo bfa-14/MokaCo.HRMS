@@ -33,6 +33,15 @@ public class AttendanceService : IAttendanceService
     /// </summary>
     public Task<ProcessResult> ProcessAsync(DateTime? workDate) => _repo.ProcessRawLogsAsync(workDate);
 
+    /// <summary>
+    /// Re-derives one day under the CURRENT punch-interpretation settings.
+    ///
+    /// It exists because <see cref="ProcessAsync"/> is incremental: it consumes only punches it has
+    /// not seen, so changing how punches are READ — the direction mode, the debounce window — means
+    /// nothing to the days already built under the old reading. This is how yesterday catches up.
+    /// </summary>
+    public Task<ProcessResult> ReprocessDayAsync(DateTime workDate) => _repo.ReprocessDayAsync(workDate);
+
     /// <summary>Run AFTER the processor: it writes the records for people who were rostered but never punched at all.</summary>
     public Task<MarkAbsenteesResult> MarkAbsenteesAsync(DateTime workDate) => _repo.MarkAbsenteesAsync(workDate);
 
@@ -93,4 +102,11 @@ public class AttendanceService : IAttendanceService
 
     public Task<IEnumerable<AttendanceBranchSummary>> GetSummaryByBranchAsync(string periodYearMonth, int? employeeId)
         => _repo.GetMonthlyByBranchAsync(periodYearMonth, employeeId);
+
+    /// <summary>
+    /// Where one branch-month of roster has got to. A pure read — the roster is put up for approval
+    /// through the workflow engine and activated by it, never from here.
+    /// </summary>
+    public Task<RosterMonthStatus?> GetRosterMonthAsync(int branchId, DateTime monthDate)
+        => _repo.GetRosterMonthAsync(branchId, monthDate);
 }

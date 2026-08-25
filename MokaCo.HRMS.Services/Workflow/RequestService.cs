@@ -49,8 +49,16 @@ public class RequestService : IRequestService
     /// <summary>
     /// The password check itself, given an already-decided requirement. Split out because a WITHDRAWAL
     /// asks a different question from a decision — see WithdrawExitPermissionDecisionAsync.
+    ///
+    /// <paramref name="failureStatus"/> IS THE STATUS A BAD PASSWORD EARNS, and it is a parameter
+    /// because 401 means two different things to a browser client. On a signature it has always
+    /// meant "that password is wrong"; but a client cannot tell that apart from "your session
+    /// expired", and treating one as the other logs a working user out mid-signature. The
+    /// WITHDRAWAL path therefore passes 400 — a wrong password is a bad request, not an unauthorised
+    /// session — leaving 401 to mean only what the token layer means by it.
     /// </summary>
-    private async Task<bool> VerifyPasswordAsync(int userId, string? password, bool required, string demand)
+    private async Task<bool> VerifyPasswordAsync(
+        int userId, string? password, bool required, string demand, int failureStatus = 401)
     {
         if (!required)
         {
@@ -60,11 +68,11 @@ public class RequestService : IRequestService
         }
 
         if (string.IsNullOrEmpty(password))
-            throw new WorkflowException(401, demand);
+            throw new WorkflowException(failureStatus, demand);
 
         var user = await _users.GetByIdAsync(userId);
         if (user is null || !_hasher.Verify(password, user.PasswordHash))
-            throw new WorkflowException(401, "That password is not correct.");
+            throw new WorkflowException(failureStatus, "That password is not correct.");
 
         return true;
     }
@@ -214,11 +222,43 @@ public class RequestService : IRequestService
         });
 
     /// <summary>
+    /// THE TYPES THAT MUST NOT COME THROUGH THE GENERIC APPROVE.
+    ///
+    /// Every one of these has a typed _Decide procedure that applies the request's SIDE EFFECTS at
+    /// final approval — the leave-ledger post, the payroll advance and adjustment rows, the overtime
+    /// figure and its attendance link, the roster exchange, the employee a hire creates, the
+    /// termination date a separation stamps. workflow.usp_Request_Approve moves the chain and knows
+    /// nothing about any of it, so approving one of these here closed the request while the money,
+    /// the leave or the roster silently never happened.
+    ///
+    /// EXIT_PERMISSION is in the list for the same reason, even though its effects are also picked up
+    /// later by the nightly job and the period close: the approver may REDUCE the minutes, and only
+    /// the typed route carries that figure.
+    /// </summary>
+    private static readonly HashSet<string> TypedDecideOnly = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "LEAVE_REQUEST", "SALARY_ADVANCE", "PAYROLL_ADJUSTMENT", "OVERTIME", "SHIFT_SWAP",
+        "EXPENSE_REIMBURSEMENT", "TIP_DISTRIBUTION", "SEPARATION", "ONBOARDING",
+        "AVAILABILITY_CHANGE", "EXIT_PERMISSION",
+    };
+
+    /// <summary>
     /// The database decides whether this user may approve; a rejection there becomes a 403 here. The
     /// signature is verified FIRST, so a wrong password changes nothing at all.
+    ///
+    /// Before any of that, a typed request is REFUSED outright (409). The refusal comes before the
+    /// password check on purpose: there is no point putting the caller through a signature for a call
+    /// that was never going to be honoured. Untyped/simple types keep the plain engine behaviour.
     /// </summary>
     public async Task<ApproveResult?> ApproveAsync(int requestInstanceId, int actedByUserId, string? comment, string? changeSummary = null, string? password = null)
     {
+        var detail = await _repo.GetByIdAsync(requestInstanceId);
+        if (detail is null)
+            return null;
+
+        if (TypedDecideOnly.Contains(detail.Header.RequestTypeCode))
+            throw new WorkflowException(409, "Use the typed decide endpoint for this request type.");
+
         var signed = await VerifySignatureAsync(requestInstanceId, actedByUserId, password);
         return await WorkflowSqlErrors.MapAsync(() => _repo.ApproveAsync(requestInstanceId, actedByUserId, comment, changeSummary, signed));
     }
@@ -229,8 +269,45 @@ public class RequestService : IRequestService
         return await WorkflowSqlErrors.MapAsync(() => _repo.RejectAsync(requestInstanceId, actedByUserId, reason, signed));
     }
 
-    public Task<RequestClosedResult?> CancelAsync(int requestInstanceId, int actedByUserId, string reason)
-        => WorkflowSqlErrors.MapAsync(() => _repo.CancelAsync(requestInstanceId, actedByUserId, reason));
+    /// <summary>
+    /// Cancelling is for the people the request BELONGS to — whoever raised it, whoever it is about —
+    /// or HR/Admin acting for them.
+    ///
+    /// The procedure enforces exactly this and stays the authority; the same check runs here only so
+    /// the answer is a clean 403 with the reason, instead of a SQL round-trip that has to be
+    /// pattern-matched back out of an error message. The two must agree — if the rule ever changes,
+    /// change it in usp_Request_Cancel first and mirror it here.
+    /// </summary>
+    public async Task<RequestClosedResult?> CancelAsync(int requestInstanceId, RequestCaller caller, string reason)
+    {
+        var detail = await _repo.GetByIdAsync(requestInstanceId);
+        if (detail is null)
+            return null;
+
+        if (!await MayCancelAsync(detail.Header, caller))
+            throw new WorkflowException(403,
+                "Only the person who raised this request, the employee it concerns, or HR may cancel it.");
+
+        return await WorkflowSqlErrors.MapAsync(() => _repo.CancelAsync(requestInstanceId, caller.UserId, reason));
+    }
+
+    /// <summary>
+    /// The subject is matched on EMPLOYEE id rather than user id — the header carries the employee the
+    /// request is about, and the caller's own employee record is what the controller already resolved.
+    /// The role names are read from the database, not the token: only permissions are in the claims.
+    /// </summary>
+    private async Task<bool> MayCancelAsync(RequestHeader header, RequestCaller caller)
+    {
+        if (header.RaisedByUserId == caller.UserId)
+            return true;
+
+        if (caller.EmployeeId is int me && header.EmployeeId == me)
+            return true;
+
+        var roles = await _users.GetRoleNamesAsync(caller.UserId);
+        return roles.Any(r => r.Equals("HR", StringComparison.OrdinalIgnoreCase)
+                           || r.Equals("Admin", StringComparison.OrdinalIgnoreCase));
+    }
 
     /// <summary>
     /// The database enforces the reason and who may act; a rule broken there becomes a WorkflowException.
@@ -248,6 +325,54 @@ public class RequestService : IRequestService
         });
     }
 
+    /// <summary>
+    /// Lifts a hold. NO permission and no C# identity rule — the database decides, exactly as it does
+    /// for approve and hold, and it allows the approver OR the requester on purpose: a hold marked
+    /// "waiting on the requester" is answered BY the requester, and making them then chase the
+    /// approver to press a button would leave the request parked for no reason.
+    ///
+    /// No signature. Resuming asserts nothing and decides nothing — it hands the step back to the
+    /// approver exactly as it was before the hold.
+    /// </summary>
+    public Task<ApproveResult?> ResumeAsync(int requestInstanceId, int actedByUserId, string? note)
+        => WorkflowSqlErrors.MapAsync(() => _repo.ResumeAsync(requestInstanceId, actedByUserId, note));
+
+    /// <summary>
+    /// THE RECONCILER. Sweeps approved requests whose effect never landed and applies it.
+    ///
+    /// Two ways a request gets here. Historically: it was approved before the auto-approval hole was
+    /// closed, so it reads Approved with no advance, no ledger post, no roster change. Ongoing: an
+    /// effect that legitimately could not be applied at the time — the classic being a shift swap
+    /// whose rostered day was deleted between raising and final approval, which the typed procedure
+    /// skips rather than failing the approval.
+    ///
+    /// REPORTS WHAT ACTUALLY LANDED, not what was attempted. ApplyApprovalEffects is deliberately
+    /// silent when it cannot act, so the only honest way to say "repaired" is to ask again afterwards
+    /// and see what left the list. Anything still on it needs a human — and saying so is the point.
+    /// </summary>
+    public async Task<EffectReconcileResult> ReconcileApprovalEffectsAsync()
+    {
+        var outstanding = (await _repo.GetApprovedWithUnappliedEffectsAsync()).ToList();
+        if (outstanding.Count == 0)
+            return new EffectReconcileResult();
+
+        foreach (var requestInstanceId in outstanding)
+        {
+            // No actor: this is the system repairing itself, not somebody deciding. The procedure
+            // falls back to the request's own raiser for the created rows' CreatedBy.
+            await _repo.ApplyApprovalEffectsAsync(requestInstanceId, null);
+        }
+
+        var stillOutstanding = (await _repo.GetApprovedWithUnappliedEffectsAsync()).ToList();
+
+        return new EffectReconcileResult
+        {
+            Examined = outstanding,
+            Repaired = outstanding.Except(stillOutstanding).ToList(),
+            StillUnapplied = stillOutstanding,
+        };
+    }
+
     public Task<IEnumerable<RequestNote>> GetNotesAsync(int requestInstanceId)
         => _repo.GetNotesAsync(requestInstanceId);
 
@@ -257,6 +382,9 @@ public class RequestService : IRequestService
 
     public Task<IEnumerable<LongHold>> GetLongHoldsAsync(int olderThanDays)
         => _repo.GetLongHoldsAsync(olderThanDays);
+
+    public Task<IEnumerable<StaleDraft>> GetStaleDraftsAsync(int olderThanDays)
+        => _repo.GetStaleDraftsAsync(olderThanDays);
 
     public Task<IEnumerable<OldVersionRequest>> GetOnOldVersionsAsync(int? requestTypeId)
         => _repo.GetOnOldVersionsAsync(requestTypeId);
@@ -300,20 +428,56 @@ public class RequestService : IRequestService
     /// </summary>
     public async Task<WithdrawDecisionResult?> WithdrawExitPermissionDecisionAsync(int requestInstanceId, int stepNo, int actedByUserId, string reason, string? password = null)
     {
-        // THE WITHDRAWAL'S OWN SIGNATURE QUESTION, read from the STEP — not the request's
-        // SignatureRequired. They differ: a decision signed with a password must be signed to undo,
-        // even where the caller's role would no longer demand one for a fresh decision. Reading the
-        // wrong flag here would let a signed act be undone unsigned.
+        var signed = await VerifyWithdrawSignatureAsync(requestInstanceId, stepNo, actedByUserId, password);
+        return await WorkflowSqlErrors.MapAsync(() => _repo.WithdrawExitPermissionDecisionAsync(requestInstanceId, stepNo, actedByUserId, reason, signed));
+    }
+
+    /// <summary>
+    /// The ENGINE's withdrawal, for types that stamp no figure at decision time. Same signature
+    /// question, same authority: the procedure decides whether this caller may take the step back.
+    /// </summary>
+    public async Task<ApproveResult?> WithdrawDecisionAsync(int requestInstanceId, int stepNo, int actedByUserId, string reason, string? password = null)
+    {
+        var signed = await VerifyWithdrawSignatureAsync(requestInstanceId, stepNo, actedByUserId, password);
+        return await WorkflowSqlErrors.MapAsync(() => _repo.WithdrawDecisionAsync(requestInstanceId, stepNo, actedByUserId, reason, signed));
+    }
+
+    /// <summary>
+    /// Hands the current step to its deputy role, or takes it back.
+    ///
+    /// Nothing is checked here. WHO may delegate is the narrowest authorisation in the engine —
+    /// the step's own main approver, and nobody else, not even the deputy — and the procedure
+    /// applies it against the same tables fn_CanUserActOnStep reads. Its refusals name the person
+    /// who WOULD be allowed, so they travel to the caller untouched.
+    /// </summary>
+    public Task<DeputyDelegationResult?> DelegateStepToDeputyAsync(
+        int requestInstanceId, int stepNo, int actedByUserId, bool undo)
+        => WorkflowSqlErrors.MapAsync(
+            () => _repo.DelegateStepToDeputyAsync(requestInstanceId, stepNo, actedByUserId, undo));
+
+    /// <summary>
+    /// THE WITHDRAWAL'S OWN SIGNATURE QUESTION, read from the STEP — not the request's
+    /// SignatureRequired. They differ: a decision signed with a password must be signed to undo, even
+    /// where the caller's role would no longer demand one for a fresh decision. Reading the wrong flag
+    /// here would let a signed act be undone unsigned.
+    ///
+    /// Shared by both withdrawal paths so the typed one and the engine one can never drift into asking
+    /// different questions about the same act.
+    /// </summary>
+    private async Task<bool> VerifyWithdrawSignatureAsync(int requestInstanceId, int stepNo, int actedByUserId, string? password)
+    {
         var steps = await _repo.GetStepsAsync(requestInstanceId, actedByUserId);
         var target = steps.FirstOrDefault(s => s.StepNo == stepNo);
 
-        var signed = await VerifyPasswordAsync(
+        return await VerifyPasswordAsync(
             actedByUserId,
             password,
             target?.WithdrawNeedsSignature ?? false,
-            "Undoing a signed decision must itself be signed with your password.");
-
-        return await WorkflowSqlErrors.MapAsync(() => _repo.WithdrawExitPermissionDecisionAsync(requestInstanceId, stepNo, actedByUserId, reason, signed));
+            "Undoing a signed decision must itself be signed with your password.",
+            // 400, NOT 401. A wrong password here is a bad request; 401 is reserved for a session
+            // the token layer has rejected, and the client logs out on that. Sending 401 for a
+            // typo would sign the user out of a session that was working perfectly.
+            failureStatus: 400);
     }
 
     public Task<ApproveResult?> ReopenClosedAsync(int requestInstanceId, int actedByUserId, string reason)
@@ -333,8 +497,49 @@ public class RequestService : IRequestService
      * throw away the only part worth reading.
      */
 
-    public Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason)
-        => WorkflowSqlErrors.MapAsync(() => _repo.RetractLastDecisionAsync(requestInstanceId, actedByUserId, reason));
+    /// <summary>
+    /// Retract now FAILS CLOSED, like withdraw. usp_Request_RetractLastDecision refuses an unsigned
+    /// retract when the decision being struck was itself password-signed, or the caller holds a role
+    /// with RequiresSignaturePassword — so the password is verified HERE and the fact passed through.
+    /// Without that the procedure's own gate would refuse every retract, since this layer would never
+    /// send anything but 0.
+    /// </summary>
+    public async Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason, string? password = null)
+    {
+        var signed = await VerifyPasswordAsync(
+            actedByUserId,
+            password,
+            await RetractNeedsSignatureAsync(requestInstanceId, actedByUserId),
+            "Retracting this decision must be signed with your password.");
+
+        return await WorkflowSqlErrors.MapAsync(() => _repo.RetractLastDecisionAsync(requestInstanceId, actedByUserId, reason, signed));
+    }
+
+    /// <summary>
+    /// The procedure's own condition: the decision being struck was signed, OR the caller's role
+    /// demands a signature.
+    ///
+    /// The first half is read from the STEP — the history log carries no SignedWithPassword — by
+    /// taking the most recently acted-on decided step, which is the one the procedure will strike.
+    /// The second half rides on GetSignatureRequirement, which already answers "the step demands it OR
+    /// this user's role does". That makes this condition a SUPERSET of the procedure's: it can ask for
+    /// a password where the procedure would not have insisted, never the other way round. Erring
+    /// towards asking is the safe direction — the alternative is a refusal the caller cannot act on.
+    /// </summary>
+    private async Task<bool> RetractNeedsSignatureAsync(int requestInstanceId, int actedByUserId)
+    {
+        var steps = await _repo.GetStepsAsync(requestInstanceId, actedByUserId);
+        var lastDecided = steps
+            .Where(s => s.ActedAt is not null && (s.Status == "Approved" || s.Status == "Rejected"))
+            .OrderByDescending(s => s.ActedAt)
+            .FirstOrDefault();
+
+        if (lastDecided?.SignedWithPassword == true)
+            return true;
+
+        var requirement = await _repo.GetSignatureRequirementAsync(requestInstanceId, actedByUserId);
+        return requirement?.SignatureRequired ?? false;
+    }
 
     public Task<ReopenResult?> ReopenAsync(int requestInstanceId, int actedByUserId, string reason)
         => WorkflowSqlErrors.MapAsync(() => _repo.ReopenAsync(requestInstanceId, actedByUserId, reason));

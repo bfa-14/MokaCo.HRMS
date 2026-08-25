@@ -23,7 +23,7 @@ public class CurrenciesController : ControllerBase
     public async Task<IActionResult> GetAll() => Ok(await _currencies.GetAllAsync());
 
     [HttpPost]
-    [HasPermission("EMP_EDIT")]
+    [HasPermission("CORE_MANAGE")]
     public async Task<IActionResult> Upsert([FromBody] CurrencyUpsertRequest request)
     {
         await _currencies.UpsertAsync(request.CurrencyCode, request.Name, request.DecimalPlaces);

@@ -47,7 +47,7 @@ public class LeaveTypesController : ControllerBase
     /// the caller binds from the save. A duplicate name is refused by the procedure, verbatim.
     /// </summary>
     [HttpPost]
-    [HasPermission("EMP_EDIT")]
+    [HasPermission("LEAVE_POLICY_MANAGE")]
     public async Task<IActionResult> Create([FromBody] LeaveTypeUpsertRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Name))
@@ -74,7 +74,7 @@ public class LeaveTypesController : ControllerBase
     /// that knows only name/paid/accrual/carry-over cannot silently clear the rest.
     /// </summary>
     [HttpPut("{id:int}")]
-    [HasPermission("EMP_EDIT")]
+    [HasPermission("LEAVE_POLICY_MANAGE")]
     public async Task<IActionResult> Update(int id, [FromBody] LeaveTypeUpsertRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Name))
@@ -99,7 +99,7 @@ public class LeaveTypesController : ControllerBase
 
     /// <summary>Adds or replaces one accrual tier — keyed on (type, MinServiceYears), so re-setting a year edits it.</summary>
     [HttpPut("{id:int}/accrual-tier")]
-    [HasPermission("EMP_EDIT")]
+    [HasPermission("LEAVE_POLICY_MANAGE")]
     public async Task<IActionResult> SetAccrualTier(int id, [FromBody] LeaveAccrualTierRequest request)
     {
         await _leaveTypes.SetAccrualTierAsync(id, request);
@@ -108,7 +108,7 @@ public class LeaveTypesController : ControllerBase
     }
 
     [HttpDelete("{id:int}/accrual-tier/{minYears:int}")]
-    [HasPermission("EMP_EDIT")]
+    [HasPermission("LEAVE_POLICY_MANAGE")]
     public async Task<IActionResult> DeleteAccrualTier(int id, int minYears)
     {
         await _leaveTypes.DeleteAccrualTierAsync(id, minYears);
@@ -118,7 +118,7 @@ public class LeaveTypesController : ControllerBase
 
     /// <summary>Adds or replaces one sick-pay tier — keyed on (type, MinServiceYears).</summary>
     [HttpPut("{id:int}/pay-tier")]
-    [HasPermission("EMP_EDIT")]
+    [HasPermission("LEAVE_POLICY_MANAGE")]
     public async Task<IActionResult> SetPayTier(int id, [FromBody] LeavePayTierRequest request)
     {
         await _leaveTypes.SetPayTierAsync(id, request);
@@ -127,7 +127,7 @@ public class LeaveTypesController : ControllerBase
     }
 
     [HttpDelete("{id:int}/pay-tier/{minYears:int}")]
-    [HasPermission("EMP_EDIT")]
+    [HasPermission("LEAVE_POLICY_MANAGE")]
     public async Task<IActionResult> DeletePayTier(int id, int minYears)
     {
         await _leaveTypes.DeletePayTierAsync(id, minYears);
@@ -140,7 +140,7 @@ public class LeaveTypesController : ControllerBase
     /// what makes usp_LeaveRequest_Create accept that relation; deleting it makes it refuse again.
     /// </summary>
     [HttpPut("{id:int}/relation")]
-    [HasPermission("EMP_EDIT")]
+    [HasPermission("LEAVE_POLICY_MANAGE")]
     public async Task<IActionResult> SetRelation(int id, [FromBody] LeaveRelationRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Relation))
@@ -152,7 +152,7 @@ public class LeaveTypesController : ControllerBase
     }
 
     [HttpDelete("{id:int}/relation/{relation}")]
-    [HasPermission("EMP_EDIT")]
+    [HasPermission("LEAVE_POLICY_MANAGE")]
     public async Task<IActionResult> DeleteRelation(int id, string relation)
     {
         await _leaveTypes.DeleteRelationAsync(id, relation);

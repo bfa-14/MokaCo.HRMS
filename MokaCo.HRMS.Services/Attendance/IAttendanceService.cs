@@ -5,6 +5,14 @@ namespace MokaCo.HRMS.Services.Attendance;
 public interface IAttendanceService
 {
     Task<ProcessResult> ProcessAsync(DateTime? workDate);
+
+    /// <summary>
+    /// Re-derives ONE day under the current punch-interpretation settings. The ordinary processor
+    /// is incremental, so a day already built is never revisited when the rules for reading its
+    /// punches change — this is what makes such a change reach yesterday.
+    /// </summary>
+    Task<ProcessResult> ReprocessDayAsync(DateTime workDate);
+
     Task<MarkAbsenteesResult> MarkAbsenteesAsync(DateTime workDate);
     Task<MarkLeaveDaysResult> MarkLeaveDaysAsync(string periodYearMonth);
 
@@ -23,4 +31,10 @@ public interface IAttendanceService
     Task<AttendanceSummary?> GetSummaryAsync(int employeeId, string periodYearMonth);
     Task<IEnumerable<AttendanceSummary>> GetSummaryAllAsync(string periodYearMonth);
     Task<IEnumerable<AttendanceBranchSummary>> GetSummaryByBranchAsync(string periodYearMonth, int? employeeId);
+
+    /// <summary>
+    /// Where one branch-month of roster has got to — Draft, Pending or Approved. NULL when no row
+    /// exists yet, which is the ordinary state of a month nobody has put up for approval.
+    /// </summary>
+    Task<RosterMonthStatus?> GetRosterMonthAsync(int branchId, DateTime monthDate);
 }

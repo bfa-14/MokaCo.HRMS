@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Model.Attendance;
@@ -41,6 +42,11 @@ public class AttendanceIngestionController : ControllerBase
     /// not paying somebody.
     /// </summary>
     [HttpPost("punch")]
+    // [DeviceApiKey] is an action FILTER, not an authentication scheme — it leaves no authenticated
+    // principal behind — so the authorization fallback in Program.cs would reject the device before
+    // the filter ever ran. The device's credential check is unchanged; this only says the endpoint
+    // does not want a JWT.
+    [AllowAnonymous]
     [DeviceApiKey]
     public async Task<IActionResult> Punch([FromBody] PunchRequest request)
     {
@@ -114,4 +120,34 @@ public class AttendanceIngestionController : ControllerBase
     [HasPermission("ATTENDANCE_IMPORT")]
     public async Task<IActionResult> GetUnresolved([FromQuery] DateTime? from, [FromQuery] DateTime? to)
         => Ok(await _import.GetUnresolvedAsync(from, to));
+
+    /// <summary>
+    /// Every punch recorded on one day, exactly as the machines reported it — before the processor
+    /// turns it into anybody's worked hours.
+    ///
+    /// THIS IS THE "DID MY PUNCH ARRIVE" ENDPOINT, and it exists because the answer was previously
+    /// only available by querying the database by hand. It reads the RAW log rather than attendance
+    /// records on purpose: a punch appears here the second it lands, hours before the nightly
+    /// processor gives it meaning, and a punch on an unmapped PIN appears here too — with no name
+    /// against it, which is precisely the diagnosis somebody needs.
+    ///
+    /// ATTENDANCE_VIEW, not ATTENDANCE_IMPORT like the unresolved list above: this is a read of what
+    /// happened, for anybody already trusted to see attendance, not an ingestion tool.
+    ///
+    /// The date is REQUIRED. The raw log grows by every punch of every employee forever, and an
+    /// endpoint that would happily be called without one is a page that works now and times out in
+    /// two years.
+    /// </summary>
+    [HttpGet("punches")]
+    [HasPermission("ATTENDANCE_VIEW")]
+    public async Task<IActionResult> GetPunches(
+        [FromQuery] DateTime? date,
+        [FromQuery] int? deviceId,
+        [FromQuery] bool unresolvedOnly = false)
+    {
+        if (date is null)
+            return BadRequest(new { error = "A date is required." });
+
+        return Ok(await _import.GetPunchesByDateAsync(date.Value, deviceId, unresolvedOnly));
+    }
 }

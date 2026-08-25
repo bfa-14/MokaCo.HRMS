@@ -14,6 +14,12 @@ public class DeviceRepository : IDeviceRepository
     private readonly IDbConnectionFactory _factory;
     public DeviceRepository(IDbConnectionFactory factory) => _factory = factory;
 
+    /// <summary>
+    /// Every terminal, with its heartbeats. The columns map by name, so LastPunchUtc — added by
+    /// 11_device_last_punch.sql — needs no mapping code here; it does mean an API running against a
+    /// database that predates that script reads the property back as null rather than failing, which
+    /// is the right way round: the grid shows "No punches yet" instead of the page erroring.
+    /// </summary>
     public async Task<IEnumerable<Device>> GetAllAsync()
     {
         using var db = _factory.Create();
@@ -32,16 +38,28 @@ public class DeviceRepository : IDeviceRepository
             commandType: CommandType.StoredProcedure);
     }
 
-    public async Task<int> CreateAsync(string serialNumber, string? name, int branchId, int? departmentId)
+    public async Task<int> CreateAsync(string serialNumber, string? name, int branchId, int? departmentId,
+        string? pullIp, int pullPort, int pullCommKey, bool pullEnabled)
     {
         using var db = _factory.Create();
         return await db.ExecuteScalarAsync<int>(
             "attendance.usp_Device_Create",
-            new { SerialNumber = serialNumber, Name = name, BranchId = branchId, DepartmentId = departmentId },
+            new
+            {
+                SerialNumber = serialNumber,
+                Name = name,
+                BranchId = branchId,
+                DepartmentId = departmentId,
+                PullIp = pullIp,
+                PullPort = pullPort,
+                PullCommKey = pullCommKey,
+                PullEnabled = pullEnabled
+            },
             commandType: CommandType.StoredProcedure);
     }
 
-    public async Task UpdateAsync(int deviceId, string serialNumber, string? name, int branchId, int? departmentId, bool isActive)
+    public async Task UpdateAsync(int deviceId, string serialNumber, string? name, int branchId, int? departmentId, bool isActive,
+        string? pullIp, int pullPort, int pullCommKey, bool pullEnabled)
     {
         using var db = _factory.Create();
         await db.ExecuteAsync(
@@ -53,8 +71,35 @@ public class DeviceRepository : IDeviceRepository
                 Name = name,
                 BranchId = branchId,
                 DepartmentId = departmentId,
-                IsActive = isActive
+                IsActive = isActive,
+                PullIp = pullIp,
+                PullPort = pullPort,
+                PullCommKey = pullCommKey,
+                PullEnabled = pullEnabled
             },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    /// <summary>The pull worker's worklist. Ordered by the proc, so a cycle always visits machines in the same order.</summary>
+    public async Task<IEnumerable<PullTarget>> GetPullTargetsAsync()
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<PullTarget>(
+            "attendance.usp_Device_GetPullTargets",
+            commandType: CommandType.StoredProcedure);
+    }
+
+    /// <summary>
+    /// The pull heartbeat: when we last tried this machine and what happened. The error is capped at
+    /// the column's 300 characters by the caller — a socket exception's full text can run to
+    /// paragraphs, and the first sentence is the one that says which machine and why.
+    /// </summary>
+    public async Task TouchPullAsync(int deviceId, string? error)
+    {
+        using var db = _factory.Create();
+        await db.ExecuteAsync(
+            "attendance.usp_Device_TouchPull",
+            new { DeviceId = deviceId, Error = error },
             commandType: CommandType.StoredProcedure);
     }
 

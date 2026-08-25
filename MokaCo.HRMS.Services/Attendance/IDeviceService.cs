@@ -13,6 +13,14 @@ public interface IDeviceService
     Task<EnrollmentMapResult> MapAsync(EnrollmentMapRequest request);
     Task UnmapAsync(int employeeDeviceId);
 
+    /* -- pull: the SERVER calling the terminal (see 10_device_pull.sql) -- */
+
+    /// <summary>Active machines with pulling switched on and an address — one polling cycle's worklist.</summary>
+    Task<IEnumerable<PullTarget>> GetPullTargetsAsync();
+
+    /// <summary>Records one pull attempt's outcome against the device. A null error means it worked.</summary>
+    Task TouchPullAsync(int deviceId, string? error);
+
     /* -- ADMS push (see docs/attendance_iclock_adms.sql) -- */
 
     /// <summary>

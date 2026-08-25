@@ -45,7 +45,7 @@ public class LeaveRequestRepository : ILeaveRequestRepository
 
     public async Task<LeaveRequestDecideResult?> DecideAsync(
         int requestInstanceId, int actedByUserId, decimal? approvedDays,
-        string? comment, bool signedWithPassword)
+        string? comment, bool signedWithPassword, bool makeDiscretionary)
     {
         using var db = _factory.Create();
         return await db.QuerySingleOrDefaultAsync<LeaveRequestDecideResult>(
@@ -58,6 +58,10 @@ public class LeaveRequestRepository : ILeaveRequestRepository
                 ApprovedDays = approvedDays,
                 Comment = comment,
                 SignedWithPassword = signedWithPassword,
+                // Whether to waive the deduction. Passed through as asked; WHEN it can take effect
+                // (only on the decision that closes the request) is the procedure's rule, and what it
+                // actually did comes back as DiscretionaryGranted.
+                MakeDiscretionary = makeDiscretionary,
             },
             commandType: CommandType.StoredProcedure);
     }

@@ -32,32 +32,57 @@ public class SalaryComponentsController : ControllerBase
     public async Task<IActionResult> GetByEmployee(int employeeId)
         => Ok(await _salaryComponents.GetByEmployeeAsync(employeeId));
 
+    /* THE TIER BAND IS ENFORCED BY A TRIGGER, so it can refuse any of the three writes below with a
+       sentence naming what the basic must be between. Each one catches, or that sentence becomes a
+       500 and the user is told "something went wrong" about a rule they could have satisfied. */
+
     [HttpPost]
     [HasPermission("EMP_EDIT")]
     public async Task<IActionResult> Create([FromBody] SalaryComponentCreateRequest request)
     {
-        var id = await _salaryComponents.CreateAsync(request);
-        await NotifyPayAsync();
-        return CreatedAtAction(nameof(GetByEmployee), new { employeeId = request.EmployeeId },
-            new { salaryComponentId = id });
+        try
+        {
+            var id = await _salaryComponents.CreateAsync(request);
+            await NotifyPayAsync();
+            return CreatedAtAction(nameof(GetByEmployee), new { employeeId = request.EmployeeId },
+                new { salaryComponentId = id });
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
     }
 
     [HttpPut("{id:int}")]
     [HasPermission("EMP_EDIT")]
     public async Task<IActionResult> Update(int id, [FromBody] SalaryComponentUpdateRequest request)
     {
-        await _salaryComponents.UpdateAsync(id, request);
-        await NotifyPayAsync();
-        return NoContent();
+        try
+        {
+            await _salaryComponents.UpdateAsync(id, request);
+            await NotifyPayAsync();
+            return NoContent();
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
     }
 
     [HttpDelete("{id:int}")]
     [HasPermission("EMP_EDIT")]
     public async Task<IActionResult> Delete(int id)
     {
-        await _salaryComponents.DeleteAsync(id);
-        await NotifyPayAsync();
-        return NoContent();
+        try
+        {
+            await _salaryComponents.DeleteAsync(id);
+            await NotifyPayAsync();
+            return NoContent();
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
     }
 
     /// <summary>

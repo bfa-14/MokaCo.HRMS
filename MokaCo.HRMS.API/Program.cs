@@ -1,5 +1,10 @@
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
 using MokaCo.HRMS.Api.Auth;
@@ -25,6 +30,11 @@ using MokaCo.HRMS.Api.Controllers;
 using System.Threading.RateLimiting;
 using Quartz;
 using Scalar.AspNetCore;
+
+// QUESTPDF'S LICENCE IS DECLARED IN CODE, and the library throws on first render without it. The
+// Community tier is the free one and it is what this deployment qualifies for; stating it here means
+// the first request PDF ever generated is not the thing that discovers the omission.
+QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -61,10 +71,13 @@ builder.Services.AddScoped<ILeaveTypeRepository, LeaveTypeRepository>();
 builder.Services.AddScoped<ISalaryComponentRepository, SalaryComponentRepository>();
 builder.Services.AddScoped<IDocumentRepository, DocumentRepository>();
 builder.Services.AddScoped<ILeaveLedgerRepository, LeaveLedgerRepository>();
-builder.Services.AddScoped<ILeaveAccrualRepository, LeaveAccrualRepository>();
+builder.Services.AddScoped<ILeaveYearRepository, LeaveYearRepository>();
+builder.Services.AddScoped<IPayrollTierRepository, PayrollTierRepository>();
+builder.Services.AddScoped<IApprovalTierRepository, ApprovalTierRepository>();
 
 // --- DI: repositories (Attendance) ---
 builder.Services.AddScoped<ISettingRepository, SettingRepository>();
+builder.Services.AddScoped<IEmailRepository, EmailRepository>();
 builder.Services.AddScoped<ISystemRepository, SystemRepository>();
 builder.Services.AddScoped<IDeviceRepository, DeviceRepository>();
 builder.Services.AddScoped<IShiftRepository, ShiftRepository>();
@@ -83,6 +96,7 @@ builder.Services.AddScoped<IAttachmentRepository, AttachmentRepository>();
 builder.Services.AddScoped<IExitPermissionRepository, ExitPermissionRepository>();
 builder.Services.AddScoped<ILeaveRequestRepository, LeaveRequestRepository>();
 builder.Services.AddScoped<ITipDistributionRepository, TipDistributionRepository>();
+builder.Services.AddScoped<IRosterApprovalRepository, RosterApprovalRepository>();
 builder.Services.AddScoped<IShiftSwapRepository, ShiftSwapRepository>();
 builder.Services.AddScoped<IOvertimeRepository, OvertimeRepository>();
 builder.Services.AddScoped<IExpenseRepository, ExpenseRepository>();
@@ -107,6 +121,14 @@ builder.Services.AddScoped<IUserSignatureService, UserSignatureService>();
 builder.Services.AddScoped<ICurrencyService, CurrencyService>();
 builder.Services.AddScoped<IExchangeRateService, ExchangeRateService>();
 builder.Services.AddScoped<IDashboardService, DashboardService>();
+// Manual "email the employee" only. The WORKER does not resolve this — a background service has no
+// caller to translate refusals for, so it takes IEmailRepository directly.
+builder.Services.AddScoped<IEmailService, EmailService>();
+
+// The WhatsApp Cloud API call. A FACTORY rather than a new HttpClient per send: the worker runs
+// every minute for the life of the process, and a fresh HttpClient each time is the textbook way to
+// exhaust the socket pool.
+builder.Services.AddHttpClient();
 
 // --- DI: services (HR) ---
 builder.Services.AddScoped<IBranchService, BranchService>();
@@ -118,7 +140,9 @@ builder.Services.AddScoped<ILeaveTypeService, LeaveTypeService>();
 builder.Services.AddScoped<ISalaryComponentService, SalaryComponentService>();
 builder.Services.AddScoped<IDocumentService, DocumentService>();
 builder.Services.AddScoped<ILeaveLedgerService, LeaveLedgerService>();
-builder.Services.AddScoped<ILeaveAccrualService, LeaveAccrualService>();
+builder.Services.AddScoped<ILeaveYearService, LeaveYearService>();
+builder.Services.AddScoped<IPayrollTierService, PayrollTierService>();
+builder.Services.AddScoped<IApprovalTierService, ApprovalTierService>();
 
 // --- DI: services (Attendance) ---
 builder.Services.AddScoped<ISettingService, SettingService>();
@@ -128,6 +152,19 @@ builder.Services.AddScoped<IRosterService, RosterService>();
 builder.Services.AddScoped<IImportService, ImportService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
 builder.Services.AddScoped<ICorrectionService, CorrectionService>();
+
+// Machine pull: the server calling the terminal, as opposed to the iclock endpoint where it calls us.
+// The LOCKS are a singleton and must stay one — they are what stops the timer and the "Pull now"
+// button opening two sessions to the same machine, and a scoped registry would hand each caller its
+// own semaphore and therefore lock nothing at all.
+builder.Services.AddSingleton<DevicePullLocks>();
+builder.Services.AddScoped<IMachinePullService, MachinePullService>();
+builder.Services.AddHostedService<MachinePullWorker>();
+
+// Outgoing mail: the OUTBOX is drained by a worker, never sent inline from the act that caused it.
+// Closing a request must commit whether or not a mail server is reachable, so the closing writes a
+// row and this turns rows into mail a minute later. No SmtpHost configured = it quietly does nothing.
+builder.Services.AddHostedService<EmailWorker>();
 
 // --- DI: services (Report) ---
 builder.Services.AddScoped<IReportService, ReportService>();
@@ -140,6 +177,7 @@ builder.Services.AddScoped<IExitPermissionService, ExitPermissionService>();
 builder.Services.AddScoped<ILeaveRequestService, LeaveRequestService>();
 builder.Services.AddScoped<IDecisionSignatureService, DecisionSignatureService>();
 builder.Services.AddScoped<ITipDistributionService, TipDistributionService>();
+builder.Services.AddScoped<IRosterApprovalService, RosterApprovalService>();
 builder.Services.AddScoped<IShiftSwapService, ShiftSwapService>();
 builder.Services.AddScoped<IOvertimeService, OvertimeService>();
 builder.Services.AddScoped<IExpenseService, ExpenseService>();
@@ -147,6 +185,10 @@ builder.Services.AddScoped<IAvailabilityService, AvailabilityService>();
 builder.Services.AddScoped<IOnboardingService, OnboardingService>();
 builder.Services.AddScoped<ISeparationService, SeparationService>();
 builder.Services.AddScoped<IPayrollAdjustmentService, PayrollAdjustmentService>();
+
+// The request PDF that goes out attached to the closing email. Scoped, because it reads through the
+// request repository — the worker resolves it inside its own per-cycle scope.
+builder.Services.AddScoped<IRequestPdfBuilder, RequestPdfBuilder>();
 builder.Services.AddScoped<ISalaryAdvanceService, SalaryAdvanceService>();
 builder.Services.AddScoped<IWorkflowSupportService, WorkflowSupportService>();
 
@@ -156,13 +198,10 @@ builder.Services.AddScoped<IPayrollService, PayrollService>();
 // --- Scheduled jobs (Quartz.NET, in-memory RAMJobStore — no DB job store) ---
 builder.Services.AddQuartz(q =>
 {
-    var accrualJobKey = new JobKey("MonthlyAccrualJob");
-    q.AddJob<MonthlyAccrualJob>(opts => opts.WithIdentity(accrualJobKey));
-    q.AddTrigger(t => t
-        .ForJob(accrualJobKey)
-        .WithIdentity("MonthlyAccrualTrigger")
-        // seconds-first cron: 00:30 on day 1 of every month
-        .WithCronSchedule("0 30 0 1 * ?"));
+    /* NO MONTHLY LEAVE ACCRUAL JOB. Entitlement is granted by the YEARLY OPENING
+       (POST /api/leave/year-open → hr.usp_LeaveYear_Open), which is deliberately manual: it is a
+       once-a-year act somebody decides to take, and its per-type summary is the point of taking it.
+       The old monthly job read hr.LEAVE_TYPE.AccrualPerMonth, a column that no longer exists. */
 
     // Attendance: process punches, mark absentees, reclassify approved leave.
     // The store is in-memory, so a run missed while the API was down is LOST, not caught up —
@@ -215,8 +254,27 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 
 // --- Authorization (permission policies) ---
+//
+// THE FALLBACK IS THE DEFAULT ANSWER. Without it, an endpoint carrying no [Authorize] and no
+// [HasPermission] is simply OPEN — protection is opt-in, and forgetting the attribute on one new
+// action is a silent hole rather than a compile error. With it, authentication is the floor and an
+// endpoint has to say [AllowAnonymous] out loud to be public.
+//
+// It applies only where NOTHING else is specified, so every existing [Authorize] and permission
+// policy is untouched. Four things are deliberately public and now say so:
+//   - AuthController login + refresh ([AllowAnonymous]) — you cannot hold a token before logging in;
+//   - IclockController ([AllowAnonymous] on the class) — the fingerprint terminals speak a fixed
+//     ZKTeco protocol and cannot send a bearer token; they are gated by serial + rate limiter;
+//   - AttendanceIngestion punch ([AllowAnonymous]) — [DeviceApiKey] is an action FILTER, not an
+//     authentication scheme, so the fallback would demand a JWT the device does not have;
+//   - the Development-only OpenAPI/Scalar endpoints.
 builder.Services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options =>
+{
+    options.FallbackPolicy = new AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
+});
 
 // --- Rate limiting: the fingerprint terminals' push endpoints only ---
 //
@@ -279,8 +337,10 @@ var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
 {
-    app.MapOpenApi();          // serves the spec at /openapi/v1.json
-    app.MapScalarApiReference(); // interactive UI at /scalar/v1
+    // AllowAnonymous because the authorization fallback would otherwise demand a token to read the
+    // documentation — and the documentation is how you find out how to get one. Development only.
+    app.MapOpenApi().AllowAnonymous();          // serves the spec at /openapi/v1.json
+    app.MapScalarApiReference().AllowAnonymous(); // interactive UI at /scalar/v1
 }
 
 // NOTE FOR THE FINGERPRINT TERMINALS: this redirects plain HTTP to HTTPS with a 307, and ZKTeco
@@ -289,7 +349,11 @@ if (app.Environment.IsDevelopment())
 // terminate TLS in front of the API (IIS/nginx) and let it forward on HTTP, NOT to drop this line:
 // the serial and every punch travel in clear text, and the serial is the only credential this
 // protocol has.
-app.UseHttpsRedirection();
+// /iclock is exempt because the terminals speak plain HTTP on the LAN and do not follow 307s; every
+// other endpoint keeps the redirect.
+app.UseWhen(
+    ctx => !ctx.Request.Path.StartsWithSegments("/iclock"),
+    branch => branch.UseHttpsRedirection());
 app.UseCors(CorsPolicy);
 
 // Before authentication on purpose: a flood should be refused at the door, not after we have done
@@ -301,5 +365,43 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 app.MapHub<LiveHub>("/hubs/live");
+
+// The one line an installer needs: exactly what to type into a terminal's Cloud Server / ADMS
+// screen. Both halves are RESOLVED, never assumed — the LAN IP is per-machine and changes with the
+// DHCP lease, and the port is whatever the profile actually bound. A guessed address here is
+// indistinguishable from a dead terminal, which is the failure this line exists to prevent.
+// Registered on ApplicationStarted because the server's real addresses do not exist until then.
+app.Lifetime.ApplicationStarted.Register(() =>
+{
+    var bound = app.Services.GetRequiredService<IServer>()
+        .Features.Get<IServerAddressesFeature>()?.Addresses ?? [];
+
+    // "http://0.0.0.0:5078" / "http://[::]:5078" / "http://localhost:5078" — all we want is the port.
+    var httpPort = bound
+        .Select(address => Uri.TryCreate(address, UriKind.Absolute, out var uri) ? uri : null)
+        .FirstOrDefault(uri => uri is not null && uri.Scheme == Uri.UriSchemeHttp)?.Port;
+
+    // Every operational IPv4 that is not loopback — on a machine with Wi-Fi and Ethernet both up,
+    // the installer needs to be told which addresses exist rather than handed one at random.
+    var lanIPs = NetworkInterface.GetAllNetworkInterfaces()
+        .Where(nic => nic.OperationalStatus == OperationalStatus.Up
+                      && nic.NetworkInterfaceType != NetworkInterfaceType.Loopback)
+        .SelectMany(nic => nic.GetIPProperties().UnicastAddresses)
+        .Select(unicast => unicast.Address)
+        .Where(ip => ip.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip))
+        .Select(ip => ip.ToString())
+        .Distinct()
+        .ToArray();
+
+    var target = httpPort is null
+        ? "no plain-HTTP binding — the terminals cannot reach this instance"
+        : lanIPs.Length == 0
+            ? $"http://<this machine's LAN IP>:{httpPort}"
+            : string.Join(" or ", lanIPs.Select(ip => $"http://{ip}:{httpPort}"));
+
+    app.Logger.LogInformation(
+        "iclock receiver listening — point terminals at {Target} (device Cloud Server / ADMS " +
+        "setting), serial must be registered on Attendance > Devices.", target);
+});
 
 app.Run();

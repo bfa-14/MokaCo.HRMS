@@ -31,6 +31,27 @@ public class AttendanceRepository : IAttendanceRepository
     }
 
     /// <summary>
+    /// RE-derives one day from ALL of its punches, rather than only the unconsumed ones.
+    ///
+    /// This is the companion to a settings change. <see cref="ProcessRawLogsAsync"/> is incremental
+    /// by design — it consumes what is outstanding — so a day already processed under one
+    /// interpretation is never revisited when that interpretation changes. Switching punch direction
+    /// to Alternate, or adjusting the debounce window, therefore means nothing to yesterday until
+    /// this is run against it.
+    ///
+    /// Manual and corrected rows stay untouched: a human's decision about a day outranks any amount
+    /// of re-derivation.
+    /// </summary>
+    public async Task<ProcessResult> ReprocessDayAsync(DateTime workDate)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleAsync<ProcessResult>(
+            "attendance.usp_Attendance_ReprocessDay",
+            new { WorkDate = workDate.Date },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    /// <summary>
     /// Writes records for people who were rostered but produced NO punches at all. The processor only
     /// sees days that have punches, so without this a fully-absent employee would have no record and
     /// payroll would never know they were missing. Run it AFTER the processor.
@@ -204,6 +225,22 @@ public class AttendanceRepository : IAttendanceRepository
         return await db.QueryAsync<AttendanceBranchSummary>(
             "attendance.usp_Attendance_MonthlyByBranch",
             new { PeriodYearMonth = periodYearMonth, EmployeeId = employeeId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<RosterMonthStatus?> GetRosterMonthAsync(int branchId, DateTime monthDate)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<RosterMonthStatus>(
+            "attendance.usp_RosterMonth_Get",
+            new
+            {
+                BranchId = branchId,
+                /* Normalised the same way RosterApprovalRepository normalises it. The status of a
+                   month and the request raised on it must be looked up under one date, or the
+                   banner reads Draft for a month that is actually pending. */
+                MonthDate = new DateTime(monthDate.Year, monthDate.Month, 1),
+            },
             commandType: CommandType.StoredProcedure);
     }
 }

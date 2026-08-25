@@ -159,4 +159,32 @@ public class DefinitionRepository : IDefinitionRepository
             new { WorkflowDefinitionId = workflowDefinitionId, MinRequesterTier = minRequesterTier },
             commandType: CommandType.StoredProcedure);
     }
+
+    /// <summary>
+    /// The decision-type catalogue every decision dropdown is built from. Inactive types are excluded
+    /// by default — a retired type must not reappear in a menu, but a setup screen still needs to see
+    /// it to bring it back.
+    /// </summary>
+    public async Task<IEnumerable<DecisionTypeConfig>> GetDecisionTypesAsync(bool includeInactive)
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<DecisionTypeConfig>(
+            "workflow.usp_DecisionType_GetAll",
+            new { IncludeInactive = includeInactive },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    /// <summary>
+    /// Restricts ONE step to a chosen set of decision codes. An empty or null list restores the
+    /// default (every selectable type), which is why it travels as a comma-separated string:
+    /// "nothing configured" and "an empty list" have to mean the same thing.
+    /// </summary>
+    public async Task SetStepDecisionsAsync(int workflowStepId, string? decisionCodes)
+    {
+        using var db = _factory.Create();
+        await db.ExecuteAsync(
+            "workflow.usp_Definition_SetStepDecisions",
+            new { WorkflowStepId = workflowStepId, DecisionCodes = decisionCodes },
+            commandType: CommandType.StoredProcedure);
+    }
 }

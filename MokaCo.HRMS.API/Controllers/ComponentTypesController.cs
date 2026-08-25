@@ -23,7 +23,7 @@ public class ComponentTypesController : ControllerBase
     public async Task<IActionResult> GetAll() => Ok(await _componentTypes.GetAllAsync());
 
     [HttpPost]
-    [HasPermission("EMP_EDIT")]
+    [HasPermission("COMPONENT_MANAGE")]
     public async Task<IActionResult> Create([FromBody] ComponentTypeCreateRequest request)
     {
         var id = await _componentTypes.CreateAsync(request.Name, request.Category, request.Sign);
@@ -32,7 +32,7 @@ public class ComponentTypesController : ControllerBase
     }
 
     [HttpPut("{id:int}")]
-    [HasPermission("EMP_EDIT")]
+    [HasPermission("COMPONENT_MANAGE")]
     public async Task<IActionResult> Update(int id, [FromBody] ComponentTypeUpdateRequest request)
     {
         await _componentTypes.UpdateAsync(id, request.Name, request.Category, request.Sign);

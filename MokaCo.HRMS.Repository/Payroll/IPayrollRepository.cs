@@ -65,6 +65,13 @@ public interface IPayrollRepository
         int payslipId, string paymentMethod, string? paymentReference, int actedByUserId);
 
     /// <summary>
+    /// The caller's own salary standing for the current period — one row, or null when the month
+    /// has not been generated. Keyed by USER, not employee: the procedure resolves the link itself,
+    /// so a caller cannot ask about somebody else by changing a number.
+    /// </summary>
+    Task<MyPayslipStatus?> GetMyStatusAsync(int userId);
+
+    /// <summary>
     /// The statutory sheet for a run — per employee, in the run's PRIMARY currency because a
     /// contribution base is one legal figure rather than a pair.
     /// </summary>
@@ -100,8 +107,20 @@ public interface IPayrollRepository
     // --- adjustments ---
     Task<IEnumerable<PayrollAdjustment>> GetAdjustmentsAsync(string targetPeriod);
 
-    // Creation lives in IPayrollAdjustmentRepository (workflow.usp_PayrollAdjustment_Create): the
-    // row is written by the final approval of a request, and payroll.usp_Adjustment_Create refuses.
+    // Creation of ONE adjustment lives in IPayrollAdjustmentRepository
+    // (workflow.usp_PayrollAdjustment_Create): the row is written by the final approval of a
+    // request, and payroll.usp_Adjustment_Create refuses. The bulk create below is the single
+    // exception, and it is a different act — see its own note.
+
+    /// <summary>
+    /// One adjustment for every active employee — payroll.usp_Adjustment_CreateBulk.
+    ///
+    /// The procedure owns all of it: who counts as active (not deleted, and not terminated before
+    /// the target period starts), the branch narrowing, and the skip that makes a re-run safe. It
+    /// returns the number of rows it wrote, which is why this is a Query and not an Execute.
+    /// </summary>
+    Task<PayrollAdjustmentBulkResult?> CreateAdjustmentsBulkAsync(
+        PayrollAdjustmentBulkRequest request, int createdByUserId);
 
     Task<PayrollAdjustmentDeleteResult?> DeleteAdjustmentAsync(int payrollAdjustmentId, int actedByUserId);
 

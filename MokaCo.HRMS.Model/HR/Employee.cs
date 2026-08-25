@@ -13,6 +13,32 @@ public class Employee
     public string? NssfNumber { get; set; }
     public DateTime HireDate { get; set; }
     public DateTime? TerminationDate { get; set; }
+
+    /// <summary>
+    /// How the person is reached. Both optional, and stored NULL rather than empty — the procedures
+    /// NULLIF a blank on the way in, so "" and "not given" cannot both exist as separate states.
+    ///
+    /// EMAIL IS ALSO AN ADDRESS THE SYSTEM WRITES TO: core.usp_Email_QueueClosedRequests skips
+    /// anyone whose is NULL, so a person with no email simply gets no closing notification rather
+    /// than a queued mail that can never be delivered.
+    ///
+    /// PhoneNumber is stored and shown only. Nothing sends to it — SMS needs a gateway that does
+    /// not exist yet, and a column is the cheap half of that.
+    /// </summary>
+    public string? Email { get; set; }
+    public string? PhoneNumber { get; set; }
+
+    /// <summary>
+    /// 'en' or 'ar' — WHICH LANGUAGE THIS PERSON IS WRITTEN TO IN, not which one they browse in.
+    ///
+    /// A property of the EMPLOYEE, not of the session: the notification is composed by a background
+    /// worker at a moment when nobody is signed in, so there is no UI language to borrow. It is
+    /// copied onto the outbox row at queue time and frozen there.
+    ///
+    /// NOT NULL in the database, defaulted 'en', and the procedures fold anything that is not 'ar'
+    /// down to 'en' — two values, never a third.
+    /// </summary>
+    public string PreferredLanguage { get; set; } = "en";
     /// <summary>1 = staff (default), 2 = management, 3 = executive — picks which published chain their requests follow.</summary>
     public int ApprovalTier { get; set; } = 1;
     /// <summary>Who this person reports to (a LineManager step climbs this). Null for the top of a reporting line.</summary>

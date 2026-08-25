@@ -17,6 +17,14 @@ public interface IExitPermissionService
 
     Task<IEnumerable<MyExitPermission>> GetForEmployeeAsync(int employeeId, DateTime? fromDate, DateTime? toDate);
     Task<ExitPermissionDetail?> GetByRequestAsync(int requestInstanceId);
+
+    /// <summary>
+    /// The TYPED approval, carrying the minutes being signed for — the only path that can reduce them.
+    /// A null ApprovedMinutes approves the figure as it stands. The signature is verified before
+    /// anything is written; the procedure owns every rule about the figure and its refusals travel
+    /// verbatim.
+    /// </summary>
+    Task<ExitPermissionDecisionResult?> DecideAsync(int requestInstanceId, int actedByUserId, ExitPermissionDecideRequest request);
     Task<ApplyResult> ApplyToAttendanceAsync(int? exitPermissionId, DateTime? workDate);
     Task<IEnumerable<PendingApplication>> GetPendingApplicationAsync();
     Task<PostLeaveResult> PostLeaveUsageAsync(PostLeaveRequest request, int? postedBy);

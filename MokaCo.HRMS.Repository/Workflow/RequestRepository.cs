@@ -251,6 +251,68 @@ public class RequestRepository : IRequestRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    /// <summary>
+    /// Lifts the hold — the step returns to Pending with the same approver. The procedure decides who
+    /// may: the approver who set it OR the requester, because when a hold is waiting on the employee,
+    /// answering it IS the resume and should not also require chasing the approver.
+    /// </summary>
+    public async Task<ApproveResult?> ResumeAsync(int requestInstanceId, int actedByUserId, string? note)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<ApproveResult>(
+            "workflow.usp_Request_Resume",
+            new { RequestInstanceId = requestInstanceId, ActedByUserId = actedByUserId, Note = note },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    /// <summary>
+    /// APPROVED BUT NOT APPLIED — the reconciler's work list.
+    ///
+    /// THE ONE INLINE QUERY IN THIS LAYER, and it is deliberate. Everything else here calls a stored
+    /// procedure, which is the house rule; this exists because the fix pack that closed the
+    /// auto-approval hole was a proc-level change and adding a monitoring proc alongside it was out of
+    /// scope. If this outlives that decision, promote it to workflow.usp_Request_GetUnappliedEffects
+    /// and delete the string — nothing else has to change.
+    ///
+    /// Each arm is a type paired with the ONE column that proves its effect landed. Overtime is
+    /// deliberately absent: the nightly job applies it a step earlier, and its marker stays null until
+    /// the worked day exists, so including it would re-sweep the same rows every night forever.
+    /// </summary>
+    private const string UnappliedEffectsSql = @"
+SELECT ri.RequestInstanceId
+FROM workflow.REQUEST_INSTANCE ri
+JOIN workflow.REQUEST_TYPE rt ON rt.RequestTypeId = ri.RequestTypeId
+WHERE ri.[Status] = 'Approved'
+  AND ( (rt.Code = 'LEAVE_REQUEST'      AND EXISTS (SELECT 1 FROM workflow.LEAVE_REQUEST x
+                                                    WHERE x.RequestInstanceId = ri.RequestInstanceId AND x.AppliedToLedgerAt   IS NULL))
+     OR (rt.Code = 'SALARY_ADVANCE'     AND EXISTS (SELECT 1 FROM workflow.SALARY_ADVANCE_REQUEST x
+                                                    WHERE x.RequestInstanceId = ri.RequestInstanceId AND x.CreatedAdvanceId    IS NULL))
+     OR (rt.Code = 'PAYROLL_ADJUSTMENT' AND EXISTS (SELECT 1 FROM workflow.PAYROLL_ADJUSTMENT_REQUEST x
+                                                    WHERE x.RequestInstanceId = ri.RequestInstanceId AND x.CreatedAdjustmentId IS NULL))
+     OR (rt.Code = 'SHIFT_SWAP'         AND EXISTS (SELECT 1 FROM workflow.SHIFT_SWAP x
+                                                    WHERE x.RequestInstanceId = ri.RequestInstanceId AND x.AppliedAt           IS NULL)) )
+ORDER BY ri.RequestInstanceId;";
+
+    public async Task<IEnumerable<int>> GetApprovedWithUnappliedEffectsAsync()
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<int>(UnappliedEffectsSql);
+    }
+
+    /// <summary>
+    /// Applies a type's approval effects if they are still missing (usp_Request_ApplyApprovalEffects).
+    /// Idempotent and type-guarded, and it emits NO result set — it is called from inside Submit,
+    /// which is itself consumed by INSERT-EXEC, so an extra rowset there would break the create procs.
+    /// </summary>
+    public async Task ApplyApprovalEffectsAsync(int requestInstanceId, int? actorUserId)
+    {
+        using var db = _factory.Create();
+        await db.ExecuteAsync(
+            "workflow.usp_Request_ApplyApprovalEffects",
+            new { RequestInstanceId = requestInstanceId, ActorUserId = actorUserId },
+            commandType: CommandType.StoredProcedure);
+    }
+
     /// <summary>The request's conversation, oldest first.</summary>
     public async Task<IEnumerable<RequestNote>> GetNotesAsync(int requestInstanceId)
     {
@@ -275,6 +337,20 @@ public class RequestRepository : IRequestRepository
                 StepNo = stepNo,
                 IsHoldResponse = isHoldResponse,
             },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    /// <summary>
+    /// Decisions started and never signed, older than the threshold. The quieter half of the
+    /// oversight page: unlike a hold, nobody knows an answer is coming, because from the requester's
+    /// side nothing has happened at all.
+    /// </summary>
+    public async Task<IEnumerable<StaleDraft>> GetStaleDraftsAsync(int olderThanDays)
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<StaleDraft>(
+            "workflow.usp_Request_GetStaleDrafts",
+            new { OlderThanDays = olderThanDays },
             commandType: CommandType.StoredProcedure);
     }
 
@@ -357,6 +433,44 @@ public class RequestRepository : IRequestRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    /// <summary>
+    /// The ENGINE's own withdrawal (usp_Request_WithdrawDecision) — unsigns the step and hands it
+    /// back, with no typed figure to restore. Safe only for types that stamp no figure at decision
+    /// time; for the others the figure would be left at the withdrawn value (see FIX_PROMPTS F10),
+    /// which is why the controller routes by type rather than sending everything here.
+    /// </summary>
+    public async Task<DeputyDelegationResult?> DelegateStepToDeputyAsync(
+        int requestInstanceId, int stepNo, int actedByUserId, bool undo)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<DeputyDelegationResult>(
+            "workflow.usp_Step_DelegateToDeputy",
+            new
+            {
+                RequestInstanceId = requestInstanceId,
+                StepNo = stepNo,
+                ActedByUserId = actedByUserId,
+                Undo = undo,
+            },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<ApproveResult?> WithdrawDecisionAsync(int requestInstanceId, int stepNo, int actedByUserId, string reason, bool signedWithPassword = false)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<ApproveResult>(
+            "workflow.usp_Request_WithdrawDecision",
+            new
+            {
+                RequestInstanceId = requestInstanceId,
+                StepNo = stepNo,
+                ActedByUserId = actedByUserId,
+                Reason = reason,
+                SignedWithPassword = signedWithPassword,
+            },
+            commandType: CommandType.StoredProcedure);
+    }
+
     /// <summary>Reopens a rejected/cancelled request; the proc SELECTs the request's new status and current step back.</summary>
     public async Task<ApproveResult?> ReopenClosedAsync(int requestInstanceId, int actedByUserId, string reason)
     {
@@ -373,12 +487,18 @@ public class RequestRepository : IRequestRepository
     /// effects not yet consumed — and each refusal names which of those failed. It SELECTs the
     /// request's new standing back.
     /// </summary>
-    public async Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason)
+    public async Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason, bool signedWithPassword = false)
     {
         using var db = _factory.Create();
         return await db.QuerySingleOrDefaultAsync<ApproveResult>(
             "workflow.usp_Request_RetractLastDecision",
-            new { RequestInstanceId = requestInstanceId, ActedByUserId = actedByUserId, Reason = reason },
+            new
+            {
+                RequestInstanceId = requestInstanceId,
+                ActedByUserId = actedByUserId,
+                Reason = reason,
+                SignedWithPassword = signedWithPassword,
+            },
             commandType: CommandType.StoredProcedure);
     }
 

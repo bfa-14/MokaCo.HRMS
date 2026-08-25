@@ -6,6 +6,14 @@ public interface IAttendanceRepository
 {
     /* -- the processor -- */
     Task<ProcessResult> ProcessRawLogsAsync(DateTime? workDate);
+
+    /// <summary>
+    /// Re-derives ONE day from all of its punches. The companion to a punch-interpretation change:
+    /// the ordinary processor is incremental, so a day already built is never revisited when the
+    /// rules for reading its punches change.
+    /// </summary>
+    Task<ProcessResult> ReprocessDayAsync(DateTime workDate);
+
     Task<MarkAbsenteesResult> MarkAbsenteesAsync(DateTime workDate);
     Task<MarkLeaveDaysResult> MarkLeaveDaysAsync(string periodYearMonth);
 
@@ -26,4 +34,13 @@ public interface IAttendanceRepository
     Task<AttendanceSummary?> GetMonthlySummaryAsync(int employeeId, string periodYearMonth);
     Task<IEnumerable<AttendanceSummary>> GetMonthlySummaryAllAsync(string periodYearMonth);
     Task<IEnumerable<AttendanceBranchSummary>> GetMonthlyByBranchAsync(string periodYearMonth, int? employeeId);
+
+    /* -- roster sign-off -- */
+
+    /// <summary>
+    /// Where one branch-month of roster has got to. NULL when no row exists yet, which is the
+    /// ordinary state of a month nobody has put up for approval — not an error, and not a "Draft"
+    /// this layer should invent on the procedure's behalf.
+    /// </summary>
+    Task<RosterMonthStatus?> GetRosterMonthAsync(int branchId, DateTime monthDate);
 }

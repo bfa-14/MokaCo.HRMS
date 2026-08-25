@@ -61,13 +61,36 @@ public interface IRequestService
     /// <summary>
     /// Approve. When the step or the caller's role demands a signature, <paramref name="password"/>
     /// must be their real password: it is verified here and a wrong one is a 401 that changes nothing.
+    ///
+    /// ONLY for types with no typed decide procedure. A request whose final approval has side effects
+    /// (leave, advances, adjustments, overtime, swaps, hires, separations, exit permissions…) is
+    /// refused with a <see cref="WorkflowException"/> 409 telling the caller to use its typed endpoint
+    /// — the generic engine call would close the request without ever applying them.
     /// </summary>
     Task<ApproveResult?> ApproveAsync(int requestInstanceId, int actedByUserId, string? comment, string? changeSummary = null, string? password = null);
     Task<RequestClosedResult?> RejectAsync(int requestInstanceId, int actedByUserId, string reason, string? password = null);
-    Task<RequestClosedResult?> CancelAsync(int requestInstanceId, int actedByUserId, string reason);
+    /// <summary>
+    /// Cancels an open request. Refused with a <see cref="WorkflowException"/> 403 unless the caller
+    /// raised it, is the employee it concerns, or holds HR/Admin — the same rule usp_Request_Cancel
+    /// enforces, checked here only to answer cleanly before the round-trip.
+    /// </summary>
+    Task<RequestClosedResult?> CancelAsync(int requestInstanceId, RequestCaller caller, string reason);
 
     /// <summary>Parks a live request on hold. The database enforces the reason and who may act; a breach comes back as a WorkflowException.</summary>
     Task PutOnHoldAsync(int requestInstanceId, int actedByUserId, string reason, bool waitingOnRequester, string? password = null);
+
+    /// <summary>
+    /// Lifts a hold, returning the step to Pending with the same approver. The database allows the
+    /// approver who set it OR the requester — a hold waiting on the requester is answered by them, and
+    /// answering IS the resume. Its refusals come back as a WorkflowException, message intact.
+    /// </summary>
+    Task<ApproveResult?> ResumeAsync(int requestInstanceId, int actedByUserId, string? note);
+
+    /// <summary>
+    /// Sweeps approved requests whose type effect never landed and applies it. Reports what actually
+    /// landed rather than what was attempted — anything left in StillUnapplied needs a person.
+    /// </summary>
+    Task<EffectReconcileResult> ReconcileApprovalEffectsAsync();
 
     /// <summary>The request's conversation, oldest first.</summary>
     Task<IEnumerable<RequestNote>> GetNotesAsync(int requestInstanceId);
@@ -77,6 +100,12 @@ public interface IRequestService
 
     /// <summary>Requests stuck on hold longer than the given number of days — HR's stuck-requests queue.</summary>
     Task<IEnumerable<LongHold>> GetLongHoldsAsync(int olderThanDays);
+
+    /// <summary>
+    /// Decisions somebody started and never signed. The quieter half of the oversight page — nobody
+    /// is waiting on an answer they know is coming, because nothing visible has happened at all.
+    /// </summary>
+    Task<IEnumerable<StaleDraft>> GetStaleDraftsAsync(int olderThanDays);
 
     Task<IEnumerable<OldVersionRequest>> GetOnOldVersionsAsync(int? requestTypeId);
     Task<MoveVersionResult?> MoveToVersionAsync(int requestInstanceId, MoveVersionRequest request, int actedByUserId);
@@ -94,6 +123,24 @@ public interface IRequestService
     /// </summary>
     Task<WithdrawDecisionResult?> WithdrawExitPermissionDecisionAsync(int requestInstanceId, int stepNo, int actedByUserId, string reason, string? password = null);
 
+    /// <summary>
+    /// Takes back a decision through the ENGINE (usp_Request_WithdrawDecision) — for request types
+    /// that stamp NO figure when they are decided, so there is nothing to restore. Asks the same
+    /// signature question as the exit-permission path; the database remains the authority on whether
+    /// this caller may withdraw at all.
+    /// </summary>
+    Task<ApproveResult?> WithdrawDecisionAsync(int requestInstanceId, int stepNo, int actedByUserId, string reason, string? password = null);
+
+    /// <summary>
+    /// Hands the current step to its deputy role, or takes it back.
+    ///
+    /// NO PASSWORD, and that is not an omission. Delegating decides nothing — it offers the step
+    /// to whoever holds the deputy role — so there is no signed act to protect. The signature
+    /// question arrives later, when the deputy actually decides.
+    /// </summary>
+    Task<DeputyDelegationResult?> DelegateStepToDeputyAsync(
+        int requestInstanceId, int stepNo, int actedByUserId, bool undo);
+
     /// <summary>Reopens a rejected/cancelled request. The database refuses an approved one and demands a reason; that comes back as a WorkflowException.</summary>
     Task<ApproveResult?> ReopenClosedAsync(int requestInstanceId, int actedByUserId, string reason);
 
@@ -103,7 +150,12 @@ public interface IRequestService
     /// person, wrong day, already consumed) comes back as a WorkflowException with the message
     /// intact. That message is the entire value of the refusal, so nothing may replace it.
     /// </summary>
-    Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason);
+    /// <param name="password">
+    /// Verified here and passed on as the signed fact. Required when the decision being struck was
+    /// itself password-signed, or the caller's role demands a signature — undoing a signed act is a
+    /// signed act, exactly as it is for a withdrawal.
+    /// </param>
+    Task<ApproveResult?> RetractLastDecisionAsync(int requestInstanceId, int actedByUserId, string reason, string? password = null);
 
     /// <summary>
     /// One half of a GM + Owner reopen. Answers 'AwaitingSecond' when this was the first signature —
