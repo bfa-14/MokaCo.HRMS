@@ -1,8 +1,10 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.SqlClient;
 using Microsoft.Net.Http.Headers;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Model.Workflow;
+using MokaCo.HRMS.Services.Core;
 using MokaCo.HRMS.Services.Workflow;
 
 namespace MokaCo.HRMS.Api.Controllers;
@@ -23,13 +25,16 @@ public class RequestsController : ControllerBase
     private readonly IRequestService _requests;
     private readonly IWorkflowSupportService _support;
     private readonly ILiveNotifier _live;
+    private readonly IEmailService _email;
 
     public RequestsController(
-        IRequestService requests, IWorkflowSupportService support, ILiveNotifier live)
+        IRequestService requests, IWorkflowSupportService support, ILiveNotifier live,
+        IEmailService email)
     {
         _requests = requests;
         _support = support;
         _live = live;
+        _email = email;
     }
 
     /// <summary>
@@ -582,6 +587,66 @@ public class RequestsController : ControllerBase
         {
             return StatusCode(ex.StatusCode, new { error = ex.Message });
         }
+    }
+
+    /// <summary>
+    /// Mails the employee the outcome of a request that has ENDED — by hand, on top of the automatic
+    /// pass that mails every request as it closes.
+    ///
+    /// WHY A BUTTON EXISTS AT ALL when this is automatic. The automatic pass only covers requests
+    /// that closed in the last seven days, only Approved and Rejected, and only where the employee
+    /// had an address AT THE TIME. Everything outside that is exactly the case somebody asks about:
+    /// a cancelled request, an address added after the fact, a mail that failed against a server
+    /// that was down. This is the answer to all of them, and it is the resend as well — the
+    /// procedure replaces any previous mail for the request rather than adding a second.
+    ///
+    /// NO PERMISSION BEYOND BEING SIGNED IN. Anyone who can open the request may send its outcome
+    /// to the person it is about, and the procedure guards everything that actually matters: the
+    /// request must have ENDED, and the employee must have an address. Neither of those is a trust
+    /// question, so neither is answered by a permission — and the mail says only what the request
+    /// already says, to the one person most entitled to hear it.
+    ///
+    /// IT QUEUES; IT DOES NOT SEND. The row goes into core.EMAIL_OUTBOX and the worker picks it up
+    /// within the minute, which is why the address is returned: the caller is rarely the employee,
+    /// and this is their one chance to notice the mail is going somewhere they did not expect while
+    /// correcting it still costs nothing.
+    /// </summary>
+    [HttpPost("{id:int}/send-email")]
+    public async Task<IActionResult> SendEmail(int id)
+    {
+        try
+        {
+            var queued = await _email.QueueForRequestAsync(id, User.UserId());
+            return queued is null ? NotFound() : Ok(queued);
+        }
+        catch (SqlException ex) when (ex.Number == 50000)
+        {
+            // "The request has not ended yet - the email goes out when it closes." and "This employee
+            // has no email address - add it on the employee page first." Both are the caller's to
+            // fix and both name the fix, so the sentence travels to the screen untouched.
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Where this request's mail got to — sent, failed with the server's reason, or still queued.
+    ///
+    /// A LIST — one entry per channel, because v2 queues an Email row and a WhatsApp row for the
+    /// same request and either can fail on its own.
+    ///
+    /// 204 WHEN NOTHING WAS EVER QUEUED, which is most requests: an empty status is the absence of
+    /// rows, not a value they could hold, and the screen shows nothing at all rather than "no email".
+    ///
+    /// AUTHENTICATED ONLY, the same as the send it reports on: a caller who may queue the mail must
+    /// be able to see what became of it, or the button answers nothing. It carries no visibility rule
+    /// of its own, so if the SMTP error text is ever judged too revealing, this and the send beside
+    /// it are the two methods to tighten together.
+    /// </summary>
+    [HttpGet("{id:int}/email-status")]
+    public async Task<IActionResult> EmailStatus(int id)
+    {
+        var rows = (await _email.GetStatusForRequestAsync(id)).ToList();
+        return rows.Count == 0 ? NoContent() : Ok(rows);
     }
 
     /// <summary>

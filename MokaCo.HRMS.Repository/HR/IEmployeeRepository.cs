@@ -9,11 +9,11 @@ public interface IEmployeeRepository
     Task<int> CreateAsync(
         int? userId, int branchId, int departmentId, int positionId, string fullName,
         string? nationalId, string? nssfNumber, DateTime hireDate, int? createdBy,
-        string? email, string? phoneNumber);
+        string? email, string? phoneNumber, string? preferredLanguage);
     Task UpdateAsync(
         int employeeId, int branchId, int departmentId, int positionId, string fullName,
         string? nationalId, string? nssfNumber, DateTime hireDate, DateTime? terminationDate, int? modifiedBy,
-        string? email, string? phoneNumber);
+        string? email, string? phoneNumber, string? preferredLanguage);
     Task SoftDeleteAsync(int employeeId, int? modifiedBy);
 
     // ---- employee <-> user account linking ----

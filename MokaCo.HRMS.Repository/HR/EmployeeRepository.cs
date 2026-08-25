@@ -38,7 +38,7 @@ public class EmployeeRepository : IEmployeeRepository
     public async Task<int> CreateAsync(
         int? userId, int branchId, int departmentId, int positionId, string fullName,
         string? nationalId, string? nssfNumber, DateTime hireDate, int? createdBy,
-        string? email, string? phoneNumber)
+        string? email, string? phoneNumber, string? preferredLanguage)
     {
         using var db = _factory.Create();
         return await db.ExecuteScalarAsync<int>(
@@ -55,7 +55,8 @@ public class EmployeeRepository : IEmployeeRepository
                 HireDate = hireDate,
                 CreatedBy = createdBy,
                 Email = email,
-                PhoneNumber = phoneNumber
+                PhoneNumber = phoneNumber,
+                PreferredLanguage = preferredLanguage
             },
             commandType: CommandType.StoredProcedure);
     }
@@ -63,7 +64,7 @@ public class EmployeeRepository : IEmployeeRepository
     public async Task UpdateAsync(
         int employeeId, int branchId, int departmentId, int positionId, string fullName,
         string? nationalId, string? nssfNumber, DateTime hireDate, DateTime? terminationDate, int? modifiedBy,
-        string? email, string? phoneNumber)
+        string? email, string? phoneNumber, string? preferredLanguage)
     {
         using var db = _factory.Create();
         await db.ExecuteAsync(
@@ -81,7 +82,8 @@ public class EmployeeRepository : IEmployeeRepository
                 TerminationDate = terminationDate,
                 ModifiedBy = modifiedBy,
                 Email = email,
-                PhoneNumber = phoneNumber
+                PhoneNumber = phoneNumber,
+                PreferredLanguage = preferredLanguage
             },
             commandType: CommandType.StoredProcedure);
     }

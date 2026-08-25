@@ -31,6 +31,11 @@ using System.Threading.RateLimiting;
 using Quartz;
 using Scalar.AspNetCore;
 
+// QUESTPDF'S LICENCE IS DECLARED IN CODE, and the library throws on first render without it. The
+// Community tier is the free one and it is what this deployment qualifies for; stating it here means
+// the first request PDF ever generated is not the thing that discovers the omission.
+QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // --- Configuration ---
@@ -116,6 +121,14 @@ builder.Services.AddScoped<IUserSignatureService, UserSignatureService>();
 builder.Services.AddScoped<ICurrencyService, CurrencyService>();
 builder.Services.AddScoped<IExchangeRateService, ExchangeRateService>();
 builder.Services.AddScoped<IDashboardService, DashboardService>();
+// Manual "email the employee" only. The WORKER does not resolve this — a background service has no
+// caller to translate refusals for, so it takes IEmailRepository directly.
+builder.Services.AddScoped<IEmailService, EmailService>();
+
+// The WhatsApp Cloud API call. A FACTORY rather than a new HttpClient per send: the worker runs
+// every minute for the life of the process, and a fresh HttpClient each time is the textbook way to
+// exhaust the socket pool.
+builder.Services.AddHttpClient();
 
 // --- DI: services (HR) ---
 builder.Services.AddScoped<IBranchService, BranchService>();
@@ -172,6 +185,10 @@ builder.Services.AddScoped<IAvailabilityService, AvailabilityService>();
 builder.Services.AddScoped<IOnboardingService, OnboardingService>();
 builder.Services.AddScoped<ISeparationService, SeparationService>();
 builder.Services.AddScoped<IPayrollAdjustmentService, PayrollAdjustmentService>();
+
+// The request PDF that goes out attached to the closing email. Scoped, because it reads through the
+// request repository — the worker resolves it inside its own per-cycle scope.
+builder.Services.AddScoped<IRequestPdfBuilder, RequestPdfBuilder>();
 builder.Services.AddScoped<ISalaryAdvanceService, SalaryAdvanceService>();
 builder.Services.AddScoped<IWorkflowSupportService, WorkflowSupportService>();
 

@@ -42,4 +42,42 @@ public class EmailRepository : IEmailRepository
             new { EmailId = emailId, Ok = ok, Error = error },
             commandType: CommandType.StoredProcedure);
     }
+
+    /// <summary>
+    /// QuerySingleOrDefault, not QuerySingle: the procedure RAISERRORs and RETURNs on every refusal,
+    /// so a call that is going to fail produces no result set at all. The refusal arrives here as a
+    /// SqlException either way — but QuerySingle would replace that message with "sequence contains
+    /// no elements" if the shape ever changed, and the message is the entire value of the failure.
+    /// </summary>
+    /// <summary>
+    /// [Status] is bracketed because it is a reserved word in enough dialects to be worth never
+    /// thinking about again; SentUtc and Error come back as they are stored.
+    /// </summary>
+    private const string StatusSql = @"
+SELECT Channel, [Status], AttemptCount, Error, SentUtc
+FROM core.EMAIL_OUTBOX
+WHERE RequestInstanceId = @RequestInstanceId
+ORDER BY Channel;";
+
+    /// <summary>
+    /// Ordered by CHANNEL rather than by id, so Email always reads above WhatsApp however the rows
+    /// happened to be inserted — a status block that reorders itself between visits reads as though
+    /// something changed.
+    /// </summary>
+    public async Task<IEnumerable<RequestEmailStatus>> GetStatusForRequestAsync(int requestInstanceId)
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<RequestEmailStatus>(
+            StatusSql,
+            new { RequestInstanceId = requestInstanceId });
+    }
+
+    public async Task<QueuedEmail?> QueueForRequestAsync(int requestInstanceId, int? queuedByUserId)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<QueuedEmail>(
+            "core.usp_Email_QueueForRequest",
+            new { RequestInstanceId = requestInstanceId, QueuedByUserId = queuedByUserId },
+            commandType: CommandType.StoredProcedure);
+    }
 }

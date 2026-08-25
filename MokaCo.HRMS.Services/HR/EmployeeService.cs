@@ -21,13 +21,14 @@ public class EmployeeService : IEmployeeService
         => WorkflowSqlErrors.MapAsync(() => _repo.CreateAsync(
             request.UserId, request.BranchId, request.DepartmentId, request.PositionId,
             request.FullName, request.NationalId, request.NssfNumber, request.HireDate, createdBy,
-            request.Email, request.PhoneNumber));
+            request.Email, request.PhoneNumber, request.PreferredLanguage));
 
     public Task UpdateAsync(int employeeId, EmployeeUpdateRequest request, int? modifiedBy)
         => _repo.UpdateAsync(
             employeeId, request.BranchId, request.DepartmentId, request.PositionId,
             request.FullName, request.NationalId, request.NssfNumber, request.HireDate,
-            request.TerminationDate, modifiedBy, request.Email, request.PhoneNumber);
+            request.TerminationDate, modifiedBy, request.Email, request.PhoneNumber,
+            request.PreferredLanguage);
 
     public Task SoftDeleteAsync(int employeeId, int? modifiedBy) => _repo.SoftDeleteAsync(employeeId, modifiedBy);
 

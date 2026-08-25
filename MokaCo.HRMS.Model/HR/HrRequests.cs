@@ -64,6 +64,9 @@ public class EmployeeCreateRequest
     /// <summary>Optional. Blank is stored as NULL by the procedure.</summary>
     public string? Email { get; set; }
     public string? PhoneNumber { get; set; }
+
+    /// <summary>'en' or 'ar'. Omitted means 'en' — the procedure defaults it, so an older caller still works.</summary>
+    public string? PreferredLanguage { get; set; }
 }
 
 public class EmployeeUpdateRequest
@@ -79,6 +82,9 @@ public class EmployeeUpdateRequest
     /// <summary>Optional. Blank is stored as NULL by the procedure — CLEARING one is a real edit.</summary>
     public string? Email { get; set; }
     public string? PhoneNumber { get; set; }
+
+    /// <summary>'en' or 'ar'. Omitted means 'en' — the procedure defaults it, so an older caller still works.</summary>
+    public string? PreferredLanguage { get; set; }
 }
 
 /// <summary>Body of PUT /api/employees/{id}/approval-tier — the requester's tier (1/2/3).</summary>

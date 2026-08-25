@@ -27,6 +27,18 @@ public class Employee
     /// </summary>
     public string? Email { get; set; }
     public string? PhoneNumber { get; set; }
+
+    /// <summary>
+    /// 'en' or 'ar' — WHICH LANGUAGE THIS PERSON IS WRITTEN TO IN, not which one they browse in.
+    ///
+    /// A property of the EMPLOYEE, not of the session: the notification is composed by a background
+    /// worker at a moment when nobody is signed in, so there is no UI language to borrow. It is
+    /// copied onto the outbox row at queue time and frozen there.
+    ///
+    /// NOT NULL in the database, defaulted 'en', and the procedures fold anything that is not 'ar'
+    /// down to 'en' — two values, never a third.
+    /// </summary>
+    public string PreferredLanguage { get; set; } = "en";
     /// <summary>1 = staff (default), 2 = management, 3 = executive — picks which published chain their requests follow.</summary>
     public int ApprovalTier { get; set; } = 1;
     /// <summary>Who this person reports to (a LineManager step climbs this). Null for the top of a reporting line.</summary>

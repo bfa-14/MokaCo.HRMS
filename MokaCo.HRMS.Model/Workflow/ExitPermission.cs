@@ -1,5 +1,19 @@
 namespace MokaCo.HRMS.Model.Workflow;
 
+/*
+ * THE FIGURE IS TWO COLUMNS, NOT ONE. workflow.EXIT_PERMISSION.Minutes was split into
+ * RequestedMinutes (what was asked for) and ApprovedMinutes (what currently stands, cut by an
+ * approver or equal to the request). Every procedure in this family selects the two names; the DTOs
+ * below were left declaring the old single `Minutes`, which Dapper matched to NOTHING — so the API
+ * served `minutes: 0` and dropped both real figures, and the exit-permission screens rendered NaN
+ * and refused to submit because the minutes box had no value to prefill and never appeared.
+ *
+ * WHICH IS WHY THE NAMES HERE ARE THE PROCEDURES' NAMES, verbatim. A DTO in this codebase is the
+ * shape of a result set, and a property that matches no column is not a rename — it is a silent
+ * default that reads as data.
+ */
+
+
 /// <summary>
 /// An exit permission — leave to be away mid-day — as returned by usp_ExitPermission_Create.
 ///
@@ -16,7 +30,12 @@ public class ExitPermissionCreated
     public DateTime ExitDate { get; set; }
     public TimeSpan FromTime { get; set; }
     public TimeSpan ToTime { get; set; }
-    public int Minutes { get; set; }
+
+    /// <summary>What was asked for. Equal to <see cref="ApprovedMinutes"/> until an approver cuts it.</summary>
+    public int RequestedMinutes { get; set; }
+
+    /// <summary>What stands right now — the figure any later step decides against.</summary>
+    public int ApprovedMinutes { get; set; }
 
     /// <summary>1 = these hours come out of annual leave; 0 = handled as a pay matter, not deducted from leave.</summary>
     public bool ConvertToLeave { get; set; }
@@ -35,7 +54,11 @@ public class MyExitPermission
     public DateTime ExitDate { get; set; }
     public TimeSpan FromTime { get; set; }
     public TimeSpan ToTime { get; set; }
-    public int Minutes { get; set; }
+
+    /// <summary>Asked and granted, both — a list showing only one of them cannot say a request was cut.</summary>
+    public int RequestedMinutes { get; set; }
+    public int ApprovedMinutes { get; set; }
+
     public string Reason { get; set; } = string.Empty;
     public bool ConvertToLeave { get; set; }
     public string Status { get; set; } = string.Empty;
@@ -68,10 +91,27 @@ public class ExitPermissionDetail
     public DateTime ExitDate { get; set; }
     public TimeSpan FromTime { get; set; }
     public TimeSpan ToTime { get; set; }
-    public int Minutes { get; set; }
 
-    /// <summary>The requested minutes expressed as leave days at the configured standard day. Distinct from what is actually deducted.</summary>
-    public decimal RequestedLeaveDays { get; set; }
+    /// <summary>What was asked for. The ceiling on every decision — an approver may cut it, never extend it.</summary>
+    public int RequestedMinutes { get; set; }
+
+    /// <summary>What stands right now. Equal to the request until somebody grants less.</summary>
+    public int ApprovedMinutes { get; set; }
+
+    /// <summary>
+    /// Requested minus approved, and the flag that says it happened — both computed by the procedure
+    /// rather than here. "Approved as asked" and "cut to 30" are different outcomes, and which one it
+    /// was belongs to the database that decided it.
+    /// </summary>
+    public int MinutesReduced { get; set; }
+    public bool WasReduced { get; set; }
+
+    /// <summary>
+    /// The APPROVED minutes as leave days at the configured standard day — core.fn_MinutesToLeaveDays,
+    /// which never returns NULL, so this is not nullable. It describes what the approved time costs,
+    /// not what was asked for.
+    /// </summary>
+    public decimal LeaveDaysEquivalent { get; set; }
 
     public string Reason { get; set; } = string.Empty;
     public bool ConvertToLeave { get; set; }
