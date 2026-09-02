@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
@@ -16,6 +16,7 @@ using MokaCo.HRMS.Repository.Attendance;
 using MokaCo.HRMS.Repository.Report;
 using MokaCo.HRMS.Repository.Workflow;
 using MokaCo.HRMS.Repository.Payroll;
+using MokaCo.HRMS.Repository.Booking;
 using MokaCo.HRMS.Services.Auth;
 using MokaCo.HRMS.Services.Security;
 using MokaCo.HRMS.Services.Core;
@@ -24,6 +25,7 @@ using MokaCo.HRMS.Services.Attendance;
 using MokaCo.HRMS.Services.Report;
 using MokaCo.HRMS.Services.Workflow;
 using MokaCo.HRMS.Services.Payroll;
+using MokaCo.HRMS.Services.Booking;
 using MokaCo.HRMS.Api.Hubs;
 using MokaCo.HRMS.Api.Jobs;
 using MokaCo.HRMS.Api.Controllers;
@@ -110,6 +112,10 @@ builder.Services.AddScoped<IWorkflowSupportRepository, WorkflowSupportRepository
 // --- DI: repositories (Payroll) ---
 builder.Services.AddScoped<IPayrollRepository, PayrollRepository>();
 
+// --- DI: repositories (Booking) ---
+builder.Services.AddScoped<IRoomRepository, RoomRepository>();
+builder.Services.AddScoped<IBookingRepository, BookingRepository>();
+
 // --- DI: services (Security) ---
 builder.Services.AddSingleton<IPasswordHasher, Argon2PasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
@@ -194,6 +200,10 @@ builder.Services.AddScoped<IWorkflowSupportService, WorkflowSupportService>();
 
 // --- DI: services (Payroll) ---
 builder.Services.AddScoped<IPayrollService, PayrollService>();
+
+// --- DI: services (Booking) ---
+builder.Services.AddScoped<IRoomService, RoomService>();
+builder.Services.AddScoped<IBookingService, BookingService>();
 
 // --- Scheduled jobs (Quartz.NET, in-memory RAMJobStore — no DB job store) ---
 builder.Services.AddQuartz(q =>
@@ -298,6 +308,48 @@ builder.Services.AddRateLimiter(options =>
     // punch must not be treated by the device as delivered.
     options.RejectionStatusCode = StatusCodes.Status503ServiceUnavailable;
 
+    // ...BUT 503 IS THE TERMINALS' ANSWER, NOT THE WEB'S. RejectionStatusCode is a single global
+    // value, and the public booking endpoints are talked to by browsers, where "try later" is 429
+    // and 503 reads as "the site is down". This runs after the middleware has applied the default,
+    // so the assignment wins; the terminals keep the 503 their retry logic already understands.
+    options.OnRejected = (context, _) =>
+    {
+        if (context.HttpContext.Request.Path.StartsWithSegments("/api/public/booking"))
+            context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+
+        return ValueTask.CompletedTask;
+    };
+
+    // --- The public booking endpoints: per IP, and read and write counted SEPARATELY ---
+    //
+    // Two policies rather than one because the two are abused differently. Browsing a month of a
+    // calendar is a dozen GETs in a few seconds and must stay comfortable; POSTing a booking is a
+    // thing a human does once, so five in a minute is already a script. Separate policies also mean
+    // a visitor who has hit the read limit can still complete the booking they came for.
+    //
+    // PARTITIONED BY REMOTE IP, which is the only identity an anonymous caller has. NOTE FOR
+    // DEPLOYMENT: behind a reverse proxy (IIS/nginx) every request arrives from the proxy's address
+    // and the whole internet shares one partition. If this is fronted, add ForwardedHeaders
+    // middleware — otherwise the limit is global rather than per visitor.
+    static string ClientPartition(HttpContext context)
+        => context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+    options.AddPolicy(PublicBookingController.ReadRateLimitPolicy, context =>
+        RateLimitPartition.GetFixedWindowLimiter(ClientPartition(context), _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 30,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0                     // refuse now; a queued page load is a hung page load
+        }));
+
+    options.AddPolicy(PublicBookingController.WriteRateLimitPolicy, context =>
+        RateLimitPartition.GetFixedWindowLimiter(ClientPartition(context), _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 5,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0
+        }));
+
     options.AddPolicy(IclockController.RateLimitPolicy, context =>
     {
         var serial = context.Request.Query["SN"].ToString();
@@ -316,15 +368,42 @@ builder.Services.AddRateLimiter(options =>
 
 // --- CORS for the React front end (adjust origin) ---
 const string CorsPolicy = "MokaCoFront";
-builder.Services.AddCors(o => o.AddPolicy(CorsPolicy, p =>
-    p.WithOrigins("http://localhost:5173")   // Vite dev server; change as needed
-     .AllowAnyHeader()
-     .AllowAnyMethod()
-     // Required by SignalR: its JS client sets withCredentials on the negotiate request, and a
-     // response without Access-Control-Allow-Credentials fails CORS before the socket is ever
-     // opened. Legal here only because the origin is named explicitly — the browser refuses this
-     // combined with a wildcard origin, which is the rule that keeps it safe.
-     .AllowCredentials()));
+
+// The PUBLIC BOOKING ORIGINS: the marketing site, which is a different origin from the admin app and
+// must not inherit its policy.
+//
+// SETTING: "BookingCorsOrigins" in appsettings.json — comma-separated, e.g.
+// "https://mokaco.com,https://www.mokaco.com". EMPTY BY DEFAULT, and an installation that has not
+// named its website gets a policy matching no origin: no CORS headers, therefore same-origin only.
+// That is the safe default — an allowlist nobody filled in should permit nothing, not everything.
+//
+// It is CONFIGURATION rather than a core.SETTING row because CORS policies are built once at
+// startup. Putting it on the Settings page would offer an admin a control that appears to work and
+// silently does nothing until the next restart. Changing this needs a restart, and saying so here
+// is the honest version.
+var bookingCorsOrigins = (builder.Configuration["BookingCorsOrigins"] ?? string.Empty)
+    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+builder.Services.AddCors(o =>
+{
+    o.AddPolicy(CorsPolicy, p =>
+        p.WithOrigins("http://localhost:5173")   // Vite dev server; change as needed
+         .AllowAnyHeader()
+         .AllowAnyMethod()
+         // Required by SignalR: its JS client sets withCredentials on the negotiate request, and a
+         // response without Access-Control-Allow-Credentials fails CORS before the socket is ever
+         // opened. Legal here only because the origin is named explicitly — the browser refuses this
+         // combined with a wildcard origin, which is the rule that keeps it safe.
+         .AllowCredentials());
+
+    // Applied ONLY where [EnableCors(PublicBooking)] says so — PublicBookingController and nothing
+    // else. NO AllowCredentials: these endpoints are anonymous, carry no cookie and no token, so
+    // letting a browser attach credentials to them would widen the policy for no purpose.
+    o.AddPolicy(PublicBookingController.BookingCorsPolicy, p =>
+        p.WithOrigins(bookingCorsOrigins)
+         .AllowAnyHeader()
+         .WithMethods("GET", "POST"));
+});
 
 // --- Live updates (SignalR): signals only, never data ---
 builder.Services.AddSignalR();
@@ -365,6 +444,33 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 app.MapHub<LiveHub>("/hubs/live");
+
+// THE SITE ROOT IS NOT AN ENDPOINT. Nothing is mapped to "/" — the API is controllers under /api,
+// the terminals' /iclock, and the hub — so a browser opened at the bare host got a plain 404 that
+// reads exactly like "the app failed to start". It did not; there was simply no route. These two
+// answer that: "/" points a human at the documentation in Development, and /health is the one URL
+// a load balancer or an installer can hit to confirm the process is alive without a token.
+//
+// AllowAnonymous on both, because the authorization fallback above demands an authenticated user
+// for anything that does not say otherwise — and a liveness check that requires a login is not a
+// liveness check.
+var isDevelopment = app.Environment.IsDevelopment();
+
+app.MapGet("/", () => isDevelopment
+        ? Results.Redirect("/scalar/v1")
+        : Results.Ok(new { service = "MokaCo.HRMS.API", status = "running", docs = "disabled outside Development" }))
+   .AllowAnonymous()
+   .ExcludeFromDescription();
+
+app.MapGet("/health", () => Results.Ok(new
+   {
+       status = "ok",
+       service = "MokaCo.HRMS.API",
+       environment = app.Environment.EnvironmentName,
+       utc = DateTime.UtcNow
+   }))
+   .AllowAnonymous()
+   .ExcludeFromDescription();
 
 // The one line an installer needs: exactly what to type into a terminal's Cloud Server / ADMS
 // screen. Both halves are RESOLVED, never assumed — the LAN IP is per-machine and changes with the

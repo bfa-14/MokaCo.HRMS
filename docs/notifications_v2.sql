@@ -167,3 +167,13 @@ UPDATE core.SETTING SET SettingValue = '1'
 WHERE SettingKey = 'NotifyOnRequestClosed'
   AND LOWER(LTRIM(RTRIM(SettingValue))) IN ('true', 'yes', 'on');
 GO
+
+/* ---- 6. ShowPageHelp belongs to Preferences ---------------------------------------------------
+   The settings page now routes a row to its tab from its SECTION and from nothing else - the
+   per-key map that used to override placement was the cause of settings appearing in two tabs at
+   once. ShowPageHelp was one of those overrides: a per-person screen preference filed under
+   'Advanced' but rendered under Preferences by name. With the override gone, the row has to say so
+   itself. */
+UPDATE core.SETTING SET Section = 'Preferences'
+WHERE SettingKey = 'ShowPageHelp' AND Section <> 'Preferences';
+GO
