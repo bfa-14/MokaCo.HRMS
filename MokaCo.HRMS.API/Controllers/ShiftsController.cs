@@ -12,6 +12,8 @@ namespace MokaCo.HRMS.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/shifts")]
+// Class-level floor (see AttendanceController): shifts are attendance configuration.
+[HasPermission("ATTENDANCE_VIEW")]
 public class ShiftsController : ControllerBase
 {
     private readonly IShiftService _shifts;

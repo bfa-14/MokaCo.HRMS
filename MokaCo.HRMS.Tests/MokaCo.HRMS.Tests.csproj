@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\MokaCo.HRMS.Services\MokaCo.HRMS.Services.csproj" />
+    <ProjectReference Include="..\MokaCo.HRMS.API\MokaCo.HRMS.API.csproj" />
   </ItemGroup>
 
 </Project>

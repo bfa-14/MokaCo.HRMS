@@ -20,6 +20,9 @@ namespace MokaCo.HRMS.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/attendance/corrections")]
+// Class-level floor (see AttendanceController): a new action here without its own attribute is
+// still ATTENDANCE_VIEW at minimum, never open to every logged-in employee.
+[HasPermission("ATTENDANCE_VIEW")]
 public class AttendanceCorrectionsController : ControllerBase
 {
     private readonly ICorrectionService _corrections;

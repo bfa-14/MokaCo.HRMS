@@ -15,6 +15,8 @@ namespace MokaCo.HRMS.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/devices")]
+// Class-level floor (see AttendanceController): devices are attendance configuration.
+[HasPermission("ATTENDANCE_VIEW")]
 public class DevicesController : ControllerBase
 {
     private readonly IDeviceService _devices;

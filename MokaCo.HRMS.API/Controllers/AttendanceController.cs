@@ -22,6 +22,11 @@ namespace MokaCo.HRMS.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/attendance")]
+// CLASS-LEVEL FLOOR. Every action below names its own permission, but authorization attributes
+// combine (class AND action), so an action added later without one is still held to ATTENDANCE_VIEW
+// rather than falling through to "any logged-in user". An employee changes their attendance only by
+// raising a request — never by calling anything on this controller.
+[HasPermission("ATTENDANCE_VIEW")]
 public class AttendanceController : ControllerBase
 {
     private readonly IAttendanceService _attendance;
