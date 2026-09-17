@@ -52,8 +52,10 @@ public class AttendanceRecord
     /// <summary>
     /// Worked / Standard, capped at 1.00 — "how much of a day did they earn?". 0.89 means 89% of a
     /// day. Payroll sums these, so someone who left two hours early counts 0.75 of a day, not 1.
+    /// Since script 76 it is (Worked + Covered) / Standard, and NULL on a rest day, a leave day or a
+    /// holiday: nothing is measured there, so payroll must never deduct those days.
     /// </summary>
-    public decimal DayFraction { get; set; }
+    public decimal? DayFraction { get; set; }
 
     /// <summary>DayFraction reached the configured FullDayThreshold. Capped fraction means overtime can never inflate this.</summary>
     public bool IsFullDay { get; set; }
@@ -61,8 +63,17 @@ public class AttendanceRecord
     /// <summary>How far UNDER the standard day they fell.</summary>
     public int ShortfallMinutes { get; set; }
 
-    /// <summary>Minutes past (shift start + grace). Zero when there is no rostered shift — you cannot be late for a shift that was never assigned.</summary>
+    /// <summary>Minutes after the shift start when the arrival is beyond the grace (the grace is a threshold, not a discount — script 76). Zero inside the grace, and zero when there is no rostered shift — you cannot be late for a shift that was never assigned.</summary>
     public int LateMinutes { get; set; }
+
+    /// <summary>The late minutes that actually reduce the paid day, per the LateDeductionBasis setting (script 76).</summary>
+    public int LateDeductMinutes { get; set; }
+
+    /// <summary>Minutes between the last out-punch and the shift end — an exit variance like a mid-day gap (script 76).</summary>
+    public int EarlyExitMinutes { get; set; }
+
+    /// <summary>Minutes not worked but protected in pay: approved permission, grace, HR's Ignore/Overtime disposition (script 76).</summary>
+    public int CoveredMinutes { get; set; }
 
     /// <summary>
     /// Minutes over the standard day. DETECTED ONLY — attendance never pays this. Pay only what an
@@ -184,6 +195,10 @@ public class ExitVariance
     public int ExitVarianceMinutes { get; set; }
     public int ExitLeaveMinutes { get; set; }
     public string? ExitVarianceDisposition { get; set; }
+
+    public int EarlyExitMinutes { get; set; }
+    public int CoveredMinutes { get; set; }
+    public decimal? DayFraction { get; set; }
 
     /// <summary>Overtime detected on the same day — what HR could choose to offset the variance against.</summary>
     public int OvertimeMinutes { get; set; }

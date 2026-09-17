@@ -32,7 +32,7 @@ public class DailyAttendanceRow
     /// <summary>Minutes away mid-day beyond the break — the exit permissions a manager may need to chase.</summary>
     public int ExitActualMinutes { get; set; }
 
-    public decimal DayFraction { get; set; }
+    public decimal? DayFraction { get; set; }
     public string Status { get; set; } = string.Empty;
 
     /// <summary>The punches did not add up. Flagged on the sheet so a manager knows this row's hours are not yet trustworthy.</summary>

@@ -14,7 +14,7 @@ DECLARE @E9 INT = (SELECT EmployeeId FROM hr.EMPLOYEE WHERE FullName = N'QA E9')
 DECLARE @D INT = (SELECT DeviceId FROM attendance.DEVICE WHERE SerialNumber = 'QA-DEVICE-001');
 DECLARE @exp NVARCHAR(600), @act NVARCHAR(600), @pass BIT, @t NVARCHAR(1000), @n INT, @n2 INT;
 DECLARE @Std INT = (SELECT DATEDIFF(MINUTE, StartTime, EndTime) - BreakMinutes FROM attendance.SHIFT WHERE Name = N'Morning');  -- 510
-EXEC dbo.QA_Note 'Rules read from the DB: grace and break are per SHIFT (Morning grace 10, break 30, standard 510 min); PunchDirectionMode=Alternate; PunchDebounceMinutes=1; OvernightAttributionHours=4; FullDayThreshold=1.00; ExitLeaveBasis=Actual. There is no "late deduction" setting: lateness only reduces WorkedMinutes/DayFraction.';
+EXEC dbo.QA_Note 'Rules read from the DB: grace and break are per SHIFT (Morning grace 10, break 30, standard 510 min); PunchDirectionMode=Alternate; PunchDebounceMinutes=1; OvernightAttributionHours=4; FullDayThreshold=1.00; ExitLeaveBasis=Actual; LateDeductionBasis=BeyondGrace (script 76: one day rule in attendance.fn_AttendanceDayRule / usp_Attendance_ComputeDay; DayFraction = (Worked + Covered) / Standard where Covered = approved exit minutes + grace-protected late minutes + variance minutes HR dispositioned Ignore/Overtime).';
 
 /* roster must be approved for the processor to use the shifts */
 SET @act = (SELECT rm.[Status] FROM attendance.ROSTER_MONTH rm JOIN hr.BRANCH b ON b.BranchId = rm.BranchId WHERE b.Name = N'QA Branch' AND rm.MonthDate = '2026-08-01');
@@ -85,10 +85,13 @@ EXEC dbo.QA_Check 'A1', 'E1 in 07:00 / out 16:00 -> LateMinutes 0, ExitVariance 
 SET @act = NULL; SET @pass = 0;
 SELECT @act = CONCAT('late=', Late, ' fraction=', Fraction, ' worked=', Worked), @pass = CASE WHEN Late = 12 THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-04';
 SET @act = ISNULL(@act, 'no record');
-EXEC dbo.QA_Note 'A2 rule found in usp_Attendance_ProcessRawLogs: LateMinutes = minutes after (ShiftStart + GraceMinutes), i.e. the grace is SUBTRACTED, not a threshold. In 12 min after start with grace 10 -> 2 min late.';
+EXEC dbo.QA_Note 'A2 rule (script 76): the grace is a THRESHOLD. LateMinutes = FirstIn - ShiftStart when FirstIn > ShiftStart + Grace, else 0; LateDeductMinutes (basis BeyondGrace) = the minutes after the grace; the grace minutes are covered in pay.';
 EXEC dbo.QA_Check 'A2', 'E1 in 07:12 with grace 10 -> LateMinutes 12 (grace as a threshold, per the brief)', 'late=12', @act, @pass;
-SET @pass = 0; SELECT @pass = CASE WHEN Late = 2 THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-04';
-EXEC dbo.QA_Check 'A2b', 'E1 in 07:12 with grace 10 -> LateMinutes 2 (the rule the proc actually implements: grace subtracted)', 'late=2', @act, @pass;
+SET @act = NULL; SET @pass = 0;
+SELECT @act = CONCAT('late=', LateMinutes, ' lateDeduct=', LateDeductMinutes, ' covered=', CoveredMinutes, ' worked=', WorkedMinutes, ' fraction=', DayFraction), @pass = CASE WHEN LateMinutes = 12 AND LateDeductMinutes = 2 AND CoveredMinutes = 10 THEN 1 ELSE 0 END
+FROM attendance.ATTENDANCE_RECORD WHERE EmployeeId = @E1 AND WorkDate = '2026-08-04';
+SET @act = ISNULL(@act, 'no record');
+EXEC dbo.QA_Check 'A2b', 'E1 in 07:12 with grace 10, LateDeductionBasis=BeyondGrace -> only the 2 minutes beyond the grace are deducted (LateDeductMinutes 2, the 10 grace minutes covered)', 'late=12 lateDeduct=2 covered=10', @act, @pass;
 /* A3 */
 SET @act = NULL; SET @pass = 0;
 SELECT @act = CONCAT('late=', Late, ' fraction=', Fraction, ' worked=', Worked), @pass = CASE WHEN Late = 0 THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-05';
@@ -127,15 +130,17 @@ SELECT @act = CONCAT('late=', Late, ' gross=', Gross, ' worked=', Worked, ' ot='
 SET @act = ISNULL(@act, 'no record');
 EXEC dbo.QA_Check 'A9a', 'E1 in 06:40 for a 07:00 shift -> early arrival ignored for lateness', 'late=0', @act, @pass;
 SET @pass = 0; SELECT @pass = CASE WHEN Worked = @Std THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-12';
-EXEC dbo.QA_Note 'A9 rule found: WorkedMinutes = (last out - first in) - break, counted from the ACTUAL punch, so the 20 early minutes become 20 minutes of OvertimeMinutes (worked 530, OT 20).';
+EXEC dbo.QA_Note 'A9 rule (script 76): EffectiveIn = max(FirstIn, ShiftStart); WorkedMinutes = (min(LastOut, ShiftEnd) - EffectiveIn) - break - mid-day gap, so the 20 early minutes count neither as work nor as overtime.';
 EXEC dbo.QA_Check 'A9b', 'worked minutes start at shift start (early-in not counted as work)', 'worked=510 ot=0', @act, @pass;
 /* A11 */
 SET @act = NULL; SET @pass = 0;
-SELECT @act = CONCAT('exitActual=', ExitActual, ' exitApproved=', ExitApproved, ' exitVar=', ExitVar, ' worked=', Worked, ' fraction=', Fraction), @pass = CASE WHEN ExitVar = 0 AND ExitApproved = 60 THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-13';
+SELECT @act = CONCAT('exitActual=', ExitActual, ' exitApproved=', ExitApproved, ' exitVar=', ExitVar, ' worked=', Worked, ' fraction=', Fraction), @pass = CASE WHEN ExitVar <= 0 AND ExitVar = ExitActual - ExitApproved AND ExitApproved = 60 THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-13';
 SET @act = ISNULL(@act, 'no record');
-EXEC dbo.QA_Check 'A11', 'exit permission 60 min approved, employee left 55 min early -> no variance', 'exitApproved=60 exitVar=0', @act, @pass;
+EXEC dbo.QA_Check 'A11', 'exit permission 60 min approved, employee left 55 min early -> no variance to queue (script 76: EarlyExit 55 is the actual, variance = 55 - 60 = -5, never > 0)', 'exitApproved=60 exitVar=-5 (not positive)', @act, @pass;
 SET @pass = 0; SELECT @pass = CASE WHEN Worked = 455 THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-13';
 EXEC dbo.QA_Check 'A11b', 'applying the approved 60 min does not reduce the day twice (worked stays at the punched 455 = 485 gross - 30 break)', 'worked=455', @act, @pass;
+SET @pass = 0; SELECT @pass = CASE WHEN Fraction = 1.00 THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-13';
+EXEC dbo.QA_Check 'A11c', 'the approved permission protects pay: the 55 early minutes are covered, DayFraction 1.00 (it is converted to leave at period close)', 'fraction=1.00', @act, @pass;
 
 /* A8 overnight (E3) */
 SET @act = NULL; SET @pass = 0;
@@ -161,18 +166,20 @@ EXEC dbo.QA_Check 'A8d', 'E3''s 31 Aug shift ending 01:00 on 1 Sep does not crea
 SET @act = NULL; SET @pass = 0;
 SELECT @act = CONCAT('status=', [Status], ' worked=', Worked, ' fraction=', Fraction), @pass = CASE WHEN [Status] = 'RestDay' THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-02';
 SET @act = ISNULL(@act, 'no record');
-EXEC dbo.QA_Check 'R2b', 'E1 punches on Sunday 2 Aug (rest day) -> recorded as RestDay, never Absent', 'status=RestDay', @act, @pass;
+SET @pass = CASE WHEN @pass = 1 AND EXISTS (SELECT 1 FROM @r WHERE WorkDate = '2026-08-02' AND Fraction IS NULL) THEN 1 ELSE 0 END;
+EXEC dbo.QA_Check 'R2b', 'E1 punches on Sunday 2 Aug (rest day) -> recorded as RestDay, never Absent; DayFraction NULL (nothing to measure, nothing to deduct)', 'status=RestDay fraction=NULL', @act, @pass;
 SET @act = NULL; SET @pass = 0;
-SELECT @act = CONCAT('status=', [Status], ' worked=', WorkedMinutes, ' fraction=', DayFraction), @pass = CASE WHEN [Status] = 'RestDay' THEN 1 ELSE 0 END FROM attendance.ATTENDANCE_RECORD WHERE EmployeeId = @E4 AND WorkDate = '2026-08-08';
+SELECT @act = CONCAT('status=', [Status], ' worked=', WorkedMinutes, ' fraction=', ISNULL(CAST(DayFraction AS VARCHAR(6)), 'NULL')), @pass = CASE WHEN [Status] = 'RestDay' AND DayFraction IS NULL THEN 1 ELSE 0 END FROM attendance.ATTENDANCE_RECORD WHERE EmployeeId = @E4 AND WorkDate = '2026-08-08';
 SET @act = ISNULL(@act, 'no record');
-EXEC dbo.QA_Check 'R2c', 'E4 punches on Saturday 8 Aug (rest day) -> RestDay', 'status=RestDay', @act, @pass;
+EXEC dbo.QA_Check 'R2c', 'E4 punches on Saturday 8 Aug (rest day) -> RestDay, DayFraction NULL', 'status=RestDay fraction=NULL', @act, @pass;
 SELECT @n = COUNT(*) FROM attendance.ATTENDANCE_RECORD a JOIN attendance.SHIFT_ASSIGNMENT sa ON sa.EmployeeId = a.EmployeeId AND sa.WorkDate = a.WorkDate
 JOIN hr.EMPLOYEE e ON e.EmployeeId = a.EmployeeId WHERE e.FullName LIKE N'QA %' AND sa.IsRestDay = 1 AND a.[Status] = 'Absent';
 SET @act = CAST(@n AS NVARCHAR(10)); SET @pass = CASE WHEN @n = 0 THEN 1 ELSE 0 END;
 EXEC dbo.QA_Check 'R2d', 'no QA rest day is recorded as Absent', '0', @act, @pass;
-SELECT @n = COUNT(*), @n2 = SUM(CASE WHEN a.DayFraction = 0 THEN 1 ELSE 0 END) FROM attendance.ATTENDANCE_RECORD a WHERE a.EmployeeId = @E9 AND a.[Status] = 'RestDay';
-SET @t = CONCAT('R2 observation: E9''s rest days (no punches) get RestDay rows from usp_Attendance_MarkAbsentees with DayFraction 0: rows=', @n, ', of which DayFraction=0: ', @n2, ' (payroll case P4d shows what that does).');
-EXEC dbo.QA_Note @t;
+SELECT @n = COUNT(*), @n2 = SUM(CASE WHEN a.DayFraction IS NULL THEN 1 ELSE 0 END) FROM attendance.ATTENDANCE_RECORD a WHERE a.EmployeeId = @E9 AND a.[Status] = 'RestDay';
+SET @act = CONCAT('rows=', @n, ' with DayFraction NULL=', @n2);
+SET @pass = CASE WHEN @n > 0 AND @n = @n2 THEN 1 ELSE 0 END;
+EXEC dbo.QA_Check 'R2e', 'E9''s rest days (no punches) get RestDay rows from usp_Attendance_MarkAbsentees with DayFraction NULL, never 0 (so payroll cannot deduct them)', 'every RestDay row has DayFraction NULL', @act, @pass;
 
 /* A10: leave day with an accidental punch (E5) */
 SET @act = NULL; SET @pass = 0;
@@ -213,9 +220,9 @@ SET @act = CONCAT('records ', @c0, '/', @c1, '/', @c2, ', duplicates=', @dupes, 
 SET @pass = CASE WHEN @c0 = @c1 AND @c1 = @c2 AND @diff01 IS NULL AND @diff12 = 0 AND @dupes = 0 THEN 1 ELSE 0 END;
 EXEC dbo.QA_Check 'A12', 'reprocessing every day of the month twice gives identical records and no duplicates', 'same count, no record changed, duplicates=0', @act, @pass;
 SET @act = (SELECT ISNULL(STRING_AGG(CONCAT(CONVERT(VARCHAR(10), WorkDate, 23), '=', [Status]), ', ') WITHIN GROUP (ORDER BY WorkDate), 'no rows') FROM attendance.ATTENDANCE_RECORD WHERE EmployeeId = @E5 AND WorkDate IN ('2026-08-17', '2026-08-18', '2026-08-19'));
-SET @t = CONCAT('A12 side check: E5 leave-day statuses after two full reprocesses (ReprocessDay does not re-run MarkLeaveDays): ', @act);
+SET @t = CONCAT('A12 side check: E5 leave-day statuses after two full reprocesses (the day rule reads the approved LEAVE_REQUEST itself, so a reprocess keeps them Leave): ', @act);
 EXEC dbo.QA_Note @t;
-/* ReprocessDay flips raw rows by CALENDAR date but processes by ATTRIBUTED date: overnight out-punches must not be left behind */
+/* ReprocessDay flips and re-derives the punches by ATTRIBUTED date (script 76): overnight out-punches must not be left behind */
 SELECT @n = COUNT(*) FROM attendance.RAW_DEVICE_LOG r JOIN hr.EMPLOYEE e ON e.EmployeeId = r.EmployeeId WHERE e.FullName LIKE N'QA %' AND r.IsProcessed = 0;
 SET @act = (SELECT CONCAT(@n, ' unprocessed QA punch(es)', CASE WHEN @n > 0 THEN CONCAT(' e.g. ', (SELECT TOP 1 CONCAT(e.FullName, ' ', CONVERT(VARCHAR(16), r.PunchTimeUtc, 120)) FROM attendance.RAW_DEVICE_LOG r JOIN hr.EMPLOYEE e ON e.EmployeeId = r.EmployeeId WHERE e.FullName LIKE N'QA %' AND r.IsProcessed = 0 ORDER BY r.PunchTimeUtc)) ELSE '' END));
 SET @pass = CASE WHEN @n = 0 THEN 1 ELSE 0 END;

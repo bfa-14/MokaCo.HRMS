@@ -43,8 +43,15 @@ if echo "$QALINE" | grep -q "pulled 1 new punch"; then p=1; else p=0; fi
 record A13 "machine pull worker (MachinePullEnabled=1, dummy device on 127.0.0.1:43700): cycle runs without exceptions and logs the 'pulled N' line" \
   "log line 'Machine pull — QA Device (127.0.0.1): pulled 1 new punch(es) of 1 read ...', 0 exceptions, 1 Pull row" \
   "line='${QALINE:-none}'; cycle='${CYCLE:-none}'; exceptions=$ERRS; Pull rows=$PULLED" $p
-WARN=$(grep -E "MachinePullAutoProcess is ON" "$LOG" | head -1 | tr -d '\r' | sed 's/^ *//' | cut -c1-160)
-[ -n "$WARN" ] && echo "NOTE | A13: $WARN"
+# ---- A13b (BUG-27): MachinePullAutoProcess is honoured — after the pull the affected days are processed and the counts logged ----
+AUTO=$(qsql "SELECT SettingValue FROM core.SETTING WHERE SettingKey = 'MachinePullAutoProcess'")
+PROC=$(grep -E "Machine pull auto-process:" "$LOG" | head -1 | tr -d '\r' | sed 's/^ *//' | cut -c1-220)
+OLDWARN=$(grep -c -E "MachinePullAutoProcess is ON, but" "$LOG")
+if echo "$PROC" | grep -qE "employee-day\(s\) processed"; then p=1; else p=0; fi
+[ "$OLDWARN" != "0" ] && p=0
+record A13b "MachinePullAutoProcess=$AUTO: after a pull that landed punches the worker runs usp_Attendance_ProcessRawLogs and logs the counts (the old 'ON but not processed' warning is gone)" \
+  "log line 'Machine pull auto-process: 1 new punch(es) landed, N employee-day(s) processed ...' and no 'ON but not processed' warning" \
+  "line='${PROC:-none}'; old warning lines=$OLDWARN" $p
 
 # ---- X3: cultures ----
 TOK1=$(curl -s -X POST http://localhost:5078/api/auth/login -H 'Content-Type: application/json' -d '{"username":"qa.hr","password":"QaPass!2026"}' | sed -n 's/.*"accessToken":"\([^"]*\)".*/\1/p')

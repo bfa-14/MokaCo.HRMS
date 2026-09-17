@@ -39,12 +39,6 @@ public class MachinePullWorker : BackgroundService
     private readonly ILogger<MachinePullWorker> _logger;
 
     /// <summary>
-    /// Latches the one-time warning about the auto-process setting, so a switch somebody left on does
-    /// not produce an identical warning every five minutes for the rest of the service's life.
-    /// </summary>
-    private bool _warnedAboutAutoProcess;
-
-    /// <summary>
     /// The (enabled, interval) pair the log last reported, so the configuration is announced when it
     /// CHANGES rather than restated every cycle.
     ///
@@ -238,41 +232,53 @@ public class MachinePullWorker : BackgroundService
             // device heartbeats, both of which are on screens somebody may be watching.
             await live.NotifyAsync("attendance");
 
-            WarnAboutAutoProcessOnce(autoProcess, landed);
+            if (autoProcess)
+                await AutoProcessAsync(scope.ServiceProvider, landed, ct);
+            else
+                _logger.LogInformation(
+                    "Machine pull: {Landed} new punch(es) stored; MachinePullAutoProcess is OFF, so the nightly job will process them.",
+                    landed);
         }
     }
 
     /// <summary>
-    /// THE AUTO-PROCESS SETTING IS DELIBERATELY NOT ACTED ON. This is the one thing P15 asked for that
-    /// is not wired, and the reason is in attendance.usp_Attendance_ProcessRawLogs.
+    /// MachinePullAutoProcess (BUG-27): after a pull that stored new punches, the affected employee-days
+    /// are processed straight away instead of waiting for the nightly job.
     ///
-    /// That procedure is idempotent but NOT incremental. It builds each employee-day from the punches
-    /// that are still IsProcessed = 0, then OVERWRITES the whole ATTENDANCE_RECORD for that day with
-    /// what it computed and DELETES and rewrites the day's ATTENDANCE_INTERVAL rows. Run it at 13:00
-    /// and it consumes the morning; run it again at 17:00 and the only unprocessed punches are the
-    /// afternoon's, so the day is rewritten as if the person arrived after lunch — first-in moves,
-    /// the morning interval is deleted, and worked minutes drop. Nothing flags it, because the result
-    /// is a perfectly well-formed shorter day.
+    /// SAFE TO RUN MID-DAY. attendance.usp_Attendance_ProcessRawLogs finds the employee-days that have
+    /// anything new (by their ATTRIBUTED date, so an overnight out-punch lands on the shift's day) and
+    /// re-derives each one from ALL of its punches — processed and new alike — through the single day
+    /// rule (usp_Attendance_ComputeDay, script 76). A pull at 13:00 gives the morning; a pull at 17:00
+    /// rebuilds the whole day with the afternoon added. The old warning that said otherwise described
+    /// a processor that no longer exists.
     ///
-    /// The nightly job avoids this by running once, after the day is over, with everything still
-    /// unprocessed. So pull leaves processing to it, as the brief instructed for exactly this case.
-    /// Making it safe means teaching the procedure to rebuild a day from ALL of its punches rather
-    /// than only the unconsumed ones — a change to the processor, not to this worker.
+    /// A failure here is logged and does not fail the cycle: the punches are stored, and the nightly
+    /// job processes whatever is still unprocessed.
     /// </summary>
-    private void WarnAboutAutoProcessOnce(bool autoProcess, int landed)
+    private async Task AutoProcessAsync(IServiceProvider services, int landed, CancellationToken ct)
     {
-        if (!autoProcess || _warnedAboutAutoProcess)
-            return;
+        try
+        {
+            var attendance = services.GetRequiredService<IAttendanceService>();
+            var result = await attendance.ProcessAsync(null);
 
-        _warnedAboutAutoProcess = true;
+            _logger.LogInformation(
+                "Machine pull auto-process: {Landed} new punch(es) landed, {Days} employee-day(s) processed into attendance (each rebuilt from all of its punches, by attributed date).",
+                landed, result.EmployeeDaysProcessed);
 
-        _logger.LogWarning(
-            "MachinePullAutoProcess is ON, but {Landed} pulled punch(es) were NOT processed into attendance. " +
-            "usp_Attendance_ProcessRawLogs rebuilds an employee-day from only the punches still unprocessed and " +
-            "overwrites the whole day with the result, so running it mid-day would rewrite this morning out of " +
-            "existence. The punches are stored and the nightly job will process them correctly. " +
-            "This warning is logged once per service lifetime.",
-            landed);
+            if (result.EmployeeDaysProcessed > 0)
+                await services.GetRequiredService<ILiveNotifier>().NotifyAsync("attendance");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Machine pull auto-process failed after landing {Landed} punch(es); they are stored and the nightly job will process them.",
+                landed);
+        }
     }
 
     /// <summary>

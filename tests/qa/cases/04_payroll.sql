@@ -40,12 +40,21 @@ BEGIN TRY
     UPDATE payroll.PAYROLL_RUN SET [Status] = 'Cancelled' WHERE PeriodYearMonth = '2026-08' AND RunType = 'Primary' AND [Status] <> 'Cancelled';
     DECLARE @d DATE = '2026-08-01';
     WHILE @d <= '2026-08-31' BEGIN EXEC attendance.usp_Attendance_MarkAbsentees @WorkDate = @d; SET @d = DATEADD(DAY, 1, @d); END
+    /* real undecided exit variances (the day rule surfaces early exits, script 76) are HR's to decide; inside this
+       rolled-back transaction they are set aside as Ignore so the readiness gate measures the QA data only */
+    SET @act = (SELECT STRING_AGG(CONCAT(e.FullName, ' ', CONVERT(VARCHAR(10), a.WorkDate, 23), ' (', a.ExitVarianceMinutes, ' min)'), ', ')
+                FROM attendance.ATTENDANCE_RECORD a JOIN hr.EMPLOYEE e ON e.EmployeeId = a.EmployeeId
+                WHERE a.WorkDate BETWEEN '2026-08-01' AND '2026-08-31' AND a.ExitVarianceMinutes > 0 AND a.ExitVarianceDisposition IS NULL AND e.FullName NOT LIKE N'QA %');
+    UPDATE a SET a.ExitVarianceDisposition = 'Ignore'
+    FROM attendance.ATTENDANCE_RECORD a JOIN hr.EMPLOYEE e ON e.EmployeeId = a.EmployeeId
+    WHERE a.WorkDate BETWEEN '2026-08-01' AND '2026-08-31' AND a.ExitVarianceMinutes > 0 AND a.ExitVarianceDisposition IS NULL AND e.FullName NOT LIKE N'QA %';
+    INSERT INTO @notes VALUES (CONCAT('P0: real undecided exit variances set aside (Ignore, rolled back) so readiness measures the QA data: ', ISNULL(@act, 'none')));
 
     DECLARE @ready TABLE (PeriodYearMonth CHAR(7), PeriodStart DATE, PeriodEnd DATE, UnprocessedPunches INT, UnresolvedPinPunches INT, OpenAnomalies INT,
                           PendingCorrections INT, RosteredDaysWithNoRecord INT, UndecidedExitVariances INT, IsReady BIT);
     INSERT INTO @ready EXEC attendance.usp_Attendance_PayrollReadiness '2026-08';
     SELECT @act = CONCAT('unprocessed=', UnprocessedPunches, ' unresolved=', UnresolvedPinPunches, ' anomalies=', OpenAnomalies, ' corrections=', PendingCorrections, ' missingDays=', RosteredDaysWithNoRecord, ' variances=', UndecidedExitVariances, ' ready=', IsReady) FROM @ready;
-    INSERT INTO @res SELECT 'P0', 'attendance readiness for 2026-08 (QA anomalies/variances decided; real roster days filled inside the transaction)', 'ready=1', @act, (SELECT IsReady FROM @ready);
+    INSERT INTO @res SELECT 'P0', 'attendance readiness for 2026-08 (QA anomalies/variances decided; real roster days filled and real undecided variances set aside inside the transaction)', 'ready=1', @act, (SELECT IsReady FROM @ready);
 
     /* plain EXEC: the proc itself uses INSERT-EXEC for the readiness check, and INSERT-EXEC cannot be nested */
     EXEC payroll.usp_PayrollRun_Create @PeriodYearMonth = '2026-08', @CreatedByUserId = @HrUser, @Notes = N'QA August run', @RunType = 'Primary';
@@ -114,12 +123,12 @@ BEGIN TRY
     INSERT INTO @res SELECT 'P4d', 'E9 (perfect attendance on every working day, 5 rostered Sundays) has NO attendance deduction', 'no Late Deduction line', ISNULL(@act, 'no line'), CASE WHEN @amt IS NULL THEN 1 ELSE 0 END;
 
     /* ---- P5: late minutes / early exits / decided variance ---- */
-    INSERT INTO @notes VALUES ('P5 rule: there is no setting for late or early-exit deductions; the only attendance money effect is the "Late Deduction" line = (1 - DayFraction) x DayRate per record, where DayFraction = WorkedMinutes / StandardMinutes. A 12-minute late arrival (grace 10) costs 12/510 of a day (0.02 x DayRate), an 8-minute (inside-grace) arrival costs the same 0.02, and the HR disposition of an exit variance (UnpaidAbsence / Overtime / Ignore) and the approved minutes are never read by usp_PayrollRun_Generate.');
+    INSERT INTO @notes VALUES ('P5 rule (script 76): the attendance money effect is the "Late Deduction" line = (1 - DayFraction) x DayRate per record, where DayFraction = (WorkedMinutes + CoveredMinutes) / StandardMinutes; CoveredMinutes = approved exit minutes + grace-protected late minutes (LateDeductionBasis=BeyondGrace deducts only the minutes after the grace) + variance minutes HR dispositioned Ignore/Overtime. Rest days and leave days have DayFraction NULL and are never deducted.');
     DECLARE @fr8 DECIMAL(5,2) = (SELECT DayFraction FROM attendance.ATTENDANCE_RECORD WHERE EmployeeId = @E1 AND WorkDate = '2026-08-08');
     DECLARE @fr4 DECIMAL(5,2) = (SELECT DayFraction FROM attendance.ATTENDANCE_RECORD WHERE EmployeeId = @E1 AND WorkDate = '2026-08-04');
     DECLARE @fr5 DECIMAL(5,2) = (SELECT DayFraction FROM attendance.ATTENDANCE_RECORD WHERE EmployeeId = @E1 AND WorkDate = '2026-08-05');
     INSERT INTO @res SELECT 'P5a', 'A2 (12 min late, grace 10) is deducted by exactly the 2 minutes beyond grace; A3 (8 min, inside grace) is not deducted', '4 Aug fraction 1.00 (2 late min are not a pay shortfall) and 5 Aug fraction 1.00', CONCAT('4 Aug fraction=', @fr4, ' -> ', ROUND((1 - @fr4) * @dayRate1, 2), ' USD; 5 Aug fraction=', @fr5, ' -> ', ROUND((1 - @fr5) * @dayRate1, 2), ' USD'), CASE WHEN @fr4 = 1 AND @fr5 = 1 THEN 1 ELSE 0 END;
-    INSERT INTO @res SELECT 'P5b', 'A4 decided variance (actual 45 min, HR approved 60, disposition Ignore) is settled with the DECIDED minutes', 'no deduction for 8 Aug (approved 60 >= actual 45)', CONCAT('8 Aug DayFraction=', @fr8, ' -> ', ROUND((1 - @fr8) * @dayRate1, 2), ' USD deducted regardless of the decision'), CASE WHEN @fr8 = 1 THEN 1 ELSE 0 END;
+    INSERT INTO @res SELECT 'P5b', 'A4 decided variance (actual 45 min, HR approved 60, disposition Ignore) is settled with the DECIDED minutes', 'no deduction for 8 Aug (approved 60 >= actual 45)', CONCAT('8 Aug DayFraction=', @fr8, ' -> ', ROUND((1 - @fr8) * @dayRate1, 2), ' USD deducted'), CASE WHEN @fr8 = 1 THEN 1 ELSE 0 END;
 
     /* ---- P6: NSSF and tax for E9, hand-computed from the settings/rates ---- */
     DECLARE @base9 DECIMAL(18,2) = (SELECT SUM(ROUND(l.Amount * CASE WHEN l.CurrencyCode = 'USD' THEN 1 ELSE @trueRate END, 2) * l.[Sign]) FROM payroll.PAYSLIP_LINE l WHERE l.PayslipId = @ps9 AND l.SourceType IN ('Salary', 'Overtime', 'Leave', 'Attendance') AND l.Category IN ('Earning', 'Deduction'));

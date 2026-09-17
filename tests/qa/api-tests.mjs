@@ -295,8 +295,20 @@ async function phase2() {
     ev = await api('qa.hr', 'GET', '/api/attendance/exit-variances?from=2026-08-01&to=2026-08-31');
     const still = (ev.json ?? []).some((r) => r.attendanceId === aug8.attendanceId);
     check('A4d', 'after HR disposition (Ignore) the row leaves the undecided queue', 'disposition 200, row gone', `${disp.status} ${disp.json?.exitVarianceDisposition}; still queued=${still}`, disp.status === 200 && !still);
+    const r8 = (await api('qa.hr', 'GET', `/api/attendance?from=2026-08-08&to=2026-08-08&employeeId=${e1}`)).json?.[0];
+    check('A4g', 'the approved 60 cover the 45-minute gap and the day is not manual: DayFraction 1.00, worked stays 465, isManual false (a reprocess keeps the decision)',
+      'dayFraction 1, workedMinutes 465, isManual false', `fraction=${r8?.dayFraction} worked=${r8?.workedMinutes} covered=${r8?.coveredMinutes} isManual=${r8?.isManual}`,
+      r8?.dayFraction === 1 && r8?.workedMinutes === 465 && r8?.isManual === false);
   }
 
+  if (aug6) {
+    /* the 6 Aug early exit is a real variance; HR decides it is an unpaid absence: nothing is covered, the day stays at its punched fraction */
+    const d6 = await api('qa.hr', 'POST', `/api/attendance/${aug6.attendanceId}/exit-disposition`, { disposition: 'UnpaidAbsence', hrNote: 'QA unpaid' });
+    const r6 = (await api('qa.hr', 'GET', `/api/attendance?from=2026-08-06&to=2026-08-06&employeeId=${e1}`)).json?.[0];
+    check('A4f', 'HR dispositions the 6 Aug early exit (75 min, nothing approved) as UnpaidAbsence -> nothing is covered, DayFraction stays 435/510 = 0.85, worked unchanged',
+      'disposition 200 UnpaidAbsence, dayFraction 0.85, workedMinutes 435', `${d6.status} ${d6.json?.exitVarianceDisposition}; fraction=${r6?.dayFraction} worked=${r6?.workedMinutes} covered=${r6?.coveredMinutes}`,
+      d6.status === 200 && r6?.dayFraction === 0.85 && r6?.workedMinutes === 435);
+  }
   ev = await api('qa.hr', 'GET', '/api/attendance/exit-variances?from=2026-08-01&to=2026-08-31');
   const qaIds = new Set(Object.values(ids).filter((v) => v && typeof v === 'object' && 'emp' in v).map((v) => v.emp));
   const others = (ev.json ?? []).filter((r) => qaIds.has(r.employeeId));
