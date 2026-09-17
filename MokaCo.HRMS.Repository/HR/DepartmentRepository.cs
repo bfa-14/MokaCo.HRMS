@@ -36,4 +36,22 @@ public class DepartmentRepository : IDepartmentRepository
             new { DepartmentId = departmentId, Name = name, IsActive = isActive },
             commandType: CommandType.StoredProcedure);
     }
+
+    public async Task DeleteAsync(int departmentId)
+    {
+        using var db = _factory.Create();
+        await db.ExecuteAsync(
+            "hr.usp_Department_Delete",
+            new { DepartmentId = departmentId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task SetActiveAsync(int departmentId, bool isActive)
+    {
+        using var db = _factory.Create();
+        await db.ExecuteAsync(
+            "hr.usp_Department_SetActive",
+            new { DepartmentId = departmentId, IsActive = isActive },
+            commandType: CommandType.StoredProcedure);
+    }
 }

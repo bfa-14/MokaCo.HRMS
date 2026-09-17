@@ -65,12 +65,34 @@ public class UserRepository : IUserRepository
 
     public async Task<IEnumerable<UserListItem>> GetAllAsync()
     {
-        const string sql = @"
-            SELECT UserId, Username, IsActive, LastLoginAt
-            FROM security.[USER]
-            ORDER BY Username;";
+        // security.usp_User_GetAll (73_leave_balance_and_users.sql): the users with their linked
+        // employee, then every (user, role) pair — stitched here so the grid gets one row per user.
         using var db = _factory.Create();
-        return await db.QueryAsync<UserListItem>(sql);
+        using var grid = await db.QueryMultipleAsync(
+            "security.usp_User_GetAll",
+            commandType: CommandType.StoredProcedure);
+
+        var users = (await grid.ReadAsync<UserListItem>()).ToList();
+        var roles = (await grid.ReadAsync<(int UserId, int RoleId, string Name)>()).ToList();
+
+        var byUser = roles.ToLookup(r => r.UserId);
+        foreach (var user in users)
+        {
+            user.Roles = byUser[user.UserId]
+                .Select(r => new UserRoleItem { RoleId = r.RoleId, Name = r.Name })
+                .ToList();
+            user.RoleIds = user.Roles.Select(r => r.RoleId).ToList();
+        }
+        return users;
+    }
+
+    public async Task<IEnumerable<UserRoleItem>> SetRolesAsync(int userId, IEnumerable<int> roleIds, int? assignedBy)
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<UserRoleItem>(
+            "security.usp_User_SetRoles",
+            new { UserId = userId, RoleIds = string.Join(',', roleIds), AssignedBy = assignedBy },
+            commandType: CommandType.StoredProcedure);
     }
 
     public async Task<IEnumerable<UserListItem>> GetUnlinkedAsync()

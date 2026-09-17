@@ -1,3 +1,4 @@
+using MokaCo.HRMS.Model.HR;
 using MokaCo.HRMS.Model.Workflow;
 
 namespace MokaCo.HRMS.Services.Workflow;
@@ -29,4 +30,7 @@ public interface ILeaveRequestService
     Task<LeaveRequestPayload?> GetPayloadAsync(int requestInstanceId);
     Task<IEnumerable<MyLeaveRequest>> GetForEmployeeAsync(int employeeId, DateTime? fromDate, DateTime? toDate);
     Task<LeaveBalanceSummary?> GetBalanceAsync(int employeeId, int leaveTypeId);
+
+    /// <summary>Every leave type's balance for a leave year (null = current). See <see cref="LeaveYearBalance"/>.</summary>
+    Task<LeaveYearBalance> GetBalanceByYearAsync(int employeeId, int? year);
 }

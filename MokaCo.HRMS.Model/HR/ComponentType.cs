@@ -7,4 +7,7 @@ public class ComponentType
     public string Name { get; set; } = string.Empty;
     public string Category { get; set; } = string.Empty;   // Earning / Deduction
     public short Sign { get; set; }                         // +1 / -1
+
+    /// <summary>False retires the type. One used by salary components or payslip lines cannot be deleted, only deactivated.</summary>
+    public bool IsActive { get; set; } = true;
 }

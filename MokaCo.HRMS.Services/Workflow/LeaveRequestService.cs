@@ -1,3 +1,4 @@
+using MokaCo.HRMS.Model.HR;
 using MokaCo.HRMS.Model.Workflow;
 using MokaCo.HRMS.Repository.Security;
 using MokaCo.HRMS.Repository.Workflow;
@@ -110,4 +111,7 @@ public class LeaveRequestService : ILeaveRequestService
 
         return true;
     }
+
+    public Task<LeaveYearBalance> GetBalanceByYearAsync(int employeeId, int? year)
+        => _repo.GetBalanceByYearAsync(employeeId, year);
 }

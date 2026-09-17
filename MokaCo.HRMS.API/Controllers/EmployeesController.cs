@@ -190,12 +190,21 @@ public class EmployeesController : ControllerBase
     /// This employee's balance for ONE leave type — the all-time ledger sum, shown beside a leave
     /// request so the requester and the approver see the same figure. 404 when the leave type does not
     /// exist; an employee with no ledger movements is a balance of zero, not a 404.
+    ///
+    /// WITHOUT a leaveTypeId it answers for the whole LEAVE YEAR instead (hr.vw_LEAVE_BALANCE via
+    /// hr.usp_Leave_GetBalanceByYear): one row per leave type — LeaveType, Entitlement, CarriedOver,
+    /// Used, Adjusted, Remaining, Year — under { employeeId, year, yearOpened, balances }. When the
+    /// year was never opened for this employee, balances is EMPTY and yearOpened is false: there is
+    /// no entitlement to measure against yet. `year` defaults to the current year.
     /// </summary>
     [HttpGet("{id:int}/leave-balance")]
     [HasPermission("EMP_VIEW")]
-    public async Task<IActionResult> GetLeaveBalance(int id, [FromQuery] int leaveTypeId)
+    public async Task<IActionResult> GetLeaveBalance(int id, [FromQuery] int? leaveTypeId, [FromQuery] int? year)
     {
-        var balance = await _leave.GetBalanceAsync(id, leaveTypeId);
+        if (leaveTypeId is null)
+            return Ok(await _leave.GetBalanceByYearAsync(id, year));
+
+        var balance = await _leave.GetBalanceAsync(id, leaveTypeId.Value);
         return balance is null ? NotFound() : Ok(balance);
     }
 

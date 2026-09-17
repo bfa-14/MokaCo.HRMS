@@ -102,3 +102,15 @@ public class RosterBulkResult
 {
     public int EmployeesProcessed { get; set; }
 }
+
+/// <summary>
+/// What attendance.usp_Roster_Clear removed: the branch's assignment rows for the month, and whether
+/// a ROSTER_MONTH header row went with them. The procedure REFUSES (RAISERROR) when a
+/// Pending/OnHold/Approved roster request exists for the month or attendance was already recorded
+/// on any of its days — those sentences reach the caller as a 409.
+/// </summary>
+public class RosterClearResult
+{
+    public int RowsDeleted { get; set; }
+    public bool HeaderDeleted { get; set; }
+}

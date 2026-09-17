@@ -19,21 +19,39 @@ public class ComponentTypeRepository : IComponentTypeRepository
             commandType: CommandType.StoredProcedure);
     }
 
-    public async Task<int> CreateAsync(string name, string category, short sign)
+    public async Task<int> CreateAsync(string name, string category, short sign, bool? isActive = null)
     {
         using var db = _factory.Create();
         return await db.ExecuteScalarAsync<int>(
             "hr.usp_ComponentType_Create",
-            new { Name = name, Category = category, Sign = sign },
+            new { Name = name, Category = category, Sign = sign, IsActive = isActive },
             commandType: CommandType.StoredProcedure);
     }
 
-    public async Task UpdateAsync(int componentTypeId, string name, string category, short sign)
+    public async Task UpdateAsync(int componentTypeId, string name, string category, short sign, bool? isActive = null)
     {
         using var db = _factory.Create();
         await db.ExecuteAsync(
             "hr.usp_ComponentType_Update",
-            new { ComponentTypeId = componentTypeId, Name = name, Category = category, Sign = sign },
+            new { ComponentTypeId = componentTypeId, Name = name, Category = category, Sign = sign, IsActive = isActive },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task DeleteAsync(int componentTypeId)
+    {
+        using var db = _factory.Create();
+        await db.ExecuteAsync(
+            "hr.usp_ComponentType_Delete",
+            new { ComponentTypeId = componentTypeId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task SetActiveAsync(int componentTypeId, bool isActive)
+    {
+        using var db = _factory.Create();
+        await db.ExecuteAsync(
+            "hr.usp_ComponentType_SetActive",
+            new { ComponentTypeId = componentTypeId, IsActive = isActive },
             commandType: CommandType.StoredProcedure);
     }
 }

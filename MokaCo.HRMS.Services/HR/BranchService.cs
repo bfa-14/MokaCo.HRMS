@@ -12,4 +12,10 @@ public class BranchService : IBranchService
     public Task<IEnumerable<Branch>> GetAllAsync() => _repo.GetAllAsync();
     public Task<int> CreateAsync(string name) => _repo.CreateAsync(name);
     public Task UpdateAsync(int branchId, string name, bool isActive) => _repo.UpdateAsync(branchId, name, isActive);
+
+    public Task DeleteAsync(int branchId)
+        => ReferenceDataSqlErrors.MapAsync(() => _repo.DeleteAsync(branchId));
+
+    public Task SetActiveAsync(int branchId, bool isActive)
+        => ReferenceDataSqlErrors.MapAsync(() => _repo.SetActiveAsync(branchId, isActive));
 }

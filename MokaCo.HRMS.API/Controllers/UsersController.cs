@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Model.Security;
 using MokaCo.HRMS.Services.Security;
+using MokaCo.HRMS.Services.Workflow;
 
 namespace MokaCo.HRMS.Api.Controllers;
 
@@ -54,6 +55,28 @@ public class UsersController : ControllerBase
         // so steps waiting on them, and any deputy cover, change the moment this lands.
         await _live.NotifyAsync("workflow", "dashboard");
         return NoContent();
+    }
+
+    /// <summary>
+    /// Replaces a user's WHOLE role set — body { roleIds: [...] }. A role left out is removed. The
+    /// procedure refuses an unknown user (404) or role, and refuses to strip the last active Admin
+    /// (400, sentence intact). Returns the roles as stored.
+    /// </summary>
+    [HttpPut("{id:int}/roles")]
+    [HasPermission("USER_MANAGE")]
+    public async Task<IActionResult> SetRoles(int id, [FromBody] SetUserRolesRequest request)
+    {
+        try
+        {
+            var roles = (await _users.SetRolesAsync(id, request.RoleIds ?? new List<int>(), CurrentUserId)).ToList();
+            // Roles decide who may sign which step, so the chains in flight just changed hands.
+            await _live.NotifyAsync("workflow", "dashboard");
+            return Ok(new { userId = id, roles, roleIds = roles.Select(r => r.RoleId).ToList() });
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
     }
 
     /* ---- signature images ---- */

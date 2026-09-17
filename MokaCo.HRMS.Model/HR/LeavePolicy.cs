@@ -73,6 +73,9 @@ public class LeaveTypeUpsertRequest
     public bool ClearFixedEntitlement { get; set; }
 
     public bool? IsDiscretionary { get; set; }
+
+    /// <summary>Null keeps the stored value (create: active).</summary>
+    public bool? IsActive { get; set; }
 }
 
 /// <summary>One accrual tier. The leave type comes from the route, never the body.</summary>

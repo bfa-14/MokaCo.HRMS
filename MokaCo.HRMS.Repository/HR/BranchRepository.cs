@@ -36,4 +36,22 @@ public class BranchRepository : IBranchRepository
             new { BranchId = branchId, Name = name, IsActive = isActive },
             commandType: CommandType.StoredProcedure);
     }
+
+    public async Task DeleteAsync(int branchId)
+    {
+        using var db = _factory.Create();
+        await db.ExecuteAsync(
+            "hr.usp_Branch_Delete",
+            new { BranchId = branchId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task SetActiveAsync(int branchId, bool isActive)
+    {
+        using var db = _factory.Create();
+        await db.ExecuteAsync(
+            "hr.usp_Branch_SetActive",
+            new { BranchId = branchId, IsActive = isActive },
+            commandType: CommandType.StoredProcedure);
+    }
 }

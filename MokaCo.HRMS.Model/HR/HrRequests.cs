@@ -40,6 +40,8 @@ public class ComponentTypeCreateRequest
     public string Name { get; set; } = string.Empty;
     public string Category { get; set; } = string.Empty;   // Earning / Deduction
     public short Sign { get; set; }
+    /// <summary>Omitted means active.</summary>
+    public bool? IsActive { get; set; }
 }
 
 public class ComponentTypeUpdateRequest
@@ -47,6 +49,14 @@ public class ComponentTypeUpdateRequest
     public string Name { get; set; } = string.Empty;
     public string Category { get; set; } = string.Empty;
     public short Sign { get; set; }
+    /// <summary>Omitted (null) keeps the stored value, so an older screen cannot reactivate a retired type by accident.</summary>
+    public bool? IsActive { get; set; }
+}
+
+/// <summary>Body of PATCH …/{id}/active on every reference-data resource — the "deactivate it instead" path.</summary>
+public class SetActiveRequest
+{
+    public bool IsActive { get; set; }
 }
 
 /* ---- Employee ---- */

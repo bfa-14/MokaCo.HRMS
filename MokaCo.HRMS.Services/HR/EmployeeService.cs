@@ -14,20 +14,41 @@ public class EmployeeService : IEmployeeService
 
     public Task<EmployeeProfile?> GetProfileAsync(int employeeId) => _repo.GetProfileAsync(employeeId);
 
+    /// <summary>
+    /// A NEW employee must have a phone number and an e-mail (71_employee_contact_required.sql
+    /// enforces the presence; the format rules live in <see cref="ContactRules"/>). Refused here as a
+    /// WorkflowException 400 so the message is the one the form shows, and the phone is stored
+    /// NORMALISED (+961…) so one number cannot exist under two spellings.
+    /// </summary>
     public Task<int> CreateAsync(EmployeeCreateRequest request, int? createdBy)
+    {
+        if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.PhoneNumber))
+            throw new WorkflowException(400, ContactRules.RequiredMessage);
+        if (!ContactRules.IsValidEmail(request.Email))
+            throw new WorkflowException(400, ContactRules.InvalidEmailMessage);
+        var phone = ContactRules.NormalisePhone(request.PhoneNumber)
+            ?? throw new WorkflowException(400, ContactRules.InvalidPhoneMessage);
+
         // The @UserId is passed straight through — a new employee can be linked at creation. If the
         // account is already taken, the procedure raises the same friendly message as LinkUser
         // (naming the other employee); MapAsync turns it into a 400 with that message intact.
-        => WorkflowSqlErrors.MapAsync(() => _repo.CreateAsync(
+        return WorkflowSqlErrors.MapAsync(() => _repo.CreateAsync(
             request.UserId, request.BranchId, request.DepartmentId, request.PositionId,
             request.FullName, request.NationalId, request.NssfNumber, request.HireDate, createdBy,
-            request.Email, request.PhoneNumber, request.PreferredLanguage));
+            request.Email.Trim(), phone, request.PreferredLanguage));
+    }
 
     public Task UpdateAsync(int employeeId, EmployeeUpdateRequest request, int? modifiedBy)
         => _repo.UpdateAsync(
             employeeId, request.BranchId, request.DepartmentId, request.PositionId,
             request.FullName, request.NationalId, request.NssfNumber, request.HireDate,
-            request.TerminationDate, modifiedBy, request.Email, request.PhoneNumber,
+            request.TerminationDate, modifiedBy,
+            // An edit is NOT blocked by a missing or legacy contact value (older staff may lack them);
+            // a phone that parses is stored normalised, one that does not is kept as typed.
+            string.IsNullOrWhiteSpace(request.Email) ? null : request.Email.Trim(),
+            string.IsNullOrWhiteSpace(request.PhoneNumber)
+                ? null
+                : ContactRules.NormalisePhone(request.PhoneNumber) ?? request.PhoneNumber.Trim(),
             request.PreferredLanguage);
 
     public Task SoftDeleteAsync(int employeeId, int? modifiedBy) => _repo.SoftDeleteAsync(employeeId, modifiedBy);

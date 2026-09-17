@@ -18,4 +18,10 @@ public interface IRosterService
     Task<IEnumerable<EmployeePatternDay>> GetEmployeePatternAsync(int employeeId);
     Task SavePatternsAsync(int employeeId, IEnumerable<ShiftPatternUpsertRequest> days);
     Task DeletePatternsAsync(int employeeId);
+
+    /// <summary>
+    /// Clears one branch-month of roster. Refused (WorkflowException 409, procedure's sentence) while a
+    /// roster request is pending/on hold/approved for it, or once attendance exists on any of its days.
+    /// </summary>
+    Task<RosterClearResult> ClearMonthAsync(int branchId, int year, int month, int? userId);
 }

@@ -10,7 +10,14 @@ public class ComponentTypeService : IComponentTypeService
     public ComponentTypeService(IComponentTypeRepository repo) => _repo = repo;
 
     public Task<IEnumerable<ComponentType>> GetAllAsync() => _repo.GetAllAsync();
-    public Task<int> CreateAsync(string name, string category, short sign) => _repo.CreateAsync(name, category, sign);
-    public Task UpdateAsync(int componentTypeId, string name, string category, short sign)
-        => _repo.UpdateAsync(componentTypeId, name, category, sign);
+    public Task<int> CreateAsync(string name, string category, short sign, bool? isActive = null)
+        => _repo.CreateAsync(name, category, sign, isActive);
+    public Task UpdateAsync(int componentTypeId, string name, string category, short sign, bool? isActive = null)
+        => _repo.UpdateAsync(componentTypeId, name, category, sign, isActive);
+
+    public Task DeleteAsync(int componentTypeId)
+        => ReferenceDataSqlErrors.MapAsync(() => _repo.DeleteAsync(componentTypeId));
+
+    public Task SetActiveAsync(int componentTypeId, bool isActive)
+        => ReferenceDataSqlErrors.MapAsync(() => _repo.SetActiveAsync(componentTypeId, isActive));
 }

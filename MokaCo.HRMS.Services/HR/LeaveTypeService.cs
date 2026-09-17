@@ -50,7 +50,8 @@ public class LeaveTypeService : ILeaveTypeService
             request.MinServiceMonthsToUse ?? existing?.MinServiceMonthsToUse ?? 0,
             request.NoticePreferredDays ?? existing?.NoticePreferredDays ?? 0,
             fixedDays,
-            request.IsDiscretionary ?? existing?.IsDiscretionary ?? false);
+            request.IsDiscretionary ?? existing?.IsDiscretionary ?? false,
+            request.IsActive);
     }
 
     public Task SetAccrualTierAsync(int leaveTypeId, LeaveAccrualTierRequest request)
@@ -70,4 +71,10 @@ public class LeaveTypeService : ILeaveTypeService
 
     public Task DeleteRelationAsync(int leaveTypeId, string relation)
         => _repo.DeleteRelationAsync(leaveTypeId, relation);
+
+    public Task DeleteAsync(int leaveTypeId)
+        => ReferenceDataSqlErrors.MapAsync(() => _repo.DeleteAsync(leaveTypeId));
+
+    public Task SetActiveAsync(int leaveTypeId, bool isActive)
+        => ReferenceDataSqlErrors.MapAsync(() => _repo.SetActiveAsync(leaveTypeId, isActive));
 }

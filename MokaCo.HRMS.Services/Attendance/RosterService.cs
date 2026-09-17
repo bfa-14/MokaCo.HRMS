@@ -1,5 +1,6 @@
 using MokaCo.HRMS.Model.Attendance;
 using MokaCo.HRMS.Repository.Attendance;
+using MokaCo.HRMS.Services.Workflow;
 
 namespace MokaCo.HRMS.Services.Attendance;
 
@@ -65,4 +66,8 @@ public class RosterService : IRosterService
     }
 
     public Task DeletePatternsAsync(int employeeId) => _repo.DeletePatternsAsync(employeeId);
+
+    /// <summary>The procedure owns every rule; its refusals travel up as a 409 with the sentence intact.</summary>
+    public Task<RosterClearResult> ClearMonthAsync(int branchId, int year, int month, int? userId)
+        => WorkflowSqlErrors.MapAsync(() => _repo.ClearMonthAsync(branchId, year, month, userId));
 }

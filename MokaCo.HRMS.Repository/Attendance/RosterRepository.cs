@@ -147,4 +147,13 @@ public class RosterRepository : IRosterRepository
             new { EmployeeId = employeeId },
             commandType: CommandType.StoredProcedure);
     }
+
+    public async Task<RosterClearResult> ClearMonthAsync(int branchId, int year, int month, int? userId)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleAsync<RosterClearResult>(
+            "attendance.usp_Roster_Clear",
+            new { BranchId = branchId, Year = year, Month = month, UserId = userId },
+            commandType: CommandType.StoredProcedure);
+    }
 }

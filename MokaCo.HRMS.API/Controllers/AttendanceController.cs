@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Model.Attendance;
 using MokaCo.HRMS.Services.Attendance;
+using MokaCo.HRMS.Services.Workflow;
 
 namespace MokaCo.HRMS.Api.Controllers;
 
@@ -92,6 +93,34 @@ public class AttendanceController : ControllerBase
     [HasPermission("ATTENDANCE_VIEW")]
     public async Task<IActionResult> GetRosterMonth([FromQuery] int branchId, [FromQuery] DateTime month)
         => Ok(await _attendance.GetRosterMonthAsync(branchId, month));
+
+    /// <summary>
+    /// Clears one branch-month of roster: every assignment row of the branch's employees in that
+    /// month, and the month's header. ATTENDANCE_MANAGE — the same trust as building the roster.
+    ///
+    /// The procedure (attendance.usp_Roster_Clear) refuses, as a 409 with the reason, while a roster
+    /// approval is pending / on hold / approved for the month, or once attendance has been recorded
+    /// on any of its days — a roster the processor already judged against is a record, not a draft.
+    /// </summary>
+    [HttpDelete("rosters")]
+    [HasPermission("ATTENDANCE_MANAGE")]
+    public async Task<IActionResult> ClearRoster(
+        [FromQuery] int branchId, [FromQuery] int year, [FromQuery] int month,
+        [FromServices] IRosterService roster)
+    {
+        if (month is < 1 or > 12)
+            return BadRequest(new { error = "month must be 1–12." });
+        try
+        {
+            var result = await roster.ClearMonthAsync(branchId, year, month, CurrentUserId);
+            await _live.NotifyAsync("attendance", "dashboard");
+            return Ok(result);
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
 
     /// <summary>Days the machine could not read confidently. Not errors — requests for a human to look.</summary>
     [HttpGet("anomalies")]

@@ -46,6 +46,45 @@ public class BranchesController : ControllerBase
         return NoContent();
     }
 
+
+    /// <summary>
+    /// Deletes an UNUSED branch. One that anything references (employees, payslip lines, requests…)
+    /// is refused with 409 and the procedure's own sentence — "Cannot delete 'X': it is used by 12
+    /// employees and 340 payslip lines. Deactivate it instead." — which the UI shows verbatim.
+    /// </summary>
+    [HttpDelete("{id:int}")]
+    [HasPermission("ORG_MANAGE")]
+    public async Task<IActionResult> Delete(int id)
+    {
+        try
+        {
+            await _branches.DeleteAsync(id);
+            await _live.NotifyAsync("hr", "dashboard");
+            return NoContent();
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>The "deactivate it instead" path: PATCH …/{id}/active { isActive }.</summary>
+    [HttpPatch("{id:int}/active")]
+    [HasPermission("ORG_MANAGE")]
+    public async Task<IActionResult> SetActive(int id, [FromBody] SetActiveRequest request)
+    {
+        try
+        {
+            await _branches.SetActiveAsync(id, request.IsActive);
+            await _live.NotifyAsync("hr", "dashboard");
+            return NoContent();
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
     /* ---- branch managers (workflow: the post a 'BranchManager' approval step resolves through) ---- */
 
     /// <summary>

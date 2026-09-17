@@ -1,5 +1,6 @@
 using System.Data;
 using Dapper;
+using MokaCo.HRMS.Model.HR;
 using MokaCo.HRMS.Model.Workflow;
 using MokaCo.HRMS.Repository.Common;
 
@@ -91,5 +92,25 @@ public class LeaveRequestRepository : ILeaveRequestRepository
             "hr.usp_Leave_GetBalance",
             new { EmployeeId = employeeId, LeaveTypeId = leaveTypeId },
             commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<LeaveYearBalance> GetBalanceByYearAsync(int employeeId, int? year)
+    {
+        using var db = _factory.Create();
+        using var grid = await db.QueryMultipleAsync(
+            "hr.usp_Leave_GetBalanceByYear",
+            new { EmployeeId = employeeId, Year = year },
+            commandType: CommandType.StoredProcedure);
+
+        // Two result sets, in the procedure's order: the header (YearOpened, Year), then the rows.
+        var header = await grid.ReadSingleAsync<(bool YearOpened, int Year)>();
+        var rows = (await grid.ReadAsync<LeaveTypeYearBalance>()).ToList();
+        return new LeaveYearBalance
+        {
+            EmployeeId = employeeId,
+            Year = header.Year,
+            YearOpened = header.YearOpened,
+            Balances = rows,
+        };
     }
 }

@@ -1,6 +1,7 @@
 using MokaCo.HRMS.Model.Security;
 using MokaCo.HRMS.Repository.Security;
 using MokaCo.HRMS.Services.Auth;
+using MokaCo.HRMS.Services.HR;
 
 namespace MokaCo.HRMS.Services.Security;
 
@@ -77,4 +78,8 @@ public class UserService : IUserService
     /// length rule in the codebase, so it is stated here rather than copied from somewhere.
     /// </summary>
     public const int MinPasswordLength = 8;
+
+    /// <summary>"User not found." → 404; "Role #9 does not exist." / the last-Admin guard → 400, wording intact.</summary>
+    public Task<IEnumerable<UserRoleItem>> SetRolesAsync(int userId, IEnumerable<int> roleIds, int actedBy)
+        => ReferenceDataSqlErrors.MapAsync(() => _users.SetRolesAsync(userId, roleIds, actedBy));
 }

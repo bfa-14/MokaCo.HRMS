@@ -26,4 +26,11 @@ public interface IRosterRepository
 
     Task UpsertPatternAsync(int employeeId, byte dayOfWeek, int? shiftId, bool isRestDay);
     Task DeletePatternsAsync(int employeeId);
+
+    /// <summary>
+    /// attendance.usp_Roster_Clear — deletes the branch's assignment rows for the month (and the
+    /// ROSTER_MONTH header). RAISERRORs when a Pending/OnHold/Approved roster request exists or
+    /// attendance was already recorded on any of those days; the sentence says which.
+    /// </summary>
+    Task<RosterClearResult> ClearMonthAsync(int branchId, int year, int month, int? userId);
 }

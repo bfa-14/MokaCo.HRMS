@@ -36,4 +36,22 @@ public class PositionRepository : IPositionRepository
             new { PositionId = positionId, Title = title, IsActive = isActive },
             commandType: CommandType.StoredProcedure);
     }
+
+    public async Task DeleteAsync(int positionId)
+    {
+        using var db = _factory.Create();
+        await db.ExecuteAsync(
+            "hr.usp_Position_Delete",
+            new { PositionId = positionId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task SetActiveAsync(int positionId, bool isActive)
+    {
+        using var db = _factory.Create();
+        await db.ExecuteAsync(
+            "hr.usp_Position_SetActive",
+            new { PositionId = positionId, IsActive = isActive },
+            commandType: CommandType.StoredProcedure);
+    }
 }

@@ -31,6 +31,13 @@ public class LeaveType
 
     /// <summary>Granted at the approver's discretion rather than by entitlement.</summary>
     public bool IsDiscretionary { get; set; }
+
+    /// <summary>
+    /// False hides the type from new requests without deleting it. A type that is REFERENCED (ledger
+    /// rows, leave requests) cannot be deleted at all — hr.usp_LeaveType_Delete refuses and says why —
+    /// so this is the only way to retire one that has been used.
+    /// </summary>
+    public bool IsActive { get; set; } = true;
 }
 
 /// <summary>

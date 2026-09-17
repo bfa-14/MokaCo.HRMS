@@ -48,6 +48,15 @@ public class ChangePasswordRequest
     public string NewPassword { get; set; } = string.Empty;
 }
 
+/// <summary>
+/// Body of PUT /api/users/{id}/roles — the user's WHOLE role set (replace-all). A role missing from
+/// the list is removed; the procedure refuses to take the last active Admin's role away.
+/// </summary>
+public class SetUserRolesRequest
+{
+    public List<int> RoleIds { get; set; } = new();
+}
+
 public class RoleRequest
 {
     public string Name { get; set; } = string.Empty;

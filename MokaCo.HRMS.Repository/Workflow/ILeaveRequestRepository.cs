@@ -1,3 +1,4 @@
+using MokaCo.HRMS.Model.HR;
 using MokaCo.HRMS.Model.Workflow;
 
 namespace MokaCo.HRMS.Repository.Workflow;
@@ -34,4 +35,10 @@ public interface ILeaveRequestRepository
 
     /// <summary>An employee's balance for one leave type. Null when the leave type does not exist.</summary>
     Task<LeaveBalanceSummary?> GetBalanceAsync(int employeeId, int leaveTypeId);
+
+    /// <summary>
+    /// hr.usp_Leave_GetBalanceByYear: every leave type's balance for one leave year (null = current).
+    /// YearOpened false ⇒ Balances empty — the year was never opened for this employee.
+    /// </summary>
+    Task<LeaveYearBalance> GetBalanceByYearAsync(int employeeId, int? year);
 }

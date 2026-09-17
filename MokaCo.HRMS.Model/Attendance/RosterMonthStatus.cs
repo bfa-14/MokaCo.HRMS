@@ -32,4 +32,28 @@ public class RosterMonthStatus
     /// Draft while the request it came from still exists and is still worth linking to.
     /// </summary>
     public string? RequestStatus { get; set; }
+
+    /* ---- what the "Submit for approval" button needs (72_roster_submit_guard_and_clear) ---- */
+
+    /// <summary>The ROSTER_APPROVAL request still open on this month (Pending/OnHold), if any. Submit is refused while it exists.</summary>
+    public int? OpenRequestId { get; set; }
+
+    /// <summary>That open request's status — Pending or OnHold.</summary>
+    public string? OpenRequestStatus { get; set; }
+
+    /// <summary>
+    /// When the LATEST request on this month was approved (its ClosedAt; ROSTER_MONTH.ApprovedAt as
+    /// the fallback). Null when the latest request was rejected/cancelled or none was ever approved.
+    /// </summary>
+    public DateTime? LastApprovedAt { get; set; }
+
+    /// <summary>
+    /// True when a roster row of this branch-month was added, changed or deleted AFTER
+    /// <see cref="LastApprovedAt"/>. False (not null) when nothing was ever approved. Submit after an
+    /// approval is allowed only when this is true.
+    /// </summary>
+    public bool ChangedSinceApproval { get; set; }
+
+    /// <summary>The last time any roster row of this branch-month changed (UTC).</summary>
+    public DateTime? LastChangedUtc { get; set; }
 }

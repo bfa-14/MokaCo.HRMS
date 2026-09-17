@@ -29,3 +29,35 @@ public class LeaveBalance
 
     public decimal Remaining { get; set; }
 }
+
+/// <summary>
+/// One leave type's balance for ONE LEAVE YEAR — a row of hr.usp_Leave_GetBalanceByYear, which sums
+/// hr.vw_LEAVE_BALANCE over the year's periods. Remaining = Entitlement + CarriedOver − Used + Adjusted.
+/// </summary>
+public class LeaveTypeYearBalance
+{
+    public int LeaveTypeId { get; set; }
+    public string LeaveType { get; set; } = string.Empty;
+    public bool IsPaid { get; set; }
+    /// <summary>The year's Accrual movements — what the year opening granted (plus any later accrual).</summary>
+    public decimal Entitlement { get; set; }
+    public decimal CarriedOver { get; set; }
+    public decimal Used { get; set; }
+    public decimal Adjusted { get; set; }
+    public decimal Remaining { get; set; }
+    public int Year { get; set; }
+}
+
+/// <summary>
+/// GET /api/employees/{id}/leave-balance without a leaveTypeId: every type for the leave year.
+/// <see cref="YearOpened"/> is false — and <see cref="Balances"/> EMPTY — when hr.usp_LeaveYear_Open
+/// has not been run for this employee and year, which is the honest answer: there is no entitlement
+/// to measure against yet, not a balance of zero.
+/// </summary>
+public class LeaveYearBalance
+{
+    public int EmployeeId { get; set; }
+    public int Year { get; set; }
+    public bool YearOpened { get; set; }
+    public List<LeaveTypeYearBalance> Balances { get; set; } = new();
+}

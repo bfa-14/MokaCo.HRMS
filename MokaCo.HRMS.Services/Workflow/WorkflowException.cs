@@ -38,23 +38,39 @@ public static class WorkflowSqlErrors
         }
         catch (SqlException ex) when (ex.Number == 50000)
         {
-            var message = ex.Message;
-
-            // "You are not the approver for this step." — the authorisation failure the DB owns.
-            if (message.Contains("not the approver", StringComparison.OrdinalIgnoreCase))
-                throw new WorkflowException(403, message);
-
-            // The reversals' authorisation failures, which are the same KIND of answer: not a bad
-            // request, but the wrong person asking. Matched on the procedures' own wording so the
-            // status is right; the message still travels untouched, because each one names the path
-            // that WOULD work (the GM + Owner route, or the other of the two).
-            if (message.Contains("may retract it", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("needs the General Manager and the Owner", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("already signed the reopen", StringComparison.OrdinalIgnoreCase))
-                throw new WorkflowException(403, message);
-
-            // Everything else the procedures raise is a request-state or input rule, not a 500.
-            throw new WorkflowException(400, message);
+            throw MapMessage(ex.Message);
         }
+    }
+
+    /// <summary>
+    /// The status a procedure's refusal maps to, decided from its wording alone — public so the rules
+    /// can be tested without a database. The message travels untouched in every case.
+    /// </summary>
+    public static WorkflowException MapMessage(string message)
+    {
+        // "You are not the approver for this step." — the authorisation failure the DB owns.
+        if (message.Contains("not the approver", StringComparison.OrdinalIgnoreCase))
+            return new WorkflowException(403, message);
+
+        // The reversals' authorisation failures, which are the same KIND of answer: not a bad
+        // request, but the wrong person asking. Matched on the procedures' own wording so the
+        // status is right; the message still travels untouched, because each one names the path
+        // that WOULD work (the GM + Owner route, or the other of the two).
+        if (message.Contains("may retract it", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("needs the General Manager and the Owner", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("already signed the reopen", StringComparison.OrdinalIgnoreCase))
+            return new WorkflowException(403, message);
+
+        // A CONFLICT with what already exists, not a bad request: a roster already waiting for
+        // approval, one approved and unchanged since, or a clear blocked by an approval or by
+        // attendance already recorded (72_roster_submit_guard_and_clear.sql). The UI shows the
+        // sentence and disables the button; 409 tells it which of the two happened.
+        if (message.StartsWith("This roster is already waiting", StringComparison.OrdinalIgnoreCase)
+            || message.StartsWith("This roster was approved on", StringComparison.OrdinalIgnoreCase)
+            || message.StartsWith("This roster cannot be cleared", StringComparison.OrdinalIgnoreCase))
+            return new WorkflowException(409, message);
+
+        // Everything else the procedures raise is a request-state or input rule, not a 500.
+        return new WorkflowException(400, message);
     }
 }

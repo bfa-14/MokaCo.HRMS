@@ -12,4 +12,10 @@ public class PositionService : IPositionService
     public Task<IEnumerable<Position>> GetAllAsync() => _repo.GetAllAsync();
     public Task<int> CreateAsync(string title) => _repo.CreateAsync(title);
     public Task UpdateAsync(int positionId, string title, bool isActive) => _repo.UpdateAsync(positionId, title, isActive);
+
+    public Task DeleteAsync(int positionId)
+        => ReferenceDataSqlErrors.MapAsync(() => _repo.DeleteAsync(positionId));
+
+    public Task SetActiveAsync(int positionId, bool isActive)
+        => ReferenceDataSqlErrors.MapAsync(() => _repo.SetActiveAsync(positionId, isActive));
 }

@@ -48,7 +48,7 @@ public class LeaveTypeRepository : ILeaveTypeRepository
     public async Task<LeaveType?> UpsertAsync(
         int? leaveTypeId, string name, bool isPaid, bool carryOver,
         bool requiresCertificate, int minServiceMonthsToUse, int noticePreferredDays,
-        decimal? fixedEntitlementDays, bool isDiscretionary)
+        decimal? fixedEntitlementDays, bool isDiscretionary, bool? isActive = null)
     {
         using var db = _factory.Create();
         return await db.QuerySingleOrDefaultAsync<LeaveType>(
@@ -64,6 +64,7 @@ public class LeaveTypeRepository : ILeaveTypeRepository
                 NoticePreferredDays = noticePreferredDays,
                 FixedEntitlementDays = fixedEntitlementDays,
                 IsDiscretionary = isDiscretionary,
+                IsActive = isActive,
             },
             commandType: CommandType.StoredProcedure);
     }
@@ -143,6 +144,24 @@ public class LeaveTypeRepository : ILeaveTypeRepository
         await db.ExecuteAsync(
             "hr.usp_LeaveType_Update",
             new { LeaveTypeId = leaveTypeId, Name = name, IsPaid = isPaid, CarryOver = carryOver },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task DeleteAsync(int leaveTypeId)
+    {
+        using var db = _factory.Create();
+        await db.ExecuteAsync(
+            "hr.usp_LeaveType_Delete",
+            new { LeaveTypeId = leaveTypeId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task SetActiveAsync(int leaveTypeId, bool isActive)
+    {
+        using var db = _factory.Create();
+        await db.ExecuteAsync(
+            "hr.usp_LeaveType_SetActive",
+            new { LeaveTypeId = leaveTypeId, IsActive = isActive },
             commandType: CommandType.StoredProcedure);
     }
 }

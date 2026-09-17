@@ -27,7 +27,7 @@ public interface ILeaveTypeRepository
     Task<LeaveType?> UpsertAsync(
         int? leaveTypeId, string name, bool isPaid, bool carryOver,
         bool requiresCertificate, int minServiceMonthsToUse, int noticePreferredDays,
-        decimal? fixedEntitlementDays, bool isDiscretionary);
+        decimal? fixedEntitlementDays, bool isDiscretionary, bool? isActive = null);
 
     Task SetAccrualTierAsync(int leaveTypeId, int minServiceYears, decimal annualDays);
     Task DeleteAccrualTierAsync(int leaveTypeId, int minServiceYears);
@@ -37,4 +37,13 @@ public interface ILeaveTypeRepository
 
     Task SetRelationAsync(int leaveTypeId, string relation, decimal days);
     Task DeleteRelationAsync(int leaveTypeId, string relation);
+
+    /// <summary>
+    /// hr.usp_LeaveType_Delete: hard-deletes an UNUSED row; RAISERRORs "Cannot delete '…': it is used by
+    /// … . Deactivate it instead." when anything references it (mapped to a 409 above).
+    /// </summary>
+    Task DeleteAsync(int leaveTypeId);
+
+    /// <summary>hr.usp_LeaveType_SetActive — the "deactivate it instead" path. RAISERRORs "… not found." (404).</summary>
+    Task SetActiveAsync(int leaveTypeId, bool isActive);
 }

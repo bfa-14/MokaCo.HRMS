@@ -29,4 +29,14 @@ public interface ILeaveTypeService
 
     Task SetRelationAsync(int leaveTypeId, LeaveRelationRequest request);
     Task DeleteRelationAsync(int leaveTypeId, string relation);
+
+    /// <summary>
+    /// Deletes an unused row. A row anything references is refused with a
+    /// <see cref="MokaCo.HRMS.Services.Workflow.WorkflowException"/> carrying 409 and the sentence
+    /// to show ("Cannot delete 'X': it is used by … . Deactivate it instead."); unknown id → 404.
+    /// </summary>
+    Task DeleteAsync(int leaveTypeId);
+
+    /// <summary>Activates / deactivates without deleting. Unknown id → WorkflowException 404.</summary>
+    Task SetActiveAsync(int leaveTypeId, bool isActive);
 }

@@ -12,4 +12,10 @@ public class DepartmentService : IDepartmentService
     public Task<IEnumerable<Department>> GetAllAsync() => _repo.GetAllAsync();
     public Task<int> CreateAsync(string name) => _repo.CreateAsync(name);
     public Task UpdateAsync(int departmentId, string name, bool isActive) => _repo.UpdateAsync(departmentId, name, isActive);
+
+    public Task DeleteAsync(int departmentId)
+        => ReferenceDataSqlErrors.MapAsync(() => _repo.DeleteAsync(departmentId));
+
+    public Task SetActiveAsync(int departmentId, bool isActive)
+        => ReferenceDataSqlErrors.MapAsync(() => _repo.SetActiveAsync(departmentId, isActive));
 }

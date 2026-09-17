@@ -3,6 +3,7 @@ using Microsoft.Data.SqlClient;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Model.HR;
 using MokaCo.HRMS.Services.HR;
+using MokaCo.HRMS.Services.Workflow;
 
 namespace MokaCo.HRMS.Api.Controllers;
 
@@ -91,6 +92,45 @@ public class LeaveTypesController : ControllerBase
         catch (SqlException ex) when (ex.Number == 50000)
         {
             return BadRequest(new { error = ex.Message });
+        }
+    }
+
+
+    /// <summary>
+    /// Deletes an UNUSED leave type. One that anything references (ledger entries, leave requests)
+    /// is refused with 409 and the procedure's own sentence — "Cannot delete 'X': it is used by 34
+    /// leave ledger entries and 8 leave requests. Deactivate it instead." — which the UI shows verbatim.
+    /// </summary>
+    [HttpDelete("{id:int}")]
+    [HasPermission("LEAVE_POLICY_MANAGE")]
+    public async Task<IActionResult> Delete(int id)
+    {
+        try
+        {
+            await _leaveTypes.DeleteAsync(id);
+            await NotifyLeavePolicyAsync();
+            return NoContent();
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>The "deactivate it instead" path: PATCH …/{id}/active { isActive }.</summary>
+    [HttpPatch("{id:int}/active")]
+    [HasPermission("LEAVE_POLICY_MANAGE")]
+    public async Task<IActionResult> SetActive(int id, [FromBody] SetActiveRequest request)
+    {
+        try
+        {
+            await _leaveTypes.SetActiveAsync(id, request.IsActive);
+            await NotifyLeavePolicyAsync();
+            return NoContent();
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
         }
     }
 

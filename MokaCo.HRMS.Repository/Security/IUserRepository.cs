@@ -23,4 +23,10 @@ public interface IUserRepository
     Task<int> SetActiveAsync(int userId, bool isActive, int modifiedBy);
     Task<IEnumerable<string>> GetRoleNamesAsync(int userId);
     Task AssignRoleAsync(int userId, int roleId, int? assignedBy);
+
+    /// <summary>
+    /// security.usp_User_SetRoles — REPLACES the user's role set and returns it as stored. RAISERRORs
+    /// on an unknown user or role, and when the change would leave no active Admin.
+    /// </summary>
+    Task<IEnumerable<UserRoleItem>> SetRolesAsync(int userId, IEnumerable<int> roleIds, int? assignedBy);
 }
