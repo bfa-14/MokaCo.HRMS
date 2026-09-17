@@ -20,7 +20,8 @@ public interface IAttendanceRepository
     /* -- reads -- */
     Task<IEnumerable<AttendanceRecord>> GetByDateRangeAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId);
     Task<AttendanceDetail?> GetByIdAsync(long attendanceId);
-    Task<IEnumerable<AttendanceRecord>> GetAnomaliesAsync(DateTime fromDate, DateTime toDate);
+    /// <summary>One row per anomaly (late arrival / early departure at or beyond the tolerance, missing punch) of the days in range — script 77.</summary>
+    Task<IEnumerable<AttendanceAnomaly>> GetAnomaliesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided, int? branchId);
     Task<IEnumerable<ExitVariance>> GetExitVariancesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided);
 
     /* -- HR overrides -- */
@@ -28,6 +29,10 @@ public interface IAttendanceRepository
     Task<AttendanceRecord?> SetExitApprovalAsync(long attendanceId, int exitApprovedMinutes, int? exitPermissionId, bool alsoSetActual, string? hrNote);
     Task<AttendanceRecord?> SetExitDispositionAsync(long attendanceId, string disposition, int? exitLeaveMinutesOverride, string? hrNote);
     Task<AttendanceRecord?> HrAdjustDayAsync(long attendanceId, int? workedMinutes, decimal? dayFraction, string? status, string hrNote, int? modifiedBy);
+
+    /* -- anomaly decisions (script 77) -- */
+    Task<AnomalyDecisionResult?> DecideAnomalyAsync(long anomalyId, string decision, DateTime? correctedTimeUtc, string? note, int? decidedByUserId);
+    Task<AnomalyDecideAllResult> DecideAllAnomaliesAsync(string periodYearMonth, string decision, int? branchId, string? note, int? decidedByUserId);
 
     /* -- payroll interface -- */
     Task<PayrollReadiness> GetPayrollReadinessAsync(string periodYearMonth);

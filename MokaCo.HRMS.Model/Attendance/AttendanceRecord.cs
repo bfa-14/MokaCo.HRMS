@@ -63,17 +63,27 @@ public class AttendanceRecord
     /// <summary>How far UNDER the standard day they fell.</summary>
     public int ShortfallMinutes { get; set; }
 
-    /// <summary>Minutes after the shift start when the arrival is beyond the grace (the grace is a threshold, not a discount — script 76). Zero inside the grace, and zero when there is no rostered shift — you cannot be late for a shift that was never assigned.</summary>
+    /// <summary>
+    /// Minutes after the shift start when the arrival is AT OR BEYOND the tolerance (the shift's
+    /// GraceMinutes, else the AttendanceToleranceMinutes setting — script 77); zero below it, and
+    /// zero when there is no rostered shift. A non-zero value is a 'LateArrival' anomaly for HR.
+    /// </summary>
     public int LateMinutes { get; set; }
 
-    /// <summary>The late minutes that actually reduce the paid day, per the LateDeductionBasis setting (script 76).</summary>
+    /// <summary>The late minutes that reduce the paid day: LateMinutes once HR decides 'Deduct' on the anomaly, else zero (script 77).</summary>
     public int LateDeductMinutes { get; set; }
 
-    /// <summary>Minutes between the last out-punch and the shift end — an exit variance like a mid-day gap (script 76).</summary>
+    /// <summary>Minutes between the last out-punch and the shift end when at or beyond the tolerance — an 'EarlyDeparture' anomaly for HR, not an exit variance (script 77).</summary>
     public int EarlyExitMinutes { get; set; }
 
-    /// <summary>Minutes not worked but protected in pay: approved permission, grace, HR's Ignore/Overtime disposition (script 76).</summary>
+    /// <summary>The early-departure minutes that reduce the paid day: EarlyExitMinutes once HR decides 'Deduct', less what an approved exit permission still covers (script 77).</summary>
+    public int EarlyDeductMinutes { get; set; }
+
+    /// <summary>Minutes not worked but protected in pay: approved permission, tolerance, undecided / excused anomalies, HR's Ignore/Overtime disposition (script 76/77).</summary>
     public int CoveredMinutes { get; set; }
+
+    /// <summary>How many of this day's anomalies HR has not decided yet (script 77). Payroll is blocked while any month total is above zero.</summary>
+    public int UndecidedAnomalies { get; set; }
 
     /// <summary>
     /// Minutes over the standard day. DETECTED ONLY — attendance never pays this. Pay only what an
@@ -81,7 +91,7 @@ public class AttendanceRecord
     /// </summary>
     public int OvertimeMinutes { get; set; }
 
-    /// <summary>What the punches SHOW the employee was away for, beyond their break. Observed fact.</summary>
+    /// <summary>What the punches SHOW the employee was away for MID-DAY, beyond their break. Observed fact. Since script 77 an early departure is not part of this — it is an anomaly.</summary>
     public int ExitActualMinutes { get; set; }
 
     /// <summary>
@@ -205,4 +215,97 @@ public class ExitVariance
 
     public decimal LeaveDaysToDeduct { get; set; }
     public string? HrNote { get; set; }
+}
+
+/// <summary>
+/// One row of attendance.ATTENDANCE_ANOMALY joined to its day (usp_Attendance_GetAnomalies) — a
+/// late arrival or early departure at or beyond the tolerance, or a missing punch, for HR to
+/// decide. The first block is the day exactly as the anomalies list has always shown it; the rest
+/// is the anomaly itself. A day can carry several rows (one per type), so the row key is
+/// <see cref="AnomalyId"/>, not the attendance id.
+/// </summary>
+public class AttendanceAnomaly
+{
+    public long AttendanceId { get; set; }
+    public int EmployeeId { get; set; }
+    public string FullName { get; set; } = string.Empty;
+    public DateTime WorkDate { get; set; }
+    public DateTime? FirstInUtc { get; set; }
+    public DateTime? LastOutUtc { get; set; }
+    public int PunchPairs { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public string Source { get; set; } = string.Empty;
+
+    public long AnomalyId { get; set; }
+
+    /// <summary>LateArrival | EarlyDeparture | MissingPunch.</summary>
+    public string Type { get; set; } = string.Empty;
+
+    /// <summary>The late or early minutes, measured from the shift; zero for a missing punch.</summary>
+    public int Minutes { get; set; }
+
+    public DateTime? ShiftStart { get; set; }
+    public DateTime? ShiftEnd { get; set; }
+    public DateTime? PunchIn { get; set; }
+    public DateTime? PunchOut { get; set; }
+
+    /// <summary>NULL = undecided (the minutes are covered in pay meanwhile) | Excused | Deducted | Corrected.</summary>
+    public string? Decision { get; set; }
+    public int? DecidedByUserId { get; set; }
+
+    /// <summary>The decider's name (employee full name, else username); NULL for an automatic decision such as an exit permission covering the early departure.</summary>
+    public string? DecidedBy { get; set; }
+    public DateTime? DecidedAt { get; set; }
+    public string? Note { get; set; }
+
+    public decimal? DayFraction { get; set; }
+    public int WorkedMinutes { get; set; }
+    public int CoveredMinutes { get; set; }
+    public int StandardMinutes { get; set; }
+    public bool IsManual { get; set; }
+    public bool HasAnomaly { get; set; }
+    public int? BranchId { get; set; }
+    public string? BranchName { get; set; }
+}
+
+/// <summary>What usp_Anomaly_Decide returns: the decided row and the day as re-derived with the decision.</summary>
+public class AnomalyDecisionResult
+{
+    public long AnomalyId { get; set; }
+    public long AttendanceId { get; set; }
+    public int EmployeeId { get; set; }
+    public DateTime WorkDate { get; set; }
+    public string Type { get; set; } = string.Empty;
+    public int Minutes { get; set; }
+    public string? Decision { get; set; }
+    public int? DecidedByUserId { get; set; }
+    public DateTime? DecidedAt { get; set; }
+    public string? Note { get; set; }
+
+    public DateTime? FirstInUtc { get; set; }
+    public DateTime? LastOutUtc { get; set; }
+    public int WorkedMinutes { get; set; }
+    public int CoveredMinutes { get; set; }
+    public int StandardMinutes { get; set; }
+    public decimal? DayFraction { get; set; }
+    public bool IsFullDay { get; set; }
+    public int LateMinutes { get; set; }
+    public int LateDeductMinutes { get; set; }
+    public int EarlyExitMinutes { get; set; }
+    public int EarlyDeductMinutes { get; set; }
+    public bool IsManual { get; set; }
+    public bool HasAnomaly { get; set; }
+    public string Status { get; set; } = string.Empty;
+}
+
+/// <summary>What usp_Anomaly_DecideAll returns.</summary>
+public class AnomalyDecideAllResult
+{
+    /// <summary>Undecided late arrivals / early departures of the month that took the decision.</summary>
+    public int Decided { get; set; }
+
+    /// <summary>Missing-punch anomalies left alone: each needs its own corrected time.</summary>
+    public int Skipped { get; set; }
+
+    public int DaysRecomputed { get; set; }
 }

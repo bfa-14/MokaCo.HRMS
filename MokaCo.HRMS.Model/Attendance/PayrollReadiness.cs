@@ -30,7 +30,10 @@ public class PayrollReadiness
     /// <summary>Exit variances HR has not ruled on. Until someone says unpaid / offset / ignore, payroll does not know what to do with the time.</summary>
     public int UndecidedExitVariances { get; set; }
 
-    /// <summary>True only when all six counters are zero. Anything else means the month is not safe to pay.</summary>
+    /// <summary>Late arrivals, early departures and missing punches HR has not decided (script 77). Until each is excused, deducted or corrected, payroll does not know what the day is worth.</summary>
+    public int UndecidedAnomalies { get; set; }
+
+    /// <summary>True only when every counter is zero. Anything else means the month is not safe to pay.</summary>
     public bool IsReady { get; set; }
 }
 

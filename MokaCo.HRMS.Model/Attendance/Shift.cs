@@ -15,10 +15,12 @@ public class Shift
     public TimeSpan EndTime { get; set; }
 
     /// <summary>
-    /// Lateness allowance. Someone is late only past (StartTime + GraceMinutes) — arriving inside
-    /// the grace window records zero late minutes, not a small positive number.
+    /// This shift's own tolerance, in minutes, or NULL to follow the AttendanceToleranceMinutes
+    /// setting (script 77). An arrival this many minutes or more after the start, or a departure
+    /// this many minutes or more before the end, is an anomaly for HR to decide; below it the day
+    /// counts as on time.
     /// </summary>
-    public int GraceMinutes { get; set; }
+    public int? GraceMinutes { get; set; }
 
     /// <summary>
     /// 1 = the shift ends the NEXT day (e.g. 22:00–06:00). Such a shift belongs to the day it

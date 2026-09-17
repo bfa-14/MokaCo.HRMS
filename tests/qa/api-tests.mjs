@@ -4,7 +4,7 @@
    qa.ops / qa.e1 / qa.e5 (all password QaPass!2026, created by seed.sql).
 
      node api-tests.mjs phase1   (after seed.sql: roster approval, leaves, exit permission)
-     node api-tests.mjs phase2   (after cases/02_attendance.sql: exit variance decisions,
+     node api-tests.mjs phase2   (after cases/02_attendance.sql: anomaly and exit variance decisions,
                                   manual correction, payroll API rules, bookings, permissions)
 
    Every check prints one line:  PASS|FAIL | <id> | <case> | expected=... | actual=...
@@ -278,13 +278,19 @@ async function phase2() {
   for (const u of ['qa.owner', 'qa.hr', 'qa.manager', 'qa.ops', 'qa.e1', 'qa.e5']) await login(u);
   const e1 = ids['QA E1'].emp;
 
-  /* ---- A4: exit-variance queue and decision ---- */
+  /* ---- A4 / A2 / A3 / A11: the anomaly queue (script 77) next to the exit-variance queue ---- */
   let ev = await api('qa.hr', 'GET', '/api/attendance/exit-variances?from=2026-08-01&to=2026-08-31');
   const rows = ev.json ?? [];
-  const aug6 = rows.find((r) => r.employeeId === e1 && String(r.workDate).startsWith('2026-08-06'));
+  const aug6v = rows.find((r) => r.employeeId === e1 && String(r.workDate).startsWith('2026-08-06'));
   const aug8 = rows.find((r) => r.employeeId === e1 && String(r.workDate).startsWith('2026-08-08'));
-  check('A4a', 'E1 left 75 min early on 6 Aug (single interval) -> an exit-variance row appears in the queue',
-    'row for 2026-08-06 in the queue', aug6 ? `row present: actual=${aug6.exitActualMinutes} approved=${aug6.exitApprovedMinutes} variance=${aug6.exitVarianceMinutes}` : `no row for 2026-08-06 (queue has ${rows.length} row(s); early departure produces no gap, so ExitActualMinutes stays 0)`, !!aug6);
+  let an = await api('qa.hr', 'GET', '/api/attendance/anomalies?from=2026-08-01&to=2026-08-31');
+  const arows = an.json ?? [];
+  const findAn = (day, type) => arows.find((r) => r.employeeId === e1 && String(r.workDate).startsWith(day) && r.type === type);
+  const fmt = (r) => r ? `${r.type} ${r.minutes} min decision=${r.decision ?? 'undecided'} shift=${String(r.shiftStart).slice(11, 16)}-${String(r.shiftEnd).slice(11, 16)} punch=${String(r.punchIn).slice(11, 16)}-${String(r.punchOut).slice(11, 16)} fraction=${r.dayFraction}` : 'no row';
+  const aug6 = findAn('2026-08-06', 'EarlyDeparture');
+  check('A4a', 'E1 left 75 min early on 6 Aug -> an EarlyDeparture anomaly of 75 min (undecided, day covered) in GET /api/attendance/anomalies, and NOT a row in the exit-variance queue (script 77: only mid-day gaps stay there)',
+    'anomaly EarlyDeparture 75 undecided, dayFraction 1, no exit-variance row for 6 Aug', `${an.status} ${fmt(aug6)}; exit-variance row for 6 Aug=${!!aug6v} (anomalies listed: ${arows.length})`,
+    an.status === 200 && !!aug6 && aug6.minutes === 75 && aug6.decision == null && aug6.dayFraction === 1 && !aug6v);
   check('A4b', 'E1 75-minute mid-day exit on 8 Aug (out 10:00, in 11:15) -> variance row in the queue',
     'row present, ExitActualMinutes 45 (75 gap - 30 break absorbed), variance 45', aug8 ? `actual=${aug8.exitActualMinutes} approved=${aug8.exitApprovedMinutes} variance=${aug8.exitVarianceMinutes}` : 'no row', !!aug8 && aug8.exitActualMinutes === 45 && aug8.exitVarianceMinutes === 45);
   if (aug8) {
@@ -302,12 +308,12 @@ async function phase2() {
   }
 
   if (aug6) {
-    /* the 6 Aug early exit is a real variance; HR decides it is an unpaid absence: nothing is covered, the day stays at its punched fraction */
-    const d6 = await api('qa.hr', 'POST', `/api/attendance/${aug6.attendanceId}/exit-disposition`, { disposition: 'UnpaidAbsence', hrNote: 'QA unpaid' });
+    /* the 6 Aug early departure is an anomaly; HR decides Deduct: the 75 minutes come off the day */
+    const d6 = await api('qa.hr', 'POST', `/api/attendance/anomalies/${aug6.anomalyId}/decide`, { decision: 'Deduct', note: 'QA deduct' });
     const r6 = (await api('qa.hr', 'GET', `/api/attendance?from=2026-08-06&to=2026-08-06&employeeId=${e1}`)).json?.[0];
-    check('A4f', 'HR dispositions the 6 Aug early exit (75 min, nothing approved) as UnpaidAbsence -> nothing is covered, DayFraction stays 435/510 = 0.85, worked unchanged',
-      'disposition 200 UnpaidAbsence, dayFraction 0.85, workedMinutes 435', `${d6.status} ${d6.json?.exitVarianceDisposition}; fraction=${r6?.dayFraction} worked=${r6?.workedMinutes} covered=${r6?.coveredMinutes}`,
-      d6.status === 200 && r6?.dayFraction === 0.85 && r6?.workedMinutes === 435);
+    check('A4f', 'HR decides Deduct on the 6 Aug EarlyDeparture anomaly (75 min, nothing approved) -> the 75 minutes come off the day: DayFraction 435/510 = 0.85, worked unchanged, decision Deducted',
+      'decide 200 Deducted, dayFraction 0.85, workedMinutes 435', `${d6.status} ${d6.json?.decision ?? d6.json?.error}; fraction=${r6?.dayFraction} worked=${r6?.workedMinutes} covered=${r6?.coveredMinutes} earlyDeduct=${r6?.earlyDeductMinutes}`,
+      d6.status === 200 && d6.json?.decision === 'Deducted' && r6?.dayFraction === 0.85 && r6?.workedMinutes === 435);
   }
   ev = await api('qa.hr', 'GET', '/api/attendance/exit-variances?from=2026-08-01&to=2026-08-31');
   const qaIds = new Set(Object.values(ids).filter((v) => v && typeof v === 'object' && 'emp' in v).map((v) => v.emp));
@@ -317,15 +323,57 @@ async function phase2() {
   for (const r of others) { await api('qa.hr', 'POST', `/api/attendance/${r.attendanceId}/exit-disposition`, { disposition: 'Ignore', hrNote: 'QA: cleared so payroll readiness can pass' }); }
   if (others.length) note(`A4e: ${others.length} leftover variance(s) dispositioned Ignore so the payroll case can run.`);
 
-  /* ---- A6: manual correction of the missing out punch, then reprocess ---- */
-  const man = await api('qa.hr', 'POST', '/api/attendance/manual', { employeeId: e1, workDate: '2026-08-10', firstInUtc: '2026-08-10T07:00:00', lastOutUtc: '2026-08-10T16:00:00', exitMinutes: 0, exitApprovedMins: 0, hrNote: 'QA manual out punch' });
-  check('A6b', 'HR manual correction of 10 Aug (07:00-16:00) -> IsManual, worked 510, no anomaly', 'workedMinutes 510, dayFraction 1, status Present',
-    `${man.status} worked=${man.json?.workedMinutes} fraction=${man.json?.dayFraction} status=${man.json?.status}`, man.status === 200 && man.json?.workedMinutes === 510);
+  /* A2 / A3: the late arrival at or beyond the tolerance is an anomaly; below it nothing */
+  const aug4 = findAn('2026-08-04', 'LateArrival');
+  const aug5 = arows.filter((r) => r.employeeId === e1 && String(r.workDate).startsWith('2026-08-05'));
+  check('A2c', 'E1 in 07:12 on 4 Aug (tolerance 10) -> a LateArrival anomaly of 12 min, undecided, with the shift and punch times; in 07:08 on 5 Aug -> no anomaly row',
+    'LateArrival 12 undecided shift 07:00-16:00 punch 07:12-16:00 for 4 Aug; 0 rows for 5 Aug', `4 Aug: ${fmt(aug4)}; 5 Aug rows=${aug5.length}`,
+    !!aug4 && aug4.minutes === 12 && aug4.decision == null && String(aug4.shiftStart).slice(11, 16) === '07:00' && String(aug4.punchIn).slice(11, 16) === '07:12' && aug5.length === 0);
+
+  /* A11: the approved exit permission resolves the early departure automatically */
+  const aug13 = findAn('2026-08-13', 'EarlyDeparture');
+  check('A11d', 'E1 left 55 min early on 13 Aug with a 60-min approved exit permission -> the EarlyDeparture anomaly is Excused automatically, note "covered by exit permission #N"',
+    'EarlyDeparture 55 Excused, note names the permission, decidedBy empty (automatic)', `${fmt(aug13)} decidedBy=${aug13?.decidedBy ?? 'null'} note="${aug13?.note ?? ''}"`,
+    !!aug13 && aug13.minutes === 55 && aug13.decision === 'Excused' && /exit permission #\d+/i.test(aug13.note ?? ''));
+
+  /* ---- A6: the missing out punch is a MissingPunch anomaly: Excuse is refused, Correct enters the time through the manual path ---- */
+  const aug10 = findAn('2026-08-10', 'MissingPunch');
+  let man = { status: 0, json: null, text: '' };
+  if (aug10) {
+    const bad = await api('qa.hr', 'POST', `/api/attendance/anomalies/${aug10.anomalyId}/decide`, { decision: 'Excuse', note: 'QA' });
+    check('A6a3', 'Excuse on a MissingPunch anomaly is refused in plain words (there is no time to excuse or deduct)', '400 "...missing punch..."', `${bad.status} ${bad.json?.error ?? bad.text.slice(0, 120)}`, bad.status === 400 && /missing punch/i.test(bad.json?.error ?? ''));
+    man = await api('qa.hr', 'POST', `/api/attendance/anomalies/${aug10.anomalyId}/decide`, { decision: 'Correct', correctedTime: '2026-08-10T16:00:00', note: 'QA manual out punch' });
+  } else {
+    note('A6: no MissingPunch anomaly row for 10 Aug; A6b cannot correct through the decision.');
+  }
+  check('A6b', 'HR corrects the 10 Aug missing out punch to 16:00 (decide Correct -> stored through the manual path, usp_Attendance_ManualUpsert) -> IsManual, worked 510, no anomaly, decision Corrected',
+    'decide 200 Corrected, workedMinutes 510, dayFraction 1, isManual true, hasAnomaly false', `${man.status} ${man.json?.decision ?? man.json?.error ?? man.text.slice(0, 120)} worked=${man.json?.workedMinutes} fraction=${man.json?.dayFraction} isManual=${man.json?.isManual} anomaly=${man.json?.hasAnomaly}`,
+    man.status === 200 && man.json?.decision === 'Corrected' && man.json?.workedMinutes === 510 && man.json?.isManual === true && man.json?.hasAnomaly === false);
   const rp = await api('qa.hr', 'POST', '/api/attendance/reprocess?date=2026-08-10');
   const rec = await api('qa.hr', 'GET', `/api/attendance?from=2026-08-10&to=2026-08-10&employeeId=${e1}`);
   const r10 = (rec.json ?? [])[0];
   check('A6c', 'reprocessing 10 Aug does NOT overwrite the manual value', 'isManual true, workedMinutes 510, hasAnomaly false',
     `reprocess ${rp.status}; isManual=${r10?.isManual} worked=${r10?.workedMinutes} anomaly=${r10?.hasAnomaly}`, r10?.isManual === true && r10?.workedMinutes === 510 && r10?.hasAnomaly === false);
+
+  /* ---- decide-all for the QA branch month, then HR changes the 4 Aug decision to Deduct (the payroll case P5a reads it) ---- */
+  const all = await api('qa.hr', 'POST', '/api/attendance/anomalies/decide-all', { month: '2026-08', branchId: ids.branch, decision: 'Excuse', note: 'QA month end' });
+  const r4a = (await api('qa.hr', 'GET', `/api/attendance?from=2026-08-04&to=2026-08-04&employeeId=${e1}`)).json?.[0];
+  check('A2d', 'POST /api/attendance/anomalies/decide-all { month, branchId, decision: Excuse } decides the remaining undecided QA rows (the 4 Aug late arrival) and keeps full pay: 4 Aug DayFraction 1.00',
+    'decided >= 1, skipped 0, 4 Aug dayFraction 1', `${all.status} decided=${all.json?.decided} skipped=${all.json?.skipped} days=${all.json?.daysRecomputed} ${all.json?.error ?? ''}; 4 Aug fraction=${r4a?.dayFraction}`,
+    all.status === 200 && Number(all.json?.decided) >= 1 && Number(all.json?.skipped) === 0 && r4a?.dayFraction === 1);
+  let dec4 = { status: 0, json: null, text: '' };
+  if (aug4) dec4 = await api('qa.hr', 'POST', `/api/attendance/anomalies/${aug4.anomalyId}/decide`, { decision: 'Deduct', note: 'QA deduct 12 min' });
+  const r4 = (await api('qa.hr', 'GET', `/api/attendance?from=2026-08-04&to=2026-08-04&employeeId=${e1}`)).json?.[0];
+  check('A2e', 'HR changes the 4 Aug decision from Excused to Deduct -> the 12 late minutes come off the day: DayFraction 498/510 = 0.98, worked unchanged 498, lateDeductMinutes 12',
+    'decide 200 Deducted, dayFraction 0.98, workedMinutes 498', `${dec4.status} ${dec4.json?.decision ?? dec4.json?.error}; fraction=${r4?.dayFraction} worked=${r4?.workedMinutes} lateDeduct=${r4?.lateDeductMinutes} covered=${r4?.coveredMinutes}`,
+    dec4.status === 200 && dec4.json?.decision === 'Deducted' && r4?.dayFraction === 0.98 && r4?.workedMinutes === 498 && r4?.lateDeductMinutes === 12);
+  an = await api('qa.hr', 'GET', `/api/attendance/anomalies?from=2026-08-01&to=2026-08-31&onlyUndecided=true&branchId=${ids.branch}`);
+  const left = (an.json ?? []).filter((r) => qaIds.has(r.employeeId));
+  check('A2f', 'no QA anomaly is left undecided for August (onlyUndecided=true&branchId filter; payroll readiness needs UndecidedAnomalies 0)', 'empty',
+    left.length === 0 ? 'empty' : left.map((r) => `${r.fullName} ${String(r.workDate).slice(0, 10)} ${r.type} ${r.minutes}`).join('; '), an.status === 200 && left.length === 0);
+  const rd = await api('qa.hr', 'GET', '/api/attendance/payroll-readiness?period=2026-08');
+  check('RD1', 'GET /api/attendance/payroll-readiness exposes undecidedAnomalies (script 77) next to the six existing counters', 'undecidedAnomalies is a number',
+    `${rd.status} undecidedAnomalies=${rd.json?.undecidedAnomalies} openAnomalies=${rd.json?.openAnomalies} variances=${rd.json?.undecidedExitVariances} ready=${rd.json?.isReady}`, rd.status === 200 && Number.isInteger(rd.json?.undecidedAnomalies));
 
   /* ---- payroll rules at the API ---- */
   const run = await api('qa.hr', 'POST', '/api/payroll/runs', { periodYearMonth: '2026-08', notes: 'QA August run', runType: 'Primary' });

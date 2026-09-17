@@ -19,7 +19,7 @@ public class ShiftRepository : IShiftRepository
             commandType: CommandType.StoredProcedure);
     }
 
-    public async Task<int> CreateAsync(string name, TimeSpan startTime, TimeSpan endTime, int graceMinutes, bool crossesMidnight, int breakMinutes)
+    public async Task<int> CreateAsync(string name, TimeSpan startTime, TimeSpan endTime, int? graceMinutes, bool crossesMidnight, int breakMinutes)
     {
         using var db = _factory.Create();
         return await db.ExecuteScalarAsync<int>(
@@ -36,7 +36,7 @@ public class ShiftRepository : IShiftRepository
             commandType: CommandType.StoredProcedure);
     }
 
-    public async Task UpdateAsync(int shiftId, string name, TimeSpan startTime, TimeSpan endTime, int graceMinutes, bool crossesMidnight, int breakMinutes, bool isActive)
+    public async Task UpdateAsync(int shiftId, string name, TimeSpan startTime, TimeSpan endTime, int? graceMinutes, bool crossesMidnight, int breakMinutes, bool isActive)
     {
         using var db = _factory.Create();
         await db.ExecuteAsync(

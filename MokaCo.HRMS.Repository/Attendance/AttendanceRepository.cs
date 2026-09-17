@@ -104,12 +104,49 @@ public class AttendanceRepository : IAttendanceRepository
         return detail;
     }
 
-    public async Task<IEnumerable<AttendanceRecord>> GetAnomaliesAsync(DateTime fromDate, DateTime toDate)
+    public async Task<IEnumerable<AttendanceAnomaly>> GetAnomaliesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided, int? branchId)
     {
         using var db = _factory.Create();
-        return await db.QueryAsync<AttendanceRecord>(
+        return await db.QueryAsync<AttendanceAnomaly>(
             "attendance.usp_Attendance_GetAnomalies",
-            new { FromDate = fromDate, ToDate = toDate },
+            new { FromDate = fromDate, ToDate = toDate, OnlyUndecided = onlyUndecided, BranchId = branchId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    /// <summary>
+    /// HR's ruling on one anomaly. The procedure stores it and re-derives the day itself (ComputeDay,
+    /// or the manual path for a manual day / a correction), so the figures that come back already
+    /// carry the decision. Its refusals arrive as SqlException 50000 with the sentence to show.
+    /// </summary>
+    public async Task<AnomalyDecisionResult?> DecideAnomalyAsync(long anomalyId, string decision, DateTime? correctedTimeUtc, string? note, int? decidedByUserId)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<AnomalyDecisionResult>(
+            "attendance.usp_Anomaly_Decide",
+            new
+            {
+                AnomalyId = anomalyId,
+                Decision = decision,
+                CorrectedTimeUtc = correctedTimeUtc,
+                Note = note,
+                DecidedByUserId = decidedByUserId
+            },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<AnomalyDecideAllResult> DecideAllAnomaliesAsync(string periodYearMonth, string decision, int? branchId, string? note, int? decidedByUserId)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleAsync<AnomalyDecideAllResult>(
+            "attendance.usp_Anomaly_DecideAll",
+            new
+            {
+                PeriodYearMonth = periodYearMonth,
+                Decision = decision,
+                BranchId = branchId,
+                Note = note,
+                DecidedByUserId = decidedByUserId
+            },
             commandType: CommandType.StoredProcedure);
     }
 

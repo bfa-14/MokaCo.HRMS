@@ -167,7 +167,7 @@ public class PaymentSheetRow
 /// <summary>
 /// The attendance gate — attendance.usp_Attendance_PayrollReadiness.
 ///
-/// Six counts and a verdict. <see cref="IsReady"/> is 1 only when every count is zero, and
+/// Seven counts and a verdict. <see cref="IsReady"/> is 1 only when every count is zero, and
 /// usp_PayrollRun_Create runs this same check itself: the panel exists to make the refusal
 /// UNDERSTANDABLE before it happens, not to replace it.
 /// </summary>
@@ -182,6 +182,9 @@ public class PayrollReadiness
     public int PendingCorrections { get; set; }
     public int RosteredDaysWithNoRecord { get; set; }
     public int UndecidedExitVariances { get; set; }
+
+    /// <summary>Anomalies (late arrival / early departure / missing punch) HR has not decided — script 77. The create procedure refuses the run naming this count.</summary>
+    public int UndecidedAnomalies { get; set; }
     public bool IsReady { get; set; }
 }
 

@@ -5,55 +5,58 @@ using Microsoft.Data.SqlClient;
 namespace MokaCo.HRMS.Tests.Attendance;
 
 /// <summary>
-/// THE DAY RULE (docs/76_attendance_single_day_rule.sql) lives in attendance.fn_AttendanceDayRule,
-/// an inline table function with no table access: every figure of an attendance day is a function
-/// of the shift, the punches, the approvals and two settings. These tests hold each line of the
-/// rule to its stated arithmetic, one scenario per line, against the database the API uses.
+/// THE DAY RULE (docs/76_attendance_single_day_rule.sql, extended by docs/77_attendance_tolerance_anomalies.sql)
+/// lives in attendance.fn_AttendanceDayRule, an inline table function with no table access: every
+/// figure of an attendance day is a function of the shift, the punches, the approvals, HR's two
+/// anomaly decisions and two settings. These tests hold each line of the rule to its stated
+/// arithmetic, one scenario per line, against the database the API uses.
 ///
 /// They run when a MokaCo_HRMS database is reachable (MOKACO_TEST_CONNECTION, else the API's
-/// appsettings.json) and script 76 has been applied; otherwise every test is skipped with the
+/// appsettings.json) and script 77 has been applied; otherwise every test is skipped with the
 /// reason, so <c>dotnet test</c> stays green on a machine without SQL Server.
 /// </summary>
 public class AttendanceDayRuleTests
 {
-    /* the Morning shift of the QA fixture: 07:00–16:00, break 30, grace 10, standard 510 */
+    /* the Morning shift of the QA fixture: 07:00–16:00, break 30, tolerance 10, standard 510 */
     private static readonly DateTime Day = new(2026, 8, 3);
     private static readonly DateTime ShiftStart = Day.AddHours(7);
     private static readonly DateTime ShiftEnd = Day.AddHours(16);
-    private const int Break = 30, Grace = 10, Standard = 510;
+    private const int Break = 30, Tolerance = 10, Standard = 510;
 
     private sealed record Outcome(
         string Status, DateTime? EffectiveInUtc, DateTime? EffectiveOutUtc,
         int LateMinutes, int LateDeductMinutes, int EarlyExitMinutes, int MidDayGapMinutes,
         int ExitActualMinutes, int ExitApprovedMinutes, int ExitVarianceMinutes, int OvertimeMinutes,
         int WorkedMinutes, int CoveredMinutes, decimal? DayFraction, bool IsFullDay,
-        int ShortfallMinutes, int BreakApplied, int StandardMinutes);
+        int ShortfallMinutes, int BreakApplied, int StandardMinutes, int EarlyDeductMinutes, int ToleranceMinutes);
 
     private static async Task<Outcome> RuleAsync(
         DateTime? firstIn, DateTime? lastOut,
         int gapMinutes = 0, int exitApproved = 0, string? disposition = null, int overtimeApproved = 0,
-        string lateBasis = "BeyondGrace", decimal fullDayThreshold = 1.00m,
+        string? lateDecision = null, string? earlyDecision = null, decimal fullDayThreshold = 1.00m,
         bool restDay = false, bool onLeave = false, bool holiday = false,
-        DateTime? shiftStart = null, DateTime? shiftEnd = null, int? standard = null, bool noShift = false)
+        DateTime? shiftStart = null, DateTime? shiftEnd = null, int? standard = null, bool noShift = false,
+        int tolerance = Tolerance, int breakMinutes = Break)
     {
         await using var db = new SqlConnection(DbFactAttribute.ConnectionString);
         var rows = await db.QueryAsync<Outcome>(
             """
             SELECT [Status], EffectiveInUtc, EffectiveOutUtc, LateMinutes, LateDeductMinutes, EarlyExitMinutes, MidDayGapMinutes,
                    ExitActualMinutes, ExitApprovedMinutes, ExitVarianceMinutes, OvertimeMinutes, WorkedMinutes, CoveredMinutes,
-                   DayFraction, IsFullDay, ShortfallMinutes, BreakApplied, StandardMinutes
-            FROM attendance.fn_AttendanceDayRule(@ShiftStart, @ShiftEnd, @Break, @Grace, @Standard, @FirstIn, @LastOut, @Gap,
-                                                 @ExitApproved, @Disposition, @OtApproved, @LateBasis, @Threshold, @RestDay, @OnLeave, @Holiday)
+                   DayFraction, IsFullDay, ShortfallMinutes, BreakApplied, StandardMinutes, EarlyDeductMinutes, ToleranceMinutes
+            FROM attendance.fn_AttendanceDayRule(@ShiftStart, @ShiftEnd, @Break, @Tolerance, @Standard, @FirstIn, @LastOut, @Gap,
+                                                 @ExitApproved, @Disposition, @OtApproved, @LateDecision, @EarlyDecision,
+                                                 @Threshold, @RestDay, @OnLeave, @Holiday)
             """,
             new
             {
                 ShiftStart = noShift ? (DateTime?)null : shiftStart ?? ShiftStart,
                 ShiftEnd = noShift ? (DateTime?)null : shiftEnd ?? ShiftEnd,
-                Break, Grace,
+                Break = breakMinutes, Tolerance = tolerance,
                 Standard = standard ?? Standard,
                 FirstIn = firstIn, LastOut = lastOut, Gap = gapMinutes,
                 ExitApproved = exitApproved, Disposition = disposition, OtApproved = overtimeApproved,
-                LateBasis = lateBasis, Threshold = fullDayThreshold,
+                LateDecision = lateDecision, EarlyDecision = earlyDecision, Threshold = fullDayThreshold,
                 RestDay = restDay, OnLeave = onLeave, Holiday = holiday
             });
         return Assert.Single(rows);
@@ -82,41 +85,65 @@ public class AttendanceDayRuleTests
         Assert.Equal(30, r.OvertimeMinutes);          // 60 early minutes, 30 approved → 30 detected
     }
 
-    /* ---- LateMinutes: grace is a THRESHOLD (BUG-15) ---- */
+    /* ---- LateMinutes: the tolerance is a THRESHOLD (script 77); below it the day is on time ---- */
     [DbFact]
-    public async Task Arrival_inside_the_grace_is_not_late_and_costs_nothing()
+    public async Task Arrival_below_the_tolerance_is_not_late_and_costs_nothing()
     {
         var r = await RuleAsync(Day.AddHours(7).AddMinutes(8), Day.AddHours(16));
 
         Assert.Equal(0, r.LateMinutes);
         Assert.Equal(0, r.LateDeductMinutes);
         Assert.Equal(502, r.WorkedMinutes);
-        Assert.Equal(8, r.CoveredMinutes);            // grace protects pay
+        Assert.Equal(8, r.CoveredMinutes);            // on time: the minutes are covered
         Assert.Equal(1.00m, r.DayFraction);
         Assert.True(r.IsFullDay);
     }
 
     [DbFact]
-    public async Task Arrival_beyond_the_grace_is_late_by_the_whole_delay()
+    public async Task Arrival_one_minute_below_the_tolerance_is_nothing()
+    {
+        var r = await RuleAsync(Day.AddHours(7).AddMinutes(9), Day.AddHours(16));
+
+        Assert.Equal(0, r.LateMinutes);
+        Assert.Equal(9, r.CoveredMinutes);
+        Assert.Equal(1.00m, r.DayFraction);
+        Assert.Equal(10, r.ToleranceMinutes);
+    }
+
+    [DbFact]
+    public async Task Arrival_exactly_at_the_tolerance_is_an_anomaly_covered_until_decided()
+    {
+        var r = await RuleAsync(Day.AddHours(7).AddMinutes(10), Day.AddHours(16));
+
+        Assert.Equal(10, r.LateMinutes);              // ≥ tolerance → reported whole
+        Assert.Equal(0, r.LateDeductMinutes);         // undecided → not deducted
+        Assert.Equal(500, r.WorkedMinutes);
+        Assert.Equal(10, r.CoveredMinutes);
+        Assert.Equal(1.00m, r.DayFraction);
+        Assert.Equal(0, r.ShortfallMinutes);
+    }
+
+    [DbFact]
+    public async Task Arrival_beyond_the_tolerance_is_late_by_the_whole_delay()
     {
         var r = await RuleAsync(Day.AddHours(7).AddMinutes(12), Day.AddHours(16));
 
         Assert.Equal(12, r.LateMinutes);              // 12, not 12 − 10
-        Assert.Equal(2, r.LateDeductMinutes);         // BeyondGrace: only the minutes after the grace
+        Assert.Equal(0, r.LateDeductMinutes);
         Assert.Equal(498, r.WorkedMinutes);
-        Assert.Equal(10, r.CoveredMinutes);
-        Assert.Equal(1.00m, r.DayFraction);           // 508 / 510 rounds to 1.00
-        Assert.Equal(2, r.ShortfallMinutes);
+        Assert.Equal(12, r.CoveredMinutes);
+        Assert.Equal(1.00m, r.DayFraction);
     }
 
-    /* ---- LateDeductMinutes follows the LateDeductionBasis setting ---- */
+    /* ---- LateDeductMinutes follows HR's decision on the LateArrival anomaly ---- */
     [DbTheory]
-    [InlineData("BeyondGrace", 2, 10, "1.00")]
-    [InlineData("Full", 12, 0, "0.98")]
-    [InlineData("None", 0, 12, "1.00")]
-    public async Task Late_deduction_basis_decides_how_much_of_the_delay_is_deducted(string basis, int deduct, int covered, string fraction)
+    [InlineData(null, 0, 12, "1.00")]
+    [InlineData("Excused", 0, 12, "1.00")]
+    [InlineData("Deducted", 12, 0, "0.98")]
+    [InlineData("Corrected", 0, 12, "1.00")]
+    public async Task The_late_decision_decides_whether_the_delay_is_deducted(string? decision, int deduct, int covered, string fraction)
     {
-        var r = await RuleAsync(Day.AddHours(7).AddMinutes(12), Day.AddHours(16), lateBasis: basis);
+        var r = await RuleAsync(Day.AddHours(7).AddMinutes(12), Day.AddHours(16), lateDecision: decision);
 
         Assert.Equal(12, r.LateMinutes);
         Assert.Equal(deduct, r.LateDeductMinutes);
@@ -124,20 +151,109 @@ public class AttendanceDayRuleTests
         Assert.Equal(decimal.Parse(fraction, System.Globalization.CultureInfo.InvariantCulture), r.DayFraction);
     }
 
-    /* ---- EarlyExitMinutes: leaving early IS an exit variance (BUG-12) ---- */
+    /* ---- a decision means nothing below the tolerance (there is no anomaly to decide) ---- */
     [DbFact]
-    public async Task Leaving_early_is_an_exit_variance()
+    public async Task A_deduct_decision_on_a_delay_below_the_tolerance_deducts_nothing()
+    {
+        var r = await RuleAsync(Day.AddHours(7).AddMinutes(5), Day.AddHours(16), lateDecision: "Deducted");
+
+        Assert.Equal(0, r.LateMinutes);
+        Assert.Equal(0, r.LateDeductMinutes);
+        Assert.Equal(1.00m, r.DayFraction);
+    }
+
+    /* ---- EarlyExitMinutes: leaving early is an ANOMALY, not an exit variance (script 77) ---- */
+    [DbFact]
+    public async Task Leaving_early_is_an_anomaly_covered_until_decided_and_not_an_exit_variance()
     {
         var r = await RuleAsync(Day.AddHours(7), Day.AddHours(14).AddMinutes(45));
 
         Assert.Equal(75, r.EarlyExitMinutes);
         Assert.Equal(0, r.MidDayGapMinutes);
-        Assert.Equal(75, r.ExitActualMinutes);
-        Assert.Equal(75, r.ExitVarianceMinutes);       // nothing approved → queued
+        Assert.Equal(0, r.ExitActualMinutes);          // the exit-variance queue keeps only mid-day gaps
+        Assert.Equal(0, r.ExitVarianceMinutes);
         Assert.Equal(435, r.WorkedMinutes);
-        Assert.Equal(0, r.CoveredMinutes);
-        Assert.Equal(0.85m, r.DayFraction);
-        Assert.False(r.IsFullDay);
+        Assert.Equal(0, r.EarlyDeductMinutes);
+        Assert.Equal(75, r.CoveredMinutes);            // full pay until HR decides
+        Assert.Equal(1.00m, r.DayFraction);
+    }
+
+    [DbTheory]
+    [InlineData(null, 0, 75, "1.00")]
+    [InlineData("Excused", 0, 75, "1.00")]
+    [InlineData("Deducted", 75, 0, "0.85")]
+    public async Task The_early_decision_decides_whether_the_early_departure_is_deducted(string? decision, int deduct, int covered, string fraction)
+    {
+        var r = await RuleAsync(Day.AddHours(7), Day.AddHours(14).AddMinutes(45), earlyDecision: decision);
+
+        Assert.Equal(75, r.EarlyExitMinutes);
+        Assert.Equal(deduct, r.EarlyDeductMinutes);
+        Assert.Equal(covered, r.CoveredMinutes);
+        Assert.Equal(435, r.WorkedMinutes);            // presence is a fact; only the cover moves
+        Assert.Equal(decimal.Parse(fraction, System.Globalization.CultureInfo.InvariantCulture), r.DayFraction);
+    }
+
+    [DbFact]
+    public async Task Leaving_below_the_tolerance_early_is_nothing()
+    {
+        var r = await RuleAsync(Day.AddHours(7), Day.AddHours(15).AddMinutes(55));
+
+        Assert.Equal(0, r.EarlyExitMinutes);
+        Assert.Equal(505, r.WorkedMinutes);
+        Assert.Equal(5, r.CoveredMinutes);
+        Assert.Equal(1.00m, r.DayFraction);
+    }
+
+    /* ---- the brief's example: 07:00–15:00, in 07:10 / out 14:50, tolerance 10 ---- */
+    [DbFact]
+    public async Task Ten_minutes_late_and_ten_minutes_early_are_two_anomalies_with_full_pay_until_decided()
+    {
+        var start = Day.AddHours(7); var end = Day.AddHours(15);
+        var r = await RuleAsync(Day.AddHours(7).AddMinutes(10), Day.AddHours(14).AddMinutes(50),
+            shiftStart: start, shiftEnd: end, standard: 480, breakMinutes: 0);
+
+        Assert.Equal(10, r.LateMinutes);
+        Assert.Equal(10, r.EarlyExitMinutes);
+        Assert.Equal(460, r.WorkedMinutes);
+        Assert.Equal(20, r.CoveredMinutes);
+        Assert.Equal(1.00m, r.DayFraction);
+        Assert.Equal(0, r.ExitVarianceMinutes);
+    }
+
+    [DbFact]
+    public async Task Deducting_both_takes_twenty_minutes_off_the_day_and_excusing_both_keeps_full_pay()
+    {
+        var start = Day.AddHours(7); var end = Day.AddHours(15);
+        var deducted = await RuleAsync(Day.AddHours(7).AddMinutes(10), Day.AddHours(14).AddMinutes(50),
+            shiftStart: start, shiftEnd: end, standard: 480, breakMinutes: 0, lateDecision: "Deducted", earlyDecision: "Deducted");
+        var excused = await RuleAsync(Day.AddHours(7).AddMinutes(10), Day.AddHours(14).AddMinutes(50),
+            shiftStart: start, shiftEnd: end, standard: 480, breakMinutes: 0, lateDecision: "Excused", earlyDecision: "Excused");
+
+        Assert.Equal(10, deducted.LateDeductMinutes);
+        Assert.Equal(10, deducted.EarlyDeductMinutes);
+        Assert.Equal(0, deducted.CoveredMinutes);
+        Assert.Equal(20, deducted.ShortfallMinutes);
+        Assert.Equal(0.96m, deducted.DayFraction);     // 460 / 480
+
+        Assert.Equal(20, excused.CoveredMinutes);
+        Assert.Equal(1.00m, excused.DayFraction);
+    }
+
+    [DbFact]
+    public async Task Nine_minutes_late_is_nothing_and_a_tolerance_of_fifteen_makes_the_example_nothing()
+    {
+        var start = Day.AddHours(7); var end = Day.AddHours(15);
+        var nine = await RuleAsync(Day.AddHours(7).AddMinutes(9), Day.AddHours(15),
+            shiftStart: start, shiftEnd: end, standard: 480, breakMinutes: 0);
+        var fifteen = await RuleAsync(Day.AddHours(7).AddMinutes(10), Day.AddHours(14).AddMinutes(50),
+            shiftStart: start, shiftEnd: end, standard: 480, breakMinutes: 0, tolerance: 15);
+
+        Assert.Equal(0, nine.LateMinutes);
+        Assert.Equal(1.00m, nine.DayFraction);
+        Assert.Equal(0, fifteen.LateMinutes);
+        Assert.Equal(0, fifteen.EarlyExitMinutes);
+        Assert.Equal(20, fifteen.CoveredMinutes);
+        Assert.Equal(1.00m, fifteen.DayFraction);
     }
 
     /* ---- MidDayGapMinutes = max(0, Σ gaps − Break) ---- */
@@ -156,17 +272,43 @@ public class AttendanceDayRuleTests
 
     /* ---- an approved permission protects pay and never reduces the worked time (BUG-11, BUG-13) ---- */
     [DbFact]
-    public async Task An_approved_permission_covers_the_early_exit_without_reducing_the_worked_time()
+    public async Task An_approved_permission_covers_the_early_departure_without_reducing_the_worked_time()
     {
         var r = await RuleAsync(Day.AddHours(7), Day.AddHours(15).AddMinutes(5), exitApproved: 60);
 
-        Assert.Equal(55, r.EarlyExitMinutes);
-        Assert.Equal(55, r.ExitActualMinutes);
+        Assert.Equal(55, r.EarlyExitMinutes);          // still reported (the writer excuses the anomaly automatically)
+        Assert.Equal(0, r.ExitActualMinutes);          // not a mid-day gap
         Assert.Equal(60, r.ExitApprovedMinutes);
-        Assert.Equal(-5, r.ExitVarianceMinutes);       // approved ≥ actual → nothing to queue
+        Assert.Equal(-60, r.ExitVarianceMinutes);      // nothing to queue
         Assert.Equal(455, r.WorkedMinutes);            // (15:05 − 07:00) − 30, not 455 − 60
-        Assert.Equal(55, r.CoveredMinutes);            // min(actual, approved)
+        Assert.Equal(55, r.CoveredMinutes);
         Assert.Equal(1.00m, r.DayFraction);
+    }
+
+    [DbFact]
+    public async Task A_deducted_early_departure_is_reduced_by_what_the_permission_still_covers()
+    {
+        // out 15:00 (60 early), 20 minutes approved, HR deducts: 40 come off, 20 stay covered
+        var r = await RuleAsync(Day.AddHours(7), Day.AddHours(15), exitApproved: 20, earlyDecision: "Deducted");
+
+        Assert.Equal(60, r.EarlyExitMinutes);
+        Assert.Equal(40, r.EarlyDeductMinutes);
+        Assert.Equal(20, r.CoveredMinutes);
+        Assert.Equal(450, r.WorkedMinutes);            // (15:00 − 07:00) − 30
+        Assert.Equal(0.92m, r.DayFraction);            // 470 / 510
+    }
+
+    [DbFact]
+    public async Task The_permission_goes_to_the_mid_day_gap_first_and_the_rest_to_the_early_departure()
+    {
+        // gap 75 (45 beyond the break), out 15:30 (30 early), 60 approved: 45 to the gap, 15 of 30 to the early exit
+        var r = await RuleAsync(Day.AddHours(7), Day.AddHours(15).AddMinutes(30), gapMinutes: 75, exitApproved: 60, earlyDecision: "Deducted");
+
+        Assert.Equal(45, r.ExitActualMinutes);
+        Assert.Equal(-15, r.ExitVarianceMinutes);
+        Assert.Equal(30, r.EarlyExitMinutes);
+        Assert.Equal(15, r.EarlyDeductMinutes);
+        Assert.Equal(60, r.CoveredMinutes);            // 45 + 15
     }
 
     [DbFact]
@@ -181,7 +323,7 @@ public class AttendanceDayRuleTests
         Assert.Equal(1.00m, r.DayFraction);
     }
 
-    /* ---- HR's disposition: Ignore / Overtime cover the variance, UnpaidAbsence adds nothing (BUG-14) ---- */
+    /* ---- HR's disposition of a MID-DAY variance: Ignore / Overtime cover it, UnpaidAbsence adds nothing (BUG-14) ---- */
     [DbTheory]
     [InlineData("Ignore", 75, "1.00")]
     [InlineData("Overtime", 75, "1.00")]
@@ -189,7 +331,8 @@ public class AttendanceDayRuleTests
     [InlineData(null, 0, "0.85")]
     public async Task The_disposition_decides_whether_an_undecided_variance_is_paid(string? disposition, int covered, string fraction)
     {
-        var r = await RuleAsync(Day.AddHours(7), Day.AddHours(14).AddMinutes(45), disposition: disposition);
+        // out 10:00, in 11:45 (gap 105 → 75 beyond the break), out 16:00
+        var r = await RuleAsync(Day.AddHours(7), Day.AddHours(16), gapMinutes: 105, disposition: disposition);
 
         Assert.Equal(75, r.ExitVarianceMinutes);       // the variance itself is a fact, not a decision
         Assert.Equal(435, r.WorkedMinutes);
@@ -276,7 +419,7 @@ public class AttendanceDayRuleTests
 
         Assert.Equal("Present", r.Status);
         Assert.Equal(0, r.WorkedMinutes);
-        Assert.Equal(0, r.EarlyExitMinutes);          // no out-punch: an anomaly, not a variance
+        Assert.Equal(0, r.EarlyExitMinutes);          // no out-punch: a MissingPunch anomaly, not an early departure
         Assert.Equal(0.00m, r.DayFraction);
     }
 
@@ -288,7 +431,7 @@ public class AttendanceDayRuleTests
         var end = Day.AddDays(1).AddHours(1);
         var r = await RuleAsync(Day.AddHours(16).AddMinutes(5), Day.AddDays(1).AddHours(1).AddMinutes(10), shiftStart: start, shiftEnd: end);
 
-        Assert.Equal(0, r.LateMinutes);               // 5 inside the grace
+        Assert.Equal(0, r.LateMinutes);               // 5 below the tolerance
         Assert.Equal(505, r.WorkedMinutes);           // 16:05–01:00 − 30
         Assert.Equal(5, r.CoveredMinutes);
         Assert.Equal(1.00m, r.DayFraction);
@@ -324,7 +467,7 @@ public class AttendanceDayRuleTests
 }
 
 /// <summary>
-/// A fact that runs only when the MokaCo_HRMS database with script 76 is reachable; otherwise it is
+/// A fact that runs only when the MokaCo_HRMS database with script 77 is reachable; otherwise it is
 /// skipped with the reason. The connection string comes from MOKACO_TEST_CONNECTION, else from the
 /// API project's appsettings.json (found by walking up from the test assembly).
 /// </summary>
@@ -371,9 +514,9 @@ public sealed class DbFactAttribute : FactAttribute
             var b = new SqlConnectionStringBuilder(cs) { ConnectTimeout = 3 };
             using var db = new SqlConnection(b.ConnectionString);
             db.Open();
-            var exists = db.ExecuteScalar<int?>("SELECT OBJECT_ID('attendance.fn_AttendanceDayRule')");
+            var exists = db.ExecuteScalar<int?>("SELECT OBJECT_ID('attendance.ATTENDANCE_ANOMALY')");
             return exists is null
-                ? (null, "attendance.fn_AttendanceDayRule is missing: apply docs/76_attendance_single_day_rule.sql.")
+                ? (null, "attendance.ATTENDANCE_ANOMALY is missing: apply docs/77_attendance_tolerance_anomalies.sql.")
                 : (b.ConnectionString, null);
         }
         catch (Exception ex)

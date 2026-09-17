@@ -52,8 +52,24 @@ public class AttendanceService : IAttendanceService
 
     public Task<AttendanceDetail?> GetByIdAsync(long attendanceId) => _repo.GetByIdAsync(attendanceId);
 
-    public Task<IEnumerable<AttendanceRecord>> GetAnomaliesAsync(DateTime fromDate, DateTime toDate)
-        => _repo.GetAnomaliesAsync(fromDate, toDate);
+    /// <summary>
+    /// The HR decision queue for the tolerance rule (script 77): every late arrival or early
+    /// departure at or beyond the tolerance, and every missing punch, one row each. Undecided
+    /// minutes are covered in pay until somebody rules; payroll is blocked while any remain.
+    /// </summary>
+    public Task<IEnumerable<AttendanceAnomaly>> GetAnomaliesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided, int? branchId)
+        => _repo.GetAnomaliesAsync(fromDate, toDate, onlyUndecided, branchId);
+
+    /// <summary>
+    /// Excuse keeps the minutes covered, Deduct takes them off the day, Correct stores the punch as
+    /// it should have been through the manual path. The procedure re-derives the day, so this is
+    /// thin on purpose: one arithmetic, in SQL.
+    /// </summary>
+    public Task<AnomalyDecisionResult?> DecideAnomalyAsync(long anomalyId, AnomalyDecisionRequest request, int decidedByUserId)
+        => _repo.DecideAnomalyAsync(anomalyId, request.Decision, request.CorrectedTime, request.Note, decidedByUserId);
+
+    public Task<AnomalyDecideAllResult> DecideAllAnomaliesAsync(AnomalyDecideAllRequest request, int decidedByUserId)
+        => _repo.DecideAllAnomaliesAsync(request.Month, request.Decision, request.BranchId, request.Note, decidedByUserId);
 
     /// <summary>The raw punches behind a day — what the machine actually said, before anyone processed or corrected it.</summary>
     public Task<IEnumerable<RawLog>> GetRawAsync(int employeeId, DateTime workDate)

@@ -92,8 +92,8 @@ public class ShiftCreateRequest
     public TimeSpan StartTime { get; set; }
     public TimeSpan EndTime { get; set; }
 
-    /// <summary>Arriving within this many minutes of the start is not late at all.</summary>
-    public int GraceMinutes { get; set; }
+    /// <summary>The shift's own tolerance in minutes; leave empty to follow the AttendanceToleranceMinutes setting.</summary>
+    public int? GraceMinutes { get; set; }
 
     /// <summary>Set for an overnight shift (e.g. 22:00–06:00), or its length computes as negative.</summary>
     public bool CrossesMidnight { get; set; }
@@ -283,6 +283,38 @@ public class HrAdjustDayRequest
 
     /// <summary>Required.</summary>
     public string HrNote { get; set; } = string.Empty;
+}
+
+/* ---- Anomaly decisions (script 77) ---- */
+
+/// <summary>
+/// POST /api/attendance/anomalies/{id}/decide. HR's ruling on one late arrival, early departure or
+/// missing punch: Excuse (the minutes stay covered), Deduct (they come off the day) or Correct (the
+/// punch is entered as it should have been, through the manual path, and the day is re-derived).
+/// </summary>
+public class AnomalyDecisionRequest
+{
+    /// <summary>Excuse | Deduct | Correct.</summary>
+    public string Decision { get; set; } = string.Empty;
+
+    /// <summary>Required for Correct: the In of a late arrival, the Out of an early departure, the missing side of a missing punch.</summary>
+    public DateTime? CorrectedTime { get; set; }
+
+    public string? Note { get; set; }
+}
+
+/// <summary>POST /api/attendance/anomalies/decide-all: every undecided late arrival / early departure of a month, optionally of one branch.</summary>
+public class AnomalyDecideAllRequest
+{
+    /// <summary>The month as 2026-08 (a full date is accepted and cut to its month).</summary>
+    public string Month { get; set; } = string.Empty;
+
+    public int? BranchId { get; set; }
+
+    /// <summary>Excuse | Deduct — a correction needs a time per anomaly, so it is not offered here.</summary>
+    public string Decision { get; set; } = string.Empty;
+
+    public string? Note { get; set; }
 }
 
 /* ---- Corrections ---- */

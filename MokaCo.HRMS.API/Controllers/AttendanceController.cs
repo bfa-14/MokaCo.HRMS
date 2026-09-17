@@ -1,5 +1,7 @@
 using System.Security.Claims;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Data.SqlClient;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Model.Attendance;
 using MokaCo.HRMS.Services.Attendance;
@@ -15,11 +17,12 @@ namespace MokaCo.HRMS.Api.Controllers;
 /// handed to a person.
 ///
 /// WHO MAY CALL WHAT:
-///   ATTENDANCE_VIEW     reading days, anomalies, raw punches, summaries, payroll readiness
+///   ATTENDANCE_VIEW     reading days, raw punches, summaries, payroll readiness
 ///   ATTENDANCE_MANAGE   running the processor and marking absentees (it changes the numbers)
-///   ATTENDANCE_CORRECT  HR ONLY — manual entry, exit approvals, dispositions, day adjustments.
-///                       These directly change what a person is PAID, which is why they are held
-///                       apart from MANAGE: whoever runs the processor cannot also rewrite hours.
+///   ATTENDANCE_CORRECT  HR ONLY — manual entry, exit approvals, dispositions, day adjustments, and
+///                       the anomaly queue with its decisions (script 77). These directly change
+///                       what a person is PAID, which is why they are held apart from MANAGE:
+///                       whoever runs the processor cannot also rewrite hours.
 /// </summary>
 [ApiController]
 [Route("api/attendance")]
@@ -122,11 +125,91 @@ public class AttendanceController : ControllerBase
         }
     }
 
-    /// <summary>Days the machine could not read confidently. Not errors — requests for a human to look.</summary>
+    /// <summary>
+    /// THE ANOMALY QUEUE (script 77): one row per late arrival or early departure at or beyond the
+    /// tolerance (the shift's grace, else the AttendanceToleranceMinutes setting), and per missing
+    /// punch. Not errors — requests for a human to decide. Undecided minutes are covered in pay
+    /// meanwhile, and payroll will not run for the month while any remain.
+    ///
+    /// ATTENDANCE_CORRECT rather than VIEW: the list exists to be decided from, and each row names
+    /// minutes that will or will not be paid.
+    /// </summary>
     [HttpGet("anomalies")]
-    [HasPermission("ATTENDANCE_VIEW")]
-    public async Task<IActionResult> GetAnomalies([FromQuery] DateTime from, [FromQuery] DateTime to)
-        => Ok(await _attendance.GetAnomaliesAsync(from, to));
+    [HasPermission("ATTENDANCE_CORRECT")]
+    public async Task<IActionResult> GetAnomalies(
+        [FromQuery] DateTime from, [FromQuery] DateTime to,
+        [FromQuery] bool onlyUndecided = false, [FromQuery] int? branchId = null)
+    {
+        if (from > to)
+            return BadRequest(new { error = "'from' must be on or before 'to'." });
+
+        return Ok(await _attendance.GetAnomaliesAsync(from, to, onlyUndecided, branchId));
+    }
+
+    /// <summary>
+    /// HR's ruling on one anomaly. Excuse: the minutes stay covered (full pay). Deduct: they come off
+    /// the day. Correct: the punch is stored as it should have been, through the manual path
+    /// (IsManual, like any HR entry), and the day is re-derived. The procedure refuses in plain
+    /// words — a missing punch can only be corrected, a corrected anomaly cannot be re-decided —
+    /// and that sentence travels as the 400.
+    /// </summary>
+    [HttpPost("anomalies/{id:long}/decide")]
+    [HasPermission("ATTENDANCE_CORRECT")]
+    public async Task<IActionResult> DecideAnomaly(long id, [FromBody] AnomalyDecisionRequest request)
+    {
+        if (request.Decision is not ("Excuse" or "Deduct" or "Correct"))
+            return BadRequest(new { error = "Decision must be Excuse, Deduct or Correct." });
+        if (request.Decision == "Correct" && request.CorrectedTime is null)
+            return BadRequest(new { error = "Correct needs the corrected time." });
+
+        try
+        {
+            var result = await _attendance.DecideAnomalyAsync(id, request, CurrentUserId);
+            if (result is null) return NotFound();
+
+            // The decision moves what the day is worth, and it is what payroll readiness is blocked on.
+            await _live.NotifyAsync("attendance", "payroll", "dashboard");
+            return Ok(result);
+        }
+        catch (SqlException ex) when (ex.Number == 50000)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// The same ruling for every undecided late arrival / early departure of a month, optionally of
+    /// one branch — the "excuse the lot" or "deduct the lot" HR does at month end. Missing punches
+    /// are skipped (each needs its own time) and counted in the response. Every affected day is
+    /// re-derived.
+    /// </summary>
+    [HttpPost("anomalies/decide-all")]
+    [HasPermission("ATTENDANCE_CORRECT")]
+    public async Task<IActionResult> DecideAllAnomalies([FromBody] AnomalyDecideAllRequest request)
+    {
+        if (request.Decision is not ("Excuse" or "Deduct"))
+            return BadRequest(new { error = "Decision must be Excuse or Deduct — a correction needs a time for each anomaly." });
+
+        // "2026-08" or a full date of that month; the procedure's own mask is the second gate.
+        var month = (request.Month ?? string.Empty).Trim();
+        if (month.Length >= 7) month = month[..7];
+        if (!MonthPattern.IsMatch(month))
+            return BadRequest(new { error = "The month must look like 2026-08." });
+        request.Month = month;
+
+        try
+        {
+            var result = await _attendance.DecideAllAnomaliesAsync(request, CurrentUserId);
+            await _live.NotifyAsync("attendance", "payroll", "dashboard");
+            return Ok(result);
+        }
+        catch (SqlException ex) when (ex.Number == 50000)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    private static readonly Regex MonthPattern = new(@"^\d{4}-(0[1-9]|1[0-2])$", RegexOptions.Compiled);
 
     /// <summary>The raw punches behind a day — what the device ACTUALLY recorded, before processing or correction.</summary>
     [HttpGet("raw/{employeeId:int}/{date:datetime}")]
@@ -272,7 +355,7 @@ public class AttendanceController : ControllerBase
     /* ---- payroll interface ---- */
 
     /// <summary>
-    /// Is this month safe to pay? Six counters, and a verdict. Payroll reads attendance, so an
+    /// Is this month safe to pay? Seven counters, and a verdict. Payroll reads attendance, so an
     /// incomplete month does not fail loudly — it pays the wrong amounts quietly. Call this BEFORE
     /// creating a payroll run and refuse to proceed while IsReady is false.
     /// </summary>

@@ -14,7 +14,7 @@ DECLARE @E9 INT = (SELECT EmployeeId FROM hr.EMPLOYEE WHERE FullName = N'QA E9')
 DECLARE @D INT = (SELECT DeviceId FROM attendance.DEVICE WHERE SerialNumber = 'QA-DEVICE-001');
 DECLARE @exp NVARCHAR(600), @act NVARCHAR(600), @pass BIT, @t NVARCHAR(1000), @n INT, @n2 INT;
 DECLARE @Std INT = (SELECT DATEDIFF(MINUTE, StartTime, EndTime) - BreakMinutes FROM attendance.SHIFT WHERE Name = N'Morning');  -- 510
-EXEC dbo.QA_Note 'Rules read from the DB: grace and break are per SHIFT (Morning grace 10, break 30, standard 510 min); PunchDirectionMode=Alternate; PunchDebounceMinutes=1; OvernightAttributionHours=4; FullDayThreshold=1.00; ExitLeaveBasis=Actual; LateDeductionBasis=BeyondGrace (script 76: one day rule in attendance.fn_AttendanceDayRule / usp_Attendance_ComputeDay; DayFraction = (Worked + Covered) / Standard where Covered = approved exit minutes + grace-protected late minutes + variance minutes HR dispositioned Ignore/Overtime).';
+EXEC dbo.QA_Note 'Rules read from the DB: break is per SHIFT (Morning break 30, standard 510 min), the tolerance is the AttendanceToleranceMinutes setting unless the shift sets its own GraceMinutes (Morning: NULL = setting); PunchDirectionMode=Alternate; PunchDebounceMinutes=1; OvernightAttributionHours=4; FullDayThreshold=1.00; ExitLeaveBasis=Actual; AttendanceToleranceMinutes=10 (script 77: SHIFT.GraceMinutes NULL = use the setting; a late arrival / early departure AT OR BEYOND the tolerance is an ATTENDANCE_ANOMALY row for HR to decide, covered in pay until decided; one day rule in attendance.fn_AttendanceDayRule / usp_Attendance_ComputeDay; DayFraction = (Worked + Covered) / Standard where Covered = approved exit minutes + on-time/undecided/excused late and early minutes + mid-day variance minutes HR dispositioned Ignore/Overtime).';
 
 /* roster must be approved for the processor to use the shifts */
 SET @act = (SELECT rm.[Status] FROM attendance.ROSTER_MONTH rm JOIN hr.BRANCH b ON b.BranchId = rm.BranchId WHERE b.Name = N'QA Branch' AND rm.MonthDate = '2026-08-01');
@@ -85,25 +85,39 @@ EXEC dbo.QA_Check 'A1', 'E1 in 07:00 / out 16:00 -> LateMinutes 0, ExitVariance 
 SET @act = NULL; SET @pass = 0;
 SELECT @act = CONCAT('late=', Late, ' fraction=', Fraction, ' worked=', Worked), @pass = CASE WHEN Late = 12 THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-04';
 SET @act = ISNULL(@act, 'no record');
-EXEC dbo.QA_Note 'A2 rule (script 76): the grace is a THRESHOLD. LateMinutes = FirstIn - ShiftStart when FirstIn > ShiftStart + Grace, else 0; LateDeductMinutes (basis BeyondGrace) = the minutes after the grace; the grace minutes are covered in pay.';
-EXEC dbo.QA_Check 'A2', 'E1 in 07:12 with grace 10 -> LateMinutes 12 (grace as a threshold, per the brief)', 'late=12', @act, @pass;
+EXEC dbo.QA_Note 'A2 rule (script 77): the tolerance is a THRESHOLD. LateMinutes = FirstIn - ShiftStart when that is >= the tolerance, else 0; a non-zero value is a LateArrival anomaly (attendance.ATTENDANCE_ANOMALY) for HR; until HR decides (or when HR excuses) the minutes are covered in pay; Deduct takes them off the day (api-tests phase2 A2d/A2e).';
+EXEC dbo.QA_Check 'A2', 'E1 in 07:12 with tolerance 10 -> LateMinutes 12 (at or beyond the tolerance the delay is reported whole)', 'late=12', @act, @pass;
 SET @act = NULL; SET @pass = 0;
-SELECT @act = CONCAT('late=', LateMinutes, ' lateDeduct=', LateDeductMinutes, ' covered=', CoveredMinutes, ' worked=', WorkedMinutes, ' fraction=', DayFraction), @pass = CASE WHEN LateMinutes = 12 AND LateDeductMinutes = 2 AND CoveredMinutes = 10 THEN 1 ELSE 0 END
-FROM attendance.ATTENDANCE_RECORD WHERE EmployeeId = @E1 AND WorkDate = '2026-08-04';
+SELECT @act = CONCAT('late=', a.LateMinutes, ' lateDeduct=', a.LateDeductMinutes, ' covered=', a.CoveredMinutes, ' worked=', a.WorkedMinutes, ' fraction=', a.DayFraction,
+                     ' anomaly=', ISNULL(an.[Type] + '/' + CAST(an.[Minutes] AS VARCHAR(5)) + '/' + ISNULL(an.Decision, 'undecided'), 'none')),
+       @pass = CASE WHEN a.LateMinutes = 12 AND a.LateDeductMinutes = 0 AND a.CoveredMinutes = 12 AND a.DayFraction = 1.00
+                     AND an.[Type] = 'LateArrival' AND an.[Minutes] = 12 AND an.Decision IS NULL THEN 1 ELSE 0 END
+FROM attendance.ATTENDANCE_RECORD a
+LEFT JOIN attendance.ATTENDANCE_ANOMALY an ON an.AttendanceId = a.AttendanceId AND an.[Type] = 'LateArrival'
+WHERE a.EmployeeId = @E1 AND a.WorkDate = '2026-08-04';
 SET @act = ISNULL(@act, 'no record');
-EXEC dbo.QA_Check 'A2b', 'E1 in 07:12 with grace 10, LateDeductionBasis=BeyondGrace -> only the 2 minutes beyond the grace are deducted (LateDeductMinutes 2, the 10 grace minutes covered)', 'late=12 lateDeduct=2 covered=10', @act, @pass;
+EXEC dbo.QA_Check 'A2b', 'E1 in 07:12 with tolerance 10 -> a LateArrival anomaly of 12 min, undecided; nothing deducted yet (LateDeductMinutes 0, the 12 minutes covered, DayFraction 1.00) until HR decides', 'late=12 lateDeduct=0 covered=12 fraction=1.00 anomaly=LateArrival/12/undecided', @act, @pass;
 /* A3 */
 SET @act = NULL; SET @pass = 0;
 SELECT @act = CONCAT('late=', Late, ' fraction=', Fraction, ' worked=', Worked), @pass = CASE WHEN Late = 0 THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-05';
 SET @act = ISNULL(@act, 'no record');
-EXEC dbo.QA_Check 'A3', 'E1 in 07:08 (inside grace) -> LateMinutes 0', 'late=0', @act, @pass;
+EXEC dbo.QA_Check 'A3', 'E1 in 07:08 (below the tolerance of 10) -> LateMinutes 0', 'late=0', @act, @pass;
 SET @pass = 0; SELECT @pass = CASE WHEN Fraction = 1.00 THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-05';
-EXEC dbo.QA_Check 'A3b', 'inside-grace arrival is not penalised in pay (DayFraction stays 1)', 'fraction=1.00', @act, @pass;
+EXEC dbo.QA_Check 'A3b', 'an arrival below the tolerance counts as on time: not penalised in pay (DayFraction stays 1)', 'fraction=1.00', @act, @pass;
+SELECT @n = COUNT(*) FROM attendance.ATTENDANCE_ANOMALY an JOIN attendance.ATTENDANCE_RECORD a ON a.AttendanceId = an.AttendanceId WHERE a.EmployeeId = @E1 AND a.WorkDate = '2026-08-05';
+SET @act = CONCAT(@n, ' anomaly row(s)'); SET @pass = CASE WHEN @n = 0 THEN 1 ELSE 0 END;
+EXEC dbo.QA_Check 'A3c', 'below the tolerance nothing reaches the anomalies table for 5 Aug', '0 anomaly row(s)', @act, @pass;
 /* A4 record-level (queue/decision checks are in api-tests phase2) */
 SET @act = NULL; SET @pass = 0;
-SELECT @act = CONCAT('exitActual=', ExitActual, ' exitVar=', ExitVar, ' worked=', Worked, ' shortfall=', Shortfall, ' fraction=', Fraction), @pass = CASE WHEN ExitVar <> 0 THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-06';
+SELECT @act = CONCAT('earlyExit=', a.EarlyExitMinutes, ' exitActual=', a.ExitActualMinutes, ' exitVar=', a.ExitVarianceMinutes, ' worked=', a.WorkedMinutes, ' covered=', a.CoveredMinutes, ' fraction=', a.DayFraction,
+                     ' anomaly=', ISNULL(an.[Type] + '/' + CAST(an.[Minutes] AS VARCHAR(5)) + '/' + ISNULL(an.Decision, 'undecided'), 'none')),
+       @pass = CASE WHEN a.EarlyExitMinutes = 75 AND a.ExitActualMinutes = 0 AND a.ExitVarianceMinutes = 0 AND a.WorkedMinutes = 435 AND a.DayFraction = 1.00
+                     AND an.[Type] = 'EarlyDeparture' AND an.[Minutes] = 75 AND an.Decision IS NULL THEN 1 ELSE 0 END
+FROM attendance.ATTENDANCE_RECORD a
+LEFT JOIN attendance.ATTENDANCE_ANOMALY an ON an.AttendanceId = a.AttendanceId AND an.[Type] = 'EarlyDeparture'
+WHERE a.EmployeeId = @E1 AND a.WorkDate = '2026-08-06';
 SET @act = ISNULL(@act, 'no record');
-EXEC dbo.QA_Check 'A4-rec', 'E1 out 75 min early on 6 Aug -> ExitVarianceMinutes <> 0 (so it reaches the queue)', 'exitVar=75', @act, @pass;
+EXEC dbo.QA_Check 'A4-rec', 'E1 out 75 min early on 6 Aug -> an EarlyDeparture anomaly of 75 min (undecided) for HR, NOT an exit variance (ExitActual/ExitVariance 0: the exit-variance queue keeps only mid-day gaps); the day is covered (DayFraction 1.00) until HR decides', 'earlyExit=75 exitActual=0 exitVar=0 worked=435 fraction=1.00 anomaly=EarlyDeparture/75/undecided', @act, @pass;
 /* A5 */
 SET @act = NULL; SET @pass = 0;
 SELECT @act = CONCAT('status=', [Status], ' fraction=', Fraction, ' anomaly=', Anomaly, ' standard=', Standard), @pass = CASE WHEN [Status] = 'Absent' AND Fraction = 0 AND Anomaly = 0 THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-07';
@@ -114,11 +128,16 @@ SET @act = NULL; SET @pass = 0;
 SELECT @act = CONCAT('status=', [Status], ' anomaly=', Anomaly, ' pairs=', Pairs, ' worked=', Worked, ' lastOut=', ISNULL(CONVERT(VARCHAR(19), LastOut, 120), 'NULL')), @pass = CASE WHEN Anomaly = 1 AND LastOut IS NULL THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-10';
 SET @act = ISNULL(@act, 'no record');
 EXEC dbo.QA_Check 'A6a', 'E1 in punch only on 10 Aug -> HasAnomaly 1', 'anomaly=1 lastOut=NULL', @act, @pass;
-DECLARE @anom TABLE (AttendanceId BIGINT, EmployeeId INT, FullName NVARCHAR(300), WorkDate DATE, FirstInUtc DATETIME2, LastOutUtc DATETIME2, PunchPairs INT, [Status] VARCHAR(20), [Source] VARCHAR(10));
+/* script 77: usp_Attendance_GetAnomalies returns one row per ATTENDANCE_ANOMALY (the old nine columns first, then the anomaly) */
+DECLARE @anom TABLE (AttendanceId BIGINT, EmployeeId INT, FullName NVARCHAR(300), WorkDate DATE, FirstInUtc DATETIME2, LastOutUtc DATETIME2, PunchPairs INT, [Status] VARCHAR(20), [Source] VARCHAR(10),
+                     AnomalyId BIGINT, [Type] VARCHAR(20), [Minutes] INT, ShiftStart DATETIME2, ShiftEnd DATETIME2, PunchIn DATETIME2, PunchOut DATETIME2,
+                     Decision VARCHAR(10), DecidedByUserId INT, DecidedBy NVARCHAR(300), DecidedAt DATETIME2, Note NVARCHAR(300),
+                     DayFraction DECIMAL(5,2), WorkedMinutes INT, CoveredMinutes INT, StandardMinutes INT, IsManual BIT, HasAnomaly BIT, BranchId INT, BranchName NVARCHAR(100));
 INSERT INTO @anom EXEC attendance.usp_Attendance_GetAnomalies '2026-08-10', '2026-08-10';
-SELECT @n2 = COUNT(*) FROM @anom WHERE EmployeeId = @E1;
-SET @act = CAST(@n2 AS NVARCHAR(10)); SET @pass = CASE WHEN @n2 = 1 THEN 1 ELSE 0 END;
-EXEC dbo.QA_Check 'A6a2', 'the anomaly appears in the anomalies list (usp_Attendance_GetAnomalies) for that day', '1 row for E1', @act, @pass;
+SELECT @n2 = COUNT(*) FROM @anom WHERE EmployeeId = @E1 AND [Type] = 'MissingPunch' AND Decision IS NULL;
+SET @act = CONCAT(@n2, ' MissingPunch row(s): ', ISNULL((SELECT STRING_AGG(CONCAT([Type], '/', ISNULL(Decision, 'undecided'), ' in=', ISNULL(CONVERT(VARCHAR(16), PunchIn, 120), 'NULL'), ' out=', ISNULL(CONVERT(VARCHAR(16), PunchOut, 120), 'NULL')), '; ') FROM @anom WHERE EmployeeId = @E1), 'none'));
+SET @pass = CASE WHEN @n2 = 1 THEN 1 ELSE 0 END;
+EXEC dbo.QA_Check 'A6a2', 'the missing punch appears in the anomalies list (usp_Attendance_GetAnomalies) as an undecided MissingPunch row for that day', '1 MissingPunch row for E1, undecided, out=NULL', @act, @pass;
 /* A7 (debounce) */
 SET @act = NULL; SET @pass = 0;
 SELECT @act = CONCAT('pairs=', Pairs, ' firstIn=', CONVERT(VARCHAR(19), FirstIn, 120), ' worked=', Worked, ' anomaly=', Anomaly), @pass = CASE WHEN Pairs = 1 AND Anomaly = 0 AND FirstIn = '2026-08-11 07:00:00' THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-11';
@@ -136,11 +155,18 @@ EXEC dbo.QA_Check 'A9b', 'worked minutes start at shift start (early-in not coun
 SET @act = NULL; SET @pass = 0;
 SELECT @act = CONCAT('exitActual=', ExitActual, ' exitApproved=', ExitApproved, ' exitVar=', ExitVar, ' worked=', Worked, ' fraction=', Fraction), @pass = CASE WHEN ExitVar <= 0 AND ExitVar = ExitActual - ExitApproved AND ExitApproved = 60 THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-13';
 SET @act = ISNULL(@act, 'no record');
-EXEC dbo.QA_Check 'A11', 'exit permission 60 min approved, employee left 55 min early -> no variance to queue (script 76: EarlyExit 55 is the actual, variance = 55 - 60 = -5, never > 0)', 'exitApproved=60 exitVar=-5 (not positive)', @act, @pass;
+EXEC dbo.QA_Check 'A11', 'exit permission 60 min approved, employee left 55 min early -> no variance to queue (script 77: the early departure is an anomaly, not a variance; ExitActual 0, variance = 0 - 60 = -60, never > 0)', 'exitApproved=60 exitVar=-60 (not positive)', @act, @pass;
 SET @pass = 0; SELECT @pass = CASE WHEN Worked = 455 THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-13';
 EXEC dbo.QA_Check 'A11b', 'applying the approved 60 min does not reduce the day twice (worked stays at the punched 455 = 485 gross - 30 break)', 'worked=455', @act, @pass;
 SET @pass = 0; SELECT @pass = CASE WHEN Fraction = 1.00 THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-13';
 EXEC dbo.QA_Check 'A11c', 'the approved permission protects pay: the 55 early minutes are covered, DayFraction 1.00 (it is converted to leave at period close)', 'fraction=1.00', @act, @pass;
+SET @act = NULL; SET @pass = 0;
+SELECT @act = CONCAT(an.[Type], '/', an.[Minutes], '/', ISNULL(an.Decision, 'undecided'), ' note="', ISNULL(an.Note, ''), '"'),
+       @pass = CASE WHEN an.[Type] = 'EarlyDeparture' AND an.[Minutes] = 55 AND an.Decision = 'Excused' AND an.Note LIKE '%exit permission #%' THEN 1 ELSE 0 END
+FROM attendance.ATTENDANCE_ANOMALY an JOIN attendance.ATTENDANCE_RECORD a ON a.AttendanceId = an.AttendanceId
+WHERE a.EmployeeId = @E1 AND a.WorkDate = '2026-08-13' AND an.[Type] = 'EarlyDeparture';
+SET @act = ISNULL(@act, 'no EarlyDeparture anomaly row');
+EXEC dbo.QA_Check 'A11d', 'the 55-minute early departure is an EarlyDeparture anomaly that the approved 60-minute exit permission resolves automatically as Excused ("covered by exit permission #N")', 'EarlyDeparture/55/Excused note names the permission', @act, @pass;
 
 /* A8 overnight (E3) */
 SET @act = NULL; SET @pass = 0;
