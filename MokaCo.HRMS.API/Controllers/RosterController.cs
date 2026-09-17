@@ -15,6 +15,12 @@ namespace MokaCo.HRMS.Api.Controllers;
 ///
 /// Reading is ATTENDANCE_VIEW; writing is ATTENDANCE_MANAGE. Every generator defaults to
 /// Overwrite = false, so re-running one fills the holes and leaves HR's manual changes intact.
+///
+/// THE LOCK (75_roster_approval_applies_and_locks.sql) lives in the database, in front of every
+/// writer here: a month whose roster approval is still open is read-only, and in an approved month
+/// a day already in the past or already judged by attendance is a record — those come back as a 409
+/// with the procedure's sentence. A future day of an approved month may still be changed by the
+/// roster manager; the month stays Approved and the roster-month read reports ChangedSinceApproval.
 /// </summary>
 [ApiController]
 [Route("api/roster")]
@@ -55,18 +61,32 @@ public class RosterController : ControllerBase
         if (request.ShiftId is null && !request.IsRestDay)
             return BadRequest(new { error = "Choose a shift, or mark the day as a rest day." });
 
-        var id = await _roster.SetDayAsync(request);
-        await NotifyRosterAsync();
-        return Ok(new { shiftAssignmentId = id });
+        try
+        {
+            var id = await _roster.SetDayAsync(request);
+            await NotifyRosterAsync();
+            return Ok(new { shiftAssignmentId = id });
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
     }
 
     [HttpDelete("{id:int}")]
     [HasPermission("ATTENDANCE_MANAGE")]
     public async Task<IActionResult> Delete(int id)
     {
-        await _roster.DeleteAsync(id);
-        await NotifyRosterAsync();
-        return NoContent();
+        try
+        {
+            await _roster.DeleteAsync(id);
+            await NotifyRosterAsync();
+            return NoContent();
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
     }
 
     /// <summary>Generates one employee's roster over a range. Days outside the weekday mask become REST DAYS, so the roster comes out complete.</summary>
@@ -78,9 +98,16 @@ public class RosterController : ControllerBase
         if (error is not null)
             return BadRequest(new { error });
 
-        var generated = await _roster.GenerateAsync(request);
-        await NotifyRosterAsync();
-        return Ok(generated);
+        try
+        {
+            var generated = await _roster.GenerateAsync(request);
+            await NotifyRosterAsync();
+            return Ok(generated);
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
     }
 
     /// <summary>The same, for a whole team in one action.</summary>
@@ -95,9 +122,16 @@ public class RosterController : ControllerBase
         if (error is not null)
             return BadRequest(new { error });
 
-        var generated = await _roster.GenerateBulkAsync(request);
-        await NotifyRosterAsync();
-        return Ok(generated);
+        try
+        {
+            var generated = await _roster.GenerateBulkAsync(request);
+            await NotifyRosterAsync();
+            return Ok(generated);
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
     }
 
     /// <summary>Copies a month onto another, aligned by WEEKDAY — a Monday shift lands on a Monday, not on the same date number.</summary>
@@ -108,9 +142,16 @@ public class RosterController : ControllerBase
         if (!IsYearMonth(request.SourceYearMonth) || !IsYearMonth(request.TargetYearMonth))
             return BadRequest(new { error = "Periods must look like '2026-06'." });
 
-        var copied = await _roster.CopyPeriodAsync(request);
-        await NotifyRosterAsync();
-        return Ok(copied);
+        try
+        {
+            var copied = await _roster.CopyPeriodAsync(request);
+            await NotifyRosterAsync();
+            return Ok(copied);
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
     }
 
     /// <summary>Expands employees' saved weekly patterns into real dated roster rows for a month.</summary>
@@ -121,9 +162,16 @@ public class RosterController : ControllerBase
         if (!IsYearMonth(request.YearMonth))
             return BadRequest(new { error = "Period must look like '2026-06'." });
 
-        var applied = await _roster.ApplyPatternAsync(request);
-        await NotifyRosterAsync();
-        return Ok(applied);
+        try
+        {
+            var applied = await _roster.ApplyPatternAsync(request);
+            await NotifyRosterAsync();
+            return Ok(applied);
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
     }
 
     /// <summary>Employee-days with NO roster row at all. These are the ones that block payroll.</summary>

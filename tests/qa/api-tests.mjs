@@ -129,8 +129,8 @@ async function phase1() {
   /* R3 lock: editing a day of the approved month */
   const e1 = ids['QA E1'].emp;
   const edit = await api('qa.hr', 'PUT', '/api/roster/day', { employeeId: e1, workDate: '2026-08-20', shiftId: null, isRestDay: true });
-  check('R3g', 'editing a day of an APPROVED month is refused with a clear message (no SQL text)',
-    '4xx + {error:"...approved..."}', `${edit.status} ${edit.text.slice(0, 160)}`, edit.status >= 400 && edit.status < 500 && looksClean(edit.text) && !!edit.json?.error);
+  check('R3g', 'editing a PAST day of an APPROVED month is refused: 409 with the lock sentence (no SQL text)',
+    '409 + {error:"This day is already in an approved roster..."}', `${edit.status} ${edit.text.slice(0, 160)}`, edit.status === 409 && looksClean(edit.text) && /already in an approved roster/i.test(edit.json?.error ?? ''));
   const day = await api('qa.hr', 'GET', `/api/roster?from=2026-08-20&to=2026-08-20&employeeId=${e1}`);
   const rowNow = (day.json ?? [])[0];
   if (edit.status === 200) {
@@ -147,6 +147,34 @@ async function phase1() {
   const fk = await api('qa.hr', 'PUT', '/api/roster/day', { employeeId: 999999, workDate: '2026-08-20', shiftId: ids.morning, isRestDay: false });
   check('X1b', 'PUT /api/roster/day for a non-existent employee: clean JSON error, no SQL constraint text or stack trace',
     '4xx {error:"..."}', `${fk.status} ${fk.text.slice(0, 200).replace(/\s+/g, ' ')}`, fk.status < 500 && looksClean(fk.text) && !!fk.json?.error);
+
+  /* ---- R4c-R4e: the lock on a month that still has FUTURE days (the month after this one, E1 only) ----
+     pending month read-only -> approved: a future day may change, the month stays Approved and says
+     changedSinceApproval -> re-submission opens a new request and the month stays Approved (the
+     processor keeps the signed-off shifts). cleanup.sql removes the rows, header and requests. */
+  const nm = new Date(today); nm.setDate(1); nm.setMonth(nm.getMonth() + 1);
+  const nmFrom = iso(nm), nmTo = iso(new Date(nm.getFullYear(), nm.getMonth() + 1, 0, 12)), nmDay = iso(new Date(nm.getFullYear(), nm.getMonth(), 15, 12));
+  const gen = await api('qa.hr', 'POST', '/api/roster/generate', { employeeId: e1, fromDate: nmFrom, toDate: nmTo, shiftId: ids.morning, weekdays: '1111110', overwrite: false });
+  const sub = await api('qa.hr', 'POST', '/api/workflow/roster-approvals', { branchId: ids.branch, monthDate: nmFrom, title: 'QA roster next month' });
+  const rid2 = sub.json?.requestInstanceId; state('req.roster2', rid2);
+  const pend = await api('qa.hr', 'PUT', '/api/roster/day', { employeeId: e1, workDate: nmDay, shiftId: null, isRestDay: true });
+  check('R4c', `a month waiting for approval is read-only: PUT /api/roster/day on ${nmDay} while request ${rid2} is pending`,
+    '409 {error:"Waiting for approval — request #N. Withdraw or wait..."}', `generate ${gen.status}, submit ${sub.status}, edit ${pend.status} ${pend.json?.error ?? pend.text.slice(0, 120)}`,
+    gen.status === 200 && sub.status === 200 && pend.status === 409 && new RegExp(`Waiting for approval .*#${rid2}`).test(pend.json?.error ?? ''));
+  for (const [u, step] of [['qa.manager', 1], ['qa.hr', 2], ['qa.owner', 3]]) await api(u, 'POST', `/api/requests/${rid2}/approve`, { comment: `QA step ${step}`, password: PW });
+  const rm2 = await api('qa.hr', 'GET', `/api/attendance/roster-month?branchId=${ids.branch}&month=${nmFrom}`);
+  const fut = await api('qa.hr', 'PUT', '/api/roster/day', { employeeId: e1, workDate: nmDay, shiftId: null, isRestDay: true });
+  const rm3 = await api('qa.hr', 'GET', `/api/attendance/roster-month?branchId=${ids.branch}&month=${nmFrom}`);
+  check('R4d', `a FUTURE day (${nmDay}) of an APPROVED month may be changed by HR: 200; the month stays Approved and reports changedSinceApproval`,
+    'Approved before; 200; Approved + changedSinceApproval=true after', `${rm2.json?.status} before; ${fut.status}; ${rm3.json?.status} + changedSinceApproval=${rm3.json?.changedSinceApproval} after`,
+    rm2.json?.status === 'Approved' && fut.status === 200 && rm3.json?.status === 'Approved' && rm3.json?.changedSinceApproval === true);
+  const resub = await api('qa.hr', 'POST', '/api/workflow/roster-approvals', { branchId: ids.branch, monthDate: nmFrom, title: 'QA roster next month (changed)' });
+  const rm4 = await api('qa.hr', 'GET', `/api/attendance/roster-month?branchId=${ids.branch}&month=${nmFrom}`);
+  const lock2 = await api('qa.hr', 'PUT', '/api/roster/day', { employeeId: e1, workDate: nmDay, shiftId: ids.morning, isRestDay: false });
+  check('R4e', 're-submitting the changed month opens a new request; the month stays Approved (processing keeps the signed-off shifts) and is read-only again',
+    '200 + new request; status Approved, openRequestId = new request; edit 409', `${resub.status} rid=${resub.json?.requestInstanceId}; status ${rm4.json?.status}, openRequestId ${rm4.json?.openRequestId}; edit ${lock2.status}`,
+    resub.status === 200 && resub.json?.requestInstanceId > rid2 && rm4.json?.status === 'Approved' && rm4.json?.openRequestId === resub.json?.requestInstanceId && lock2.status === 409);
+  if (resub.json?.requestInstanceId) await api('qa.hr', 'POST', `/api/requests/${resub.json.requestInstanceId}/cancel`, { reason: 'QA done with the next-month roster' });
 
   /* ---- leaves ---- */
   const e5 = ids['QA E5'].emp, e6 = ids['QA E6'].emp, mgr = ids['QA Manager'].emp;

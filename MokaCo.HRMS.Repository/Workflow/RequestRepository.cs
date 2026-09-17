@@ -277,6 +277,8 @@ public class RequestRepository : IRequestRepository
     /// Each arm is a type paired with the ONE column that proves its effect landed. Overtime is
     /// deliberately absent: the nightly job applies it a step earlier, and its marker stays null until
     /// the worked day exists, so including it would re-sweep the same rows every night forever.
+    /// ROSTER_APPROVAL (AppliedAt) is here so a month whose approval somehow never activated it is
+    /// picked up the next night — the engine now applies it at the final approval (script 75).
     /// </summary>
     private const string UnappliedEffectsSql = @"
 SELECT ri.RequestInstanceId
@@ -290,6 +292,8 @@ WHERE ri.[Status] = 'Approved'
      OR (rt.Code = 'PAYROLL_ADJUSTMENT' AND EXISTS (SELECT 1 FROM workflow.PAYROLL_ADJUSTMENT_REQUEST x
                                                     WHERE x.RequestInstanceId = ri.RequestInstanceId AND x.CreatedAdjustmentId IS NULL))
      OR (rt.Code = 'SHIFT_SWAP'         AND EXISTS (SELECT 1 FROM workflow.SHIFT_SWAP x
+                                                    WHERE x.RequestInstanceId = ri.RequestInstanceId AND x.AppliedAt           IS NULL))
+     OR (rt.Code = 'ROSTER_APPROVAL'    AND EXISTS (SELECT 1 FROM workflow.ROSTER_APPROVAL x
                                                     WHERE x.RequestInstanceId = ri.RequestInstanceId AND x.AppliedAt           IS NULL)) )
 ORDER BY ri.RequestInstanceId;";
 

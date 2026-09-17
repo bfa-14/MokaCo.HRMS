@@ -70,6 +70,13 @@ public static class WorkflowSqlErrors
             || message.StartsWith("This roster cannot be cleared", StringComparison.OrdinalIgnoreCase))
             return new WorkflowException(409, message);
 
+        // The roster lock (75_roster_approval_applies_and_locks.sql): a day of an approved month
+        // that is already in the past or already judged by attendance, or a month with a roster
+        // approval still open. Same kind of answer — the state of the month refuses the edit.
+        if (message.StartsWith("This day is already in an approved roster", StringComparison.OrdinalIgnoreCase)
+            || message.StartsWith("Waiting for approval", StringComparison.OrdinalIgnoreCase))
+            return new WorkflowException(409, message);
+
         // Everything else the procedures raise is a request-state or input rule, not a 500.
         return new WorkflowException(400, message);
     }
