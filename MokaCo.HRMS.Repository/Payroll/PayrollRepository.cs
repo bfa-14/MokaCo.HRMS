@@ -50,7 +50,8 @@ public class PayrollRepository : IPayrollRepository
                 PeriodYearMonth = periodYearMonth,
                 CreatedByUserId = createdByUserId,
                 Notes = notes,
-                // Null lets the procedure apply its own default rather than this layer asserting one.
+                // Primary or Supplemental, already normalised by the service (script 78, BUG-18); the
+                // procedure also treats NULL as Primary, so an older caller cannot reach the wrong path.
                 RunType = runType,
             },
             commandType: CommandType.StoredProcedure);

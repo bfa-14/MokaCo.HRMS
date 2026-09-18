@@ -37,13 +37,20 @@ public class PayrollService : IPayrollService
     /// check all live in the procedure; each has its own sentence naming what to fix.
     /// </summary>
     public Task<PayrollRunCreated?> CreateRunAsync(PayrollRunCreateRequest request, int createdByUserId)
-        => WorkflowSqlErrors.MapAsync(() => _repo.CreateRunAsync(
+    {
+        // BUG-18 (script 78): a missing runType is a PRIMARY run — the DTO, this layer and the
+        // procedure all say so, so an explicit NULL can no longer slip past IF @RunType = 'Primary'
+        // and land on the supplemental path. The only value check made here is the spelling: the
+        // procedure keeps every rule about WHEN each type is allowed.
+        var runType = PayrollRunTypes.Normalize(request.RunType)
+            ?? throw new WorkflowException(400, "RunType is Primary or Supplemental.");
+
+        return WorkflowSqlErrors.MapAsync(() => _repo.CreateRunAsync(
             request.PeriodYearMonth?.Trim() ?? string.Empty,
             createdByUserId,
             string.IsNullOrWhiteSpace(request.Notes) ? null : request.Notes.Trim(),
-            // Not defaulted to "Primary" here: a blank lets the PROCEDURE own the default, so there
-            // is one place that decides it rather than two that can disagree.
-            string.IsNullOrWhiteSpace(request.RunType) ? null : request.RunType.Trim()));
+            runType));
+    }
 
     public Task<PayrollRunDetail> GetRunAsync(int payrollRunId) => _repo.GetRunAsync(payrollRunId);
 

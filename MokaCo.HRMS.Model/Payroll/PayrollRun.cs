@@ -196,11 +196,31 @@ public class PayrollRunCreateRequest
     public string? Notes { get; set; }
 
     /// <summary>
-    /// Primary (the default) or Supplemental. Passed straight through to @RunType — every rule
-    /// about when a supplemental is allowed (the primary must be locked, only one open at a time,
-    /// something must actually be payable) belongs to the procedure and arrives as its own sentence.
+    /// Primary (the default) or Supplemental. Defaults to "Primary" HERE, in the service AND in the
+    /// procedure (script 78, BUG-18): a body that omits runType used to reach the procedure as NULL,
+    /// and IF @RunType = 'Primary' is false for NULL, so the run silently took the supplemental path.
+    /// Any other value is refused with a 400 before the procedure is called. Every rule about WHEN a
+    /// supplemental is allowed (the primary must be locked, only one open at a time, something must
+    /// actually be payable) still belongs to the procedure and arrives as its own sentence.
     /// </summary>
-    public string? RunType { get; set; }
+    public string? RunType { get; set; } = PayrollRunTypes.Primary;
+}
+
+/// <summary>The two run types, spelled the way the procedure's CHECK expects them.</summary>
+public static class PayrollRunTypes
+{
+    public const string Primary = "Primary";
+    public const string Supplemental = "Supplemental";
+
+    /// <summary>Blank means the default (Primary); anything else must be one of the two, case-insensitively.</summary>
+    public static string? Normalize(string? runType)
+    {
+        if (string.IsNullOrWhiteSpace(runType)) return Primary;
+        var t = runType.Trim();
+        if (string.Equals(t, Primary, StringComparison.OrdinalIgnoreCase)) return Primary;
+        if (string.Equals(t, Supplemental, StringComparison.OrdinalIgnoreCase)) return Supplemental;
+        return null;
+    }
 }
 
 /// <summary>POST /api/payroll/runs/{id}/cancel. The procedure requires a non-empty reason.</summary>
