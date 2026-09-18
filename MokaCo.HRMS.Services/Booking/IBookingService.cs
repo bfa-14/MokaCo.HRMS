@@ -3,36 +3,53 @@ using MokaCo.HRMS.Model.Booking;
 namespace MokaCo.HRMS.Services.Booking;
 
 /// <summary>
-/// Bookings: taking them, listing them, deciding them, collecting against them and reporting on them.
+/// Bookings: taking them, pricing them, listing them, deciding them, collecting against them,
+/// refunding them and reporting on them.
 ///
-/// THE ONE PIECE OF ORCHESTRATION IN THIS LAYER is "create, then queue the guest's copy" and
-/// "decide, then queue the guest's copy". Both are two procedure calls that the controller must not
-/// be trusted to remember in the right order, and both are deliberately NOT atomic — see the
-/// implementation for why a failure to queue must never undo a booking that exists.
+/// NO NOTIFICATION IS QUEUED FROM THIS LAYER. The database trigger booking.trg_Booking_Notify
+/// writes the guest's request/confirmation/cancellation and the staff alert, and
+/// trg_Payment_RefundNotify the refund mail, inside the transaction that changed the row.
 /// </summary>
 public interface IBookingService
 {
-    /// <summary>
-    /// A booking taken by an anonymous visitor — Source='Website', so the lead-time settings apply
-    /// and the row opens Pending unless core.SETTING BookingAutoConfirm says otherwise.
-    /// </summary>
-    Task<BookingCreated?> CreateFromWebsiteAsync(BookingCreateRequest request);
+    /* ---- public (website) ---- */
 
-    /// <summary>
-    /// A booking typed in by staff — Source='Manual', which skips the lead-time rules (staff may
-    /// book this afternoon) and opens Confirmed, and is attributed to the user who took it.
-    /// </summary>
+    /// <summary>A booking taken by an anonymous visitor — Source='Website', lead-time rules apply, opens Pending unless BookingAutoConfirm.</summary>
+    Task<BookingCreated?> CreateFromWebsiteAsync(PublicBookingRequest request);
+
+    Task<BookingQuote?> QuoteAsync(PublicQuoteRequest request);
+
+    /// <summary>The recap behind an MC- reference, PROJECTED for an anonymous holder: no phone, no email, no note, the name cut to "First L.".</summary>
+    Task<PublicBookingRecap?> GetPublicRecapAsync(string bookingRef);
+
+    Task<BookingHoldReleased?> ReleaseHoldAsync(string bookingRef);
+
+    /// <summary>The guest cancels, proving the phone number. Refusals are the procedure's (SqlException 50000). Returns the recap after the cancellation.</summary>
+    Task<PublicBookingRecap?> CancelByGuestAsync(string bookingRef, string phone);
+
+    /// <summary>Cancels expired unpaid holds; returns how many. Called by the five-minute job.</summary>
+    Task<int> ExpireHoldsAsync();
+
+    /// <summary>core.SETTING BookingDepositRequired — whether the website must collect the deposit online (step 2).</summary>
+    Task<bool> IsDepositRequiredAsync();
+
+    /* ---- staff ---- */
+
+    /// <summary>A booking typed in by staff — Source='Manual', opens Confirmed, exempt from the lead-time settings.</summary>
     Task<BookingCreated?> CreateManuallyAsync(BookingCreateRequest request, int createdByUserId);
 
     Task<BookingRange> GetForRangeAsync(DateTime fromDate, DateTime toDate, int? roomId, string? status);
 
-    /// <summary>
-    /// Moves the booking and, for the two outcomes a guest needs to hear about, queues their copy.
-    /// Returns null when the procedure produced no row, which it does not do on success.
-    /// </summary>
+    /// <summary>One booking with its money lines, for the back office. Null when the id is unknown.</summary>
+    Task<BookingStaffDetail?> GetStaffDetailAsync(int bookingId);
+
+    /// <summary>Moves the booking; a cancellation carries who asked for it (<see cref="BookingStatusRequest.CancelledBy"/>) and gets its refund figured.</summary>
     Task<BookingStatusChanged?> SetStatusAsync(int bookingId, BookingStatusRequest request, int actedByUserId);
 
     Task<PaymentAdded?> AddPaymentAsync(int bookingId, BookingPaymentRequest request, int receivedByUserId);
+
+    /// <summary>Records a refund. The method may be an id or a name; the outcome says which was used, or why it was refused.</summary>
+    Task<RefundOutcome> AddRefundAsync(int bookingId, BookingRefundRequest request, int receivedByUserId);
 
     Task<BookingReceipt> GetReceiptAsync(int bookingId);
 
@@ -40,4 +57,18 @@ public interface IBookingService
     Task DeleteBlockAsync(int blockId);
 
     Task<BookingReport> GetReportAsync(DateTime fromDate, DateTime toDate, string groupBy);
+}
+
+/// <summary>
+/// What recording a refund produced. <see cref="Error"/> is set when the payment method could not
+/// be resolved (nothing was written); otherwise <see cref="Added"/> is the procedure's answer and
+/// <see cref="Method"/> the method it was recorded against, resolved by <see cref="ResolvedBy"/>
+/// ("id" or "name").
+/// </summary>
+public sealed class RefundOutcome
+{
+    public RefundAdded? Added { get; init; }
+    public PaymentMethod? Method { get; init; }
+    public string ResolvedBy { get; init; } = string.Empty;
+    public string? Error { get; init; }
 }

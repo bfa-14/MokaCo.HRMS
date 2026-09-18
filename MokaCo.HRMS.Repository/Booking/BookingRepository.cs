@@ -9,11 +9,9 @@ namespace MokaCo.HRMS.Repository.Booking;
 /// Dapper access to the bookings, entirely through the booking.usp_* procedures — no inline SQL.
 ///
 /// THE PROCEDURES ARE THE RULES. Overlap, opening hours, lead times, person counts, deposit
-/// arithmetic, status transitions, payment ceilings: all of it is enforced in SQL, inside the
-/// transaction that also writes the row. This class carries parameters in and result sets out, and
-/// deliberately re-checks nothing — a pre-flight check in C# would either duplicate a rule or,
-/// worse, run outside the lock and answer a question that is already stale by the time the INSERT
-/// runs.
+/// arithmetic, status transitions, payment ceilings, refund ceilings: all of it is enforced in SQL,
+/// inside the transaction that also writes the row. This class carries parameters in and result
+/// sets out, and deliberately re-checks nothing.
 /// </summary>
 public class BookingRepository : IBookingRepository
 {
@@ -43,6 +41,103 @@ public class BookingRepository : IBookingRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    /// <summary>
+    /// Source is 'Website' HERE, not taken from the body, so a caller cannot post 'Manual' and skip
+    /// the lead-time rules; CreatedByUserId is null, so nothing is attributed to staff who never
+    /// touched it. Price, deposit and status are computed by the procedure and never accepted.
+    /// </summary>
+    public async Task<BookingCreated?> CreateFromWebsiteAsync(PublicBookingRequest request)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<BookingCreated>(
+            "booking.usp_Booking_Create",
+            new
+            {
+                RoomId = (int?)null,
+                request.RoomCode,
+                BookDate = request.Date.Date,
+                StartTime = MinuteClock.StartTime(request.StartMin),
+                EndTime = MinuteClock.EndTime(request.EndMin),
+                request.Persons,
+                GuestName = request.Name,
+                GuestPhone = request.Phone,
+                GuestEmail = request.Email,
+                Note = request.Notes,
+                AddonIds = JoinAddonIds(request.AddonIds),
+                Source = "Website",
+                CreatedByUserId = (int?)null,
+            },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<BookingQuote?> QuoteAsync(PublicQuoteRequest request)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<BookingQuote>(
+            "booking.usp_Booking_Quote",
+            new
+            {
+                request.RoomCode,
+                RoomId = (int?)null,
+                BookDate = request.Date.Date,
+                request.StartMin,
+                request.EndMin,
+                AddonIds = JoinAddonIds(request.AddonIds),
+                Source = "Website",
+            },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<BookingRefDetail?> GetByRefAsync(string bookingRef)
+    {
+        using var db = _factory.Create();
+        using var multi = await db.QueryMultipleAsync(
+            "booking.usp_Booking_GetByRef",
+            new { Ref = bookingRef },
+            commandType: CommandType.StoredProcedure);
+
+        return await ReadRefDetailAsync(multi);
+    }
+
+    public async Task<BookingHoldReleased?> ReleaseHoldAsync(string bookingRef)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<BookingHoldReleased>(
+            "booking.usp_Booking_ReleaseHold",
+            new { Ref = bookingRef },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<int> ExpireHoldsAsync()
+    {
+        using var db = _factory.Create();
+        return await db.ExecuteScalarAsync<int>(
+            "booking.usp_Booking_ExpireHolds",
+            commandType: CommandType.StoredProcedure);
+    }
+
+    /// <summary>The procedure ends with EXEC usp_Booking_GetByRef, so the same two result sets come back and are read the same way.</summary>
+    public async Task<BookingRefDetail?> CancelByGuestAsync(string bookingRef, string phone)
+    {
+        using var db = _factory.Create();
+        using var multi = await db.QueryMultipleAsync(
+            "booking.usp_Booking_CancelByGuest",
+            new { Ref = bookingRef, Phone = phone },
+            commandType: CommandType.StoredProcedure);
+
+        return await ReadRefDetailAsync(multi);
+    }
+
+    private static async Task<BookingRefDetail?> ReadRefDetailAsync(SqlMapper.GridReader multi)
+    {
+        var booking = await multi.ReadFirstOrDefaultAsync<BookingRefDetail>();
+        if (booking is null)
+            return null;
+
+        booking.Addons = (await multi.ReadAsync<BookingRefAddon>()).ToList();
+        return booking;
+    }
+
     public async Task<BookingRange> GetForRangeAsync(DateTime fromDate, DateTime toDate, int? roomId, string? status)
     {
         using var db = _factory.Create();
@@ -64,7 +159,7 @@ public class BookingRepository : IBookingRepository
         };
     }
 
-    public async Task<BookingStatusChanged?> SetStatusAsync(int bookingId, string newStatus, int actedByUserId, string? reason)
+    public async Task<BookingStatusChanged?> SetStatusAsync(int bookingId, string newStatus, int actedByUserId, string? note, string cancelledBy)
     {
         using var db = _factory.Create();
         return await db.QuerySingleOrDefaultAsync<BookingStatusChanged>(
@@ -74,7 +169,8 @@ public class BookingRepository : IBookingRepository
                 BookingId = bookingId,
                 NewStatus = newStatus,
                 ActedByUserId = actedByUserId,
-                Reason = reason,
+                Reason = note,
+                CancelledBy = cancelledBy,
             },
             commandType: CommandType.StoredProcedure);
     }
@@ -95,11 +191,23 @@ public class BookingRepository : IBookingRepository
             commandType: CommandType.StoredProcedure);
     }
 
-    /// <summary>
-    /// ReadFirstOrDefault on the header, so an unknown booking id comes back as a receipt with no
-    /// header rather than throwing — the controller turns that into a 404, which is the honest
-    /// answer to "print booking 9999".
-    /// </summary>
+    public async Task<RefundAdded?> AddRefundAsync(int bookingId, decimal amount, int paymentMethodId, string? reference, int receivedByUserId)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<RefundAdded>(
+            "booking.usp_Refund_Add",
+            new
+            {
+                BookingId = bookingId,
+                Amount = amount,
+                PaymentMethodId = paymentMethodId,
+                Reference = reference,
+                ReceivedByUserId = receivedByUserId,
+            },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    /// <summary>ReadFirstOrDefault on the header, so an unknown booking id comes back as a receipt with no header rather than throwing.</summary>
     public async Task<BookingReceipt> GetReceiptAsync(int bookingId)
     {
         using var db = _factory.Create();
@@ -162,23 +270,7 @@ public class BookingRepository : IBookingRepository
         };
     }
 
-    public async Task QueueEmailAsync(int bookingId)
-    {
-        using var db = _factory.Create();
-        await db.ExecuteAsync(
-            "booking.usp_Booking_QueueEmail",
-            new { BookingId = bookingId },
-            commandType: CommandType.StoredProcedure);
-    }
-
-    /// <summary>
-    /// The list-to-string join the procedure's STRING_SPLIT needs, kept in the one place that knows
-    /// the procedure exists.
-    ///
-    /// EMPTY BECOMES NULL, not "". The procedure tests `IS NOT NULL AND LTRIM(@AddonIds) &lt;&gt; ''`
-    /// so both work today — but null is what "no add-ons" means, and passing an empty string relies
-    /// on the second half of that test staying there.
-    /// </summary>
+    /// <summary>The list-to-string join the procedure's STRING_SPLIT needs. EMPTY BECOMES NULL — null is what "no add-ons" means to the procedure.</summary>
     private static string? JoinAddonIds(List<int>? addonIds)
         => addonIds is null || addonIds.Count == 0
             ? null

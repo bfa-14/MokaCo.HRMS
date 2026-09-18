@@ -12,10 +12,13 @@ namespace MokaCo.HRMS.Model.Booking;
 public class ReceiptHeader
 {
     public int BookingId { get; set; }
+    public string BookingRef { get; set; } = string.Empty;
 
     public DateTime BookDate { get; set; }
     public TimeSpan StartTime { get; set; }
     public TimeSpan EndTime { get; set; }
+    public int StartMin { get; set; }
+    public int EndMin { get; set; }
 
     public int Persons { get; set; }
 
@@ -31,9 +34,17 @@ public class ReceiptHeader
 
     public decimal TotalAmount { get; set; }
     public decimal DepositDue { get; set; }
+    public decimal? DepositPercent { get; set; }
+    public decimal DiscountPercent { get; set; }
+    public decimal DiscountAmount { get; set; }
     public string CurrencyCode { get; set; } = string.Empty;
 
     public string? Note { get; set; }
+
+    public string? CancelReason { get; set; }
+    public string? CancelledBy { get; set; }
+    public decimal RefundAmount { get; set; }
+    public string? RefundStatus { get; set; }
 
     public string RoomName { get; set; } = string.Empty;
 
@@ -47,6 +58,9 @@ public class ReceiptHeader
 
     /// <summary>Zero means PAID; anything above means BALANCE DUE. The footer is this number.</summary>
     public decimal BalanceDue { get; set; }
+
+    /// <summary>Everything refunded so far, positive.</summary>
+    public decimal RefundedAmount { get; set; }
 }
 
 /// <summary>
@@ -66,7 +80,11 @@ public class ReceiptAddon
 public class ReceiptPayment
 {
     public int PaymentId { get; set; }
+
+    /// <summary>NEGATIVE on a refund line — the same table holds both, and the sum is what was actually paid.</summary>
     public decimal Amount { get; set; }
+
+    public bool IsRefund { get; set; }
 
     /// <summary>The card slip or transfer number, when whoever took it wrote one down.</summary>
     public string? Reference { get; set; }

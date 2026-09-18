@@ -11,11 +11,21 @@ namespace MokaCo.HRMS.Model.Booking;
 public class BookingRow
 {
     public int BookingId { get; set; }
+
+    /// <summary>MC-XXXXXXXX — the reference the guest was given. The public API addresses the booking by it.</summary>
+    public string BookingRef { get; set; } = string.Empty;
+
     public int RoomId { get; set; }
 
     public DateTime BookDate { get; set; }
     public TimeSpan StartTime { get; set; }
     public TimeSpan EndTime { get; set; }
+
+    /// <summary>Minutes from midnight of BookDate, persisted by the database. 0–1439.</summary>
+    public int StartMin { get; set; }
+
+    /// <summary>Minutes from midnight of BookDate. MAY EXCEED 1440 — a 01:00 end is 1500.</summary>
+    public int EndMin { get; set; }
 
     public int Persons { get; set; }
 
@@ -32,8 +42,15 @@ public class BookingRow
 
     public decimal TotalAmount { get; set; }
 
-    /// <summary>What was due up front, from the room's DepositPercent at booking time.</summary>
+    /// <summary>The hour discount as applied, frozen on the booking. 0 on one that earned none.</summary>
+    public decimal DiscountPercent { get; set; }
+
+    public decimal DiscountAmount { get; set; }
+
+    /// <summary>What was due up front, from the deposit tier (or the room's DepositPercent) at booking time.</summary>
     public decimal DepositDue { get; set; }
+
+    public decimal? DepositPercent { get; set; }
 
     public string CurrencyCode { get; set; } = string.Empty;
 
@@ -52,6 +69,20 @@ public class BookingRow
     /// <summary>Required by the procedure when cancelling, and kept afterwards — a cancellation with no stated reason is an argument later.</summary>
     public string? CancelReason { get; set; }
 
+    /// <summary>'Staff' or 'Guest' on a cancelled booking. Guest = the guest asked (refund minus the deposit); Staff = the café cancelled (full refund).</summary>
+    public string? CancelledBy { get; set; }
+
+    /// <summary>What a cancellation decided is owed back (booking.fn_RefundDue at the moment of cancelling).</summary>
+    public decimal RefundAmount { get; set; }
+
+    /// <summary>None | Due | Partial | Refunded.</summary>
+    public string? RefundStatus { get; set; }
+
+    public DateTime? RefundedUtc { get; set; }
+
+    public DateTime? HoldExpiresUtc { get; set; }
+    public DateTime? PaidConfirmedUtc { get; set; }
+
     /* ---- joined, not stored ---- */
 
     public string RoomName { get; set; } = string.Empty;
@@ -62,6 +93,9 @@ public class BookingRow
 
     /// <summary>TotalAmount − PaidAmount. Computed in SQL so the grid, the drawer and the receipt cannot disagree.</summary>
     public decimal BalanceDue { get; set; }
+
+    /// <summary>What has gone back so far, as a positive number (refund lines are negative rows in BOOKING_PAYMENT).</summary>
+    public decimal RefundedAmount { get; set; }
 
     public string? DecidedByUsername { get; set; }
 }
@@ -82,6 +116,9 @@ public class BookingBlock
     public DateTime BlockDate { get; set; }
     public TimeSpan StartTime { get; set; }
     public TimeSpan EndTime { get; set; }
+
+    public int StartMin { get; set; }
+    public int EndMin { get; set; }
 
     /// <summary>Internal — the public availability feed never carries it.</summary>
     public string? Reason { get; set; }
@@ -118,17 +155,47 @@ public class BookingRange
 public class BookingCreated
 {
     public int BookingId { get; set; }
+
+    /// <summary>MC-XXXXXXXX. BUG-19: the public response must carry it — it is the only thing the guest is told to keep.</summary>
+    public string BookingRef { get; set; } = string.Empty;
+
+    public int RoomId { get; set; }
+    public string RoomName { get; set; } = string.Empty;
+    public decimal Hours { get; set; }
+
     public decimal TotalAmount { get; set; }
+    public decimal DiscountPercent { get; set; }
+    public decimal DiscountAmount { get; set; }
     public decimal DepositDue { get; set; }
+    public decimal DepositPercent { get; set; }
     public string CurrencyCode { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
 }
 
-/// <summary>The echo from booking.usp_Booking_SetStatus — the id and where it landed.</summary>
+/// <summary>The echo from booking.usp_Booking_SetStatus — where it landed, and what a cancellation decided about the money.</summary>
 public class BookingStatusChanged
 {
     public int BookingId { get; set; }
+    public string BookingRef { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
+    public string? CancelledBy { get; set; }
+    public decimal RefundAmount { get; set; }
+    public string? RefundStatus { get; set; }
+}
+
+/// <summary>The result of booking.usp_Refund_Add: the new (negative) payment line and where the refund stands.</summary>
+public class RefundAdded
+{
+    public int PaymentId { get; set; }
+
+    /// <summary>Everything refunded so far, positive.</summary>
+    public decimal RefundedTotal { get; set; }
+
+    /// <summary>What the cancellation decided was owed back.</summary>
+    public decimal RefundDue { get; set; }
+
+    /// <summary>Partial | Refunded.</summary>
+    public string RefundStatus { get; set; } = string.Empty;
 }
 
 /// <summary>

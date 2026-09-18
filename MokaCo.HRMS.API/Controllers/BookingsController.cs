@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
 using MokaCo.HRMS.Api.Auth;
@@ -11,8 +12,8 @@ namespace MokaCo.HRMS.Api.Controllers;
 /// and the report over all of it.
 ///
 /// TWO PERMISSIONS, AND THE LINE BETWEEN THEM IS "does this change anything". BOOKING_VIEW reads the
-/// calendar, a receipt and the report; BOOKING_MANAGE takes a booking, decides one, collects against
-/// one, blocks a room and edits the catalogue. A receptionist who may see the day without being able
+/// calendar, one booking, a receipt and the report; BOOKING_MANAGE takes a booking, decides one,
+/// collects against one, refunds one, blocks a room and edits the catalogue. A receptionist who may see the day without being able
 /// to cancel it is the case that line exists for.
 ///
 /// ONE DELIBERATE DEPARTURE FROM THE OBVIOUS READING: GET rooms is BOOKING_VIEW, not
@@ -65,7 +66,13 @@ public class BookingsController : ControllerBase
 
     /// <summary>
     /// A booking typed in by staff — Source='Manual', which opens it Confirmed and exempts it from
-    /// the lead-time settings that gate the website. The guest's copy is queued on the way out.
+    /// the lead-time settings that gate the website. Still usp_Booking_Create by @RoomId; the answer
+    /// carries the same fields the public create does (ref, hours, discount, deposit percent). The
+    /// guest's confirmation is queued by the database trigger, not here.
+    ///
+    /// AN END AT OR BEFORE THE START MEANS THE NEXT MORNING (22:00–01:00), which the procedure
+    /// accepts up to 06:00 — the same rule as the table's CK_BOOKING_Times. Only an end later than
+    /// that, or equal to the start, is refused here (BUG-22).
     /// </summary>
     [HttpPost("manual")]
     [HasPermission("BOOKING_MANAGE")]
@@ -74,8 +81,8 @@ public class BookingsController : ControllerBase
         if (string.IsNullOrWhiteSpace(request.GuestName) || string.IsNullOrWhiteSpace(request.GuestPhone))
             return BadRequest(new { error = "Guest name and phone are required." });
 
-        if (request.EndTime <= request.StartTime)
-            return BadRequest(new { error = "The end time must be after the start time." });
+        if (request.EndTime == request.StartTime || (request.EndTime < request.StartTime && request.EndTime > TimeSpan.FromHours(6)))
+            return BadRequest(new { error = "The end time must be after the start time (an end up to 06:00 is read as the next morning)." });
 
         try
         {
@@ -92,30 +99,179 @@ public class BookingsController : ControllerBase
     }
 
     /// <summary>
-    /// Confirm, complete, cancel or mark a no-show.
+    /// One booking with its money lines: the row as usp_Booking_GetByRef reads it (refundAmount,
+    /// refundStatus, refundedUtc, cancelledBy included) plus every payment line with isRefund.
+    /// </summary>
+    [HttpGet("{id:int}")]
+    [HasPermission("BOOKING_VIEW")]
+    public async Task<IActionResult> GetById(int id)
+    {
+        var detail = await _bookings.GetStaffDetailAsync(id);
+        return detail is null ? NotFound() : Ok(StaffShape(detail));
+    }
+
+    /// <summary>
+    /// Confirm, complete, cancel or mark a no-show. Body { status, cancelledBy: "Staff"|"Guest",
+    /// note? } — `reason` is still accepted as the note and cancelledBy defaults to Staff, so the
+    /// current web app keeps working until Q6 lands.
     ///
-    /// THE TRANSITION RULES ARE THE PROCEDURE'S: it refuses an unknown status, refuses to touch a
-    /// booking that is already closed, and refuses a cancellation with no reason. None of that is
-    /// re-checked here — one rule, one place. A Confirmed or Cancelled outcome queues the guest's
-    /// copy; the service decides that, from the status the procedure actually landed on.
+    /// THE TRANSITION RULES AND THE REFUND ARITHMETIC ARE THE PROCEDURE'S (BUG-25): it refuses an
+    /// unknown status, a booking already closed, a cancellation with no note; and a cancellation
+    /// carries who asked for it — Guest = the guest rang → refund minus the deposit, Staff = the café
+    /// cancelled → everything paid goes back. Answers with the booking row as GET {id} does, so the
+    /// screen repaints from one shape. The guest's mail is queued by the database trigger.
     /// </summary>
     [HttpPut("{id:int}/status")]
     [HasPermission("BOOKING_MANAGE")]
     public async Task<IActionResult> SetStatus(int id, [FromBody] BookingStatusRequest request)
     {
+        var by = string.IsNullOrWhiteSpace(request.CancelledBy) ? "Staff" : request.CancelledBy.Trim();
+        if (!string.Equals(by, "Staff", StringComparison.OrdinalIgnoreCase) && !string.Equals(by, "Guest", StringComparison.OrdinalIgnoreCase))
+            return BadRequest(new { error = "cancelledBy must be Staff or Guest." });
+
+        request.CancelledBy = char.ToUpperInvariant(by[0]) + by[1..].ToLowerInvariant();
+
         try
         {
             var changed = await _bookings.SetStatusAsync(id, request, User.UserId());
             if (changed is null)
                 return NotFound();
 
-            return Ok(changed);
+            var detail = await _bookings.GetStaffDetailAsync(id);
+            return Ok(detail is null
+                ? new
+                {
+                    bookingId = changed.BookingId,
+                    bookingRef = changed.BookingRef,
+                    status = changed.Status,
+                    cancelledBy = changed.CancelledBy,
+                    refundAmount = changed.RefundAmount,
+                    refundStatus = changed.RefundStatus,
+                }
+                : StaffShape(detail));
         }
         catch (SqlException ex) when (ex.Number == 50000)
         {
             return BadRequest(new { error = ex.Message });
         }
     }
+
+    /// <summary>
+    /// Records money going back on a cancelled booking (booking.usp_Refund_Add — a negative payment
+    /// line, which SQL 74 lets through CK_PAY_Amount). Body { amount, method, reference? } where
+    /// `method` is a PaymentMethodId or a method name (Cash, Card, Whish, OMT). Answers with every
+    /// payment line and where the refund now stands. The refund mail is queued by the database
+    /// trigger on BOOKING_PAYMENT.
+    /// </summary>
+    [HttpPost("{id:int}/refunds")]
+    [HasPermission("BOOKING_MANAGE")]
+    public async Task<IActionResult> AddRefund(int id, [FromBody] BookingRefundRequest request)
+    {
+        if (request.Amount <= 0)
+            return BadRequest(new { error = "Enter a refund amount greater than zero." });
+
+        try
+        {
+            var outcome = await _bookings.AddRefundAsync(id, request, User.UserId());
+            if (outcome.Error is not null)
+                return BadRequest(new { error = outcome.Error });
+
+            if (outcome.Added is null)
+                return NotFound();
+
+            var detail = await _bookings.GetStaffDetailAsync(id);
+            if (detail is null)
+                return NotFound();
+
+            return Ok(new
+            {
+                bookingId = id,
+                bookingRef = detail.Booking.BookingRef,
+                paymentId = outcome.Added.PaymentId,
+                method = outcome.Method!.Name,
+                methodResolvedBy = outcome.ResolvedBy,
+                payments = Payments(detail),
+                refundAmount = detail.Booking.RefundAmount,
+                refundedAmount = detail.Booking.RefundedAmount,
+                refundStatus = detail.Booking.RefundStatus,
+                refundedUtc = detail.Booking.RefundedUtc,
+                paidAmount = detail.Booking.PaidAmount,
+                balanceDue = detail.Booking.BalanceDue,
+            });
+        }
+        catch (SqlException ex) when (ex.Number == 50000)
+        {
+            // "Refunds are recorded on cancelled bookings only." / "Refund exceeds what was paid — 20.00 remains refundable."
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// The staff view of one booking: BookingRow's names (so the calendar's type still fits) plus the
+    /// refund, cancellation and money fields, the add-ons and every payment line.
+    /// </summary>
+    private static object StaffShape(BookingStaffDetail detail)
+    {
+        var b = detail.Booking;
+        return new
+        {
+            bookingId = b.BookingId,
+            bookingRef = b.BookingRef,
+            @ref = b.BookingRef,
+            roomCode = b.RoomCode,
+            roomName = b.RoomName,
+            bookDate = b.BookDate,
+            date = b.BookDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            startTime = b.StartTime,
+            endTime = b.EndTime,
+            startMin = b.StartMin,
+            endMin = b.EndMin,
+            vacateByMin = b.VacateByMin,
+            turnaroundMinutes = b.TurnaroundMinutes,
+            hours = b.Hours,
+            persons = b.Persons,
+            guestName = b.GuestName,
+            guestPhone = b.GuestPhone,
+            guestEmail = b.GuestEmail,
+            note = b.Note,
+            status = b.Status,
+            source = b.Source,
+            totalAmount = b.TotalAmount,
+            discountPercent = b.DiscountPercent,
+            discountAmount = b.DiscountAmount,
+            depositDue = b.DepositDue,
+            depositPercent = b.DepositPercent,
+            currencyCode = b.CurrencyCode,
+            paidAmount = b.PaidAmount,
+            balanceDue = b.BalanceDue,
+            cancelReason = b.CancelReason,
+            cancelledBy = b.CancelledBy,
+            refundAmount = b.RefundAmount,
+            refundedAmount = b.RefundedAmount,
+            refundStatus = b.RefundStatus,
+            refundedUtc = b.RefundedUtc,
+            canCancelOnline = b.CanCancelOnline,
+            cancelHours = b.CancelHours,
+            holdExpiresUtc = b.HoldExpiresUtc,
+            paidConfirmedUtc = b.PaidConfirmedUtc,
+            createdUtc = b.CreatedUtc,
+            policyText = b.PolicyText,
+            addons = b.Addons.Select(a => new { name = a.Name, amount = a.Amount }),
+            payments = Payments(detail),
+        };
+    }
+
+    private static IEnumerable<object> Payments(BookingStaffDetail detail)
+        => detail.Payments.Select(p => new
+        {
+            paymentId = p.PaymentId,
+            amount = p.Amount,
+            isRefund = p.IsRefund,
+            method = p.MethodName,
+            reference = p.Reference,
+            paidUtc = p.PaidUtc,
+            receivedBy = p.ReceivedBy,
+        });
 
     /* ---- 2. Money ----------------------------------------------------------------------- */
 

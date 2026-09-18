@@ -1,57 +1,211 @@
-using Microsoft.Data.SqlClient;
+using System.Globalization;
+using System.Text.Json;
 using MokaCo.HRMS.Model.Booking;
 using MokaCo.HRMS.Repository.Booking;
+using MokaCo.HRMS.Repository.Core;
 
 namespace MokaCo.HRMS.Services.Booking;
 
 /// <summary>
-/// Bookings. Almost every rule lives in the procedures; what lives here is the ORDER of two calls
-/// and the decision about what happens when the second one fails.
+/// Bookings. Almost every rule lives in the procedures; what lives here is the PROJECTION of a
+/// booking for an anonymous reader, and the resolution of a refund's payment method.
+///
+/// NOTHING IS QUEUED HERE. The old "create, then queue the guest's copy" orchestration went with
+/// SQL 66/69: booking.trg_Booking_Notify and trg_Payment_RefundNotify write the outbox rows inside
+/// the transaction that changed the row, so an explicit usp_Booking_QueueEmail call from this layer
+/// would send every message twice.
 /// </summary>
 public class BookingService : IBookingService
 {
-    /// <summary>
-    /// The two outcomes worth an email. Completed and NoShow are back-office bookkeeping — a guest
-    /// who has already left does not need to be told they arrived, and telling someone they were
-    /// marked a no-show is a conversation, not a notification.
-    /// </summary>
-    private static readonly HashSet<string> EmailedStatuses =
-        new(StringComparer.OrdinalIgnoreCase) { "Confirmed", "Cancelled" };
+    private const string DepositRequiredSetting = "BookingDepositRequired";
 
     private readonly IBookingRepository _bookings;
-    public BookingService(IBookingRepository bookings) => _bookings = bookings;
+    private readonly IRoomRepository _rooms;
+    private readonly ISettingRepository _settings;
 
-    public async Task<BookingCreated?> CreateFromWebsiteAsync(BookingCreateRequest request)
+    public BookingService(IBookingRepository bookings, IRoomRepository rooms, ISettingRepository settings)
     {
-        var created = await _bookings.CreateAsync(request, source: "Website", createdByUserId: null);
-        await QueueEmailQuietlyAsync(created?.BookingId);
-        return created;
+        _bookings = bookings;
+        _rooms = rooms;
+        _settings = settings;
     }
 
-    public async Task<BookingCreated?> CreateManuallyAsync(BookingCreateRequest request, int createdByUserId)
+    /* ---- public ---------------------------------------------------------------------------- */
+
+    public Task<BookingCreated?> CreateFromWebsiteAsync(PublicBookingRequest request)
+        => _bookings.CreateFromWebsiteAsync(request);
+
+    public Task<BookingQuote?> QuoteAsync(PublicQuoteRequest request)
+        => _bookings.QuoteAsync(request);
+
+    public async Task<PublicBookingRecap?> GetPublicRecapAsync(string bookingRef)
     {
-        var created = await _bookings.CreateAsync(request, source: "Manual", createdByUserId);
-        await QueueEmailQuietlyAsync(created?.BookingId);
-        return created;
+        var booking = await _bookings.GetByRefAsync(bookingRef);
+        return booking is null ? null : ToRecap(booking);
     }
+
+    public Task<BookingHoldReleased?> ReleaseHoldAsync(string bookingRef)
+        => _bookings.ReleaseHoldAsync(bookingRef);
+
+    public async Task<PublicBookingRecap?> CancelByGuestAsync(string bookingRef, string phone)
+    {
+        var booking = await _bookings.CancelByGuestAsync(bookingRef, phone);
+        return booking is null ? null : ToRecap(booking);
+    }
+
+    public Task<int> ExpireHoldsAsync()
+        => _bookings.ExpireHoldsAsync();
+
+    public async Task<bool> IsDepositRequiredAsync()
+    {
+        var setting = await _settings.GetAsync(DepositRequiredSetting);
+        return setting?.SettingValue?.Trim() == "1";
+    }
+
+    /// <summary>
+    /// The projection for an anonymous holder of the reference, in ONE place so that a new endpoint
+    /// cannot leak a phone number by forgetting to project. No phone, no email, no note, no gateway
+    /// ids; the name is cut to "Rami H.".
+    /// </summary>
+    public static PublicBookingRecap ToRecap(BookingRefDetail booking) => new()
+    {
+        Ref = booking.BookingRef,
+        Status = booking.Status,
+        RoomCode = booking.RoomCode,
+        RoomName = booking.RoomName,
+        Date = booking.BookDate,
+        StartMin = booking.StartMin,
+        EndMin = booking.EndMin,
+        VacateByMin = booking.VacateByMin,
+        TurnaroundMinutes = booking.TurnaroundMinutes,
+        Hours = booking.Hours,
+        Persons = booking.Persons,
+        GuestName = ShortenName(booking.GuestName),
+        Total = booking.TotalAmount,
+        DiscountPercent = booking.DiscountPercent,
+        DiscountAmount = booking.DiscountAmount,
+        Deposit = booking.DepositDue,
+        Paid = booking.PaidAmount,
+        Balance = booking.BalanceDue,
+        RefundAmount = booking.RefundAmount,
+        RefundStatus = booking.RefundStatus,
+        CancelledBy = booking.CancelledBy,
+        Currency = booking.CurrencyCode,
+        PolicyText = booking.PolicyText,
+        CanCancelOnline = booking.CanCancelOnline,
+        CancelHours = booking.CancelHours,
+        Addons = booking.Addons,
+    };
+
+    /// <summary>"Rami Haddad" → "Rami H."; a single name stays as it is. Enough to recognise, not enough to identify.</summary>
+    public static string ShortenName(string guestName)
+    {
+        var parts = (guestName ?? string.Empty).Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+        return parts.Length switch
+        {
+            0 => string.Empty,
+            1 => parts[0],
+            _ => $"{parts[0]} {char.ToUpper(parts[^1][0], CultureInfo.InvariantCulture)}.",
+        };
+    }
+
+    /* ---- staff ----------------------------------------------------------------------------- */
+
+    public Task<BookingCreated?> CreateManuallyAsync(BookingCreateRequest request, int createdByUserId)
+        => _bookings.CreateAsync(request, source: "Manual", createdByUserId);
 
     public Task<BookingRange> GetForRangeAsync(DateTime fromDate, DateTime toDate, int? roomId, string? status)
         => _bookings.GetForRangeAsync(fromDate, toDate, roomId, status);
 
-    public async Task<BookingStatusChanged?> SetStatusAsync(int bookingId, BookingStatusRequest request, int actedByUserId)
+    /// <summary>
+    /// The receipt is read for its payment lines and for the reference; the row itself comes from
+    /// usp_Booking_GetByRef, which is the one read that carries RefundedUtc, CancelledBy and the
+    /// cancel window together. Two procedure calls, one shape.
+    /// </summary>
+    public async Task<BookingStaffDetail?> GetStaffDetailAsync(int bookingId)
     {
-        var changed = await _bookings.SetStatusAsync(bookingId, request.Status, actedByUserId, request.Reason);
+        var receipt = await _bookings.GetReceiptAsync(bookingId);
+        if (receipt.Header is not { } header || string.IsNullOrEmpty(header.BookingRef))
+            return null;
 
-        // Read from the RESULT, not from the request: the procedure is the thing that decided where
-        // the booking landed, and a status it refused never reaches this line anyway.
-        if (changed is not null && EmailedStatuses.Contains(changed.Status))
-            await QueueEmailQuietlyAsync(changed.BookingId);
+        var booking = await _bookings.GetByRefAsync(header.BookingRef);
+        if (booking is null)
+            return null;
 
-        return changed;
+        return new BookingStaffDetail { Booking = booking, Payments = receipt.Payments };
     }
+
+    public Task<BookingStatusChanged?> SetStatusAsync(int bookingId, BookingStatusRequest request, int actedByUserId)
+        => _bookings.SetStatusAsync(
+            bookingId, request.Status, actedByUserId, request.EffectiveNote,
+            string.IsNullOrWhiteSpace(request.CancelledBy) ? "Staff" : request.CancelledBy.Trim());
 
     public Task<PaymentAdded?> AddPaymentAsync(int bookingId, BookingPaymentRequest request, int receivedByUserId)
         => _bookings.AddPaymentAsync(bookingId, request, receivedByUserId);
+
+    public async Task<RefundOutcome> AddRefundAsync(int bookingId, BookingRefundRequest request, int receivedByUserId)
+    {
+        var (method, resolvedBy, error) = await ResolveMethodAsync(request);
+        if (method is null)
+            return new RefundOutcome { Error = error };
+
+        var added = await _bookings.AddRefundAsync(bookingId, request.Amount, method.PaymentMethodId, request.Reference, receivedByUserId);
+        return new RefundOutcome { Added = added, Method = method, ResolvedBy = resolvedBy };
+    }
+
+    /// <summary>
+    /// `method` may be a PaymentMethodId (a JSON number, or a numeric string) or a method name
+    /// ("Cash", "Card", "Whish", "OMT" — case-insensitive); `paymentMethodId` is accepted as well.
+    /// Only ACTIVE methods resolve: a retired method is not a way to give money back.
+    /// </summary>
+    private async Task<(PaymentMethod? Method, string ResolvedBy, string? Error)> ResolveMethodAsync(BookingRefundRequest request)
+    {
+        var methods = (await _rooms.GetPaymentMethodsAsync()).Where(m => m.IsActive).ToList();
+
+        int? id = request.PaymentMethodId;
+        string? name = null;
+
+        if (request.Method is { } element)
+        {
+            switch (element.ValueKind)
+            {
+                case JsonValueKind.Number when element.TryGetInt32(out var number):
+                    id = number;
+                    break;
+                case JsonValueKind.String:
+                    var text = element.GetString()?.Trim();
+                    if (int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+                        id = parsed;
+                    else
+                        name = text;
+                    break;
+                case JsonValueKind.Null:
+                case JsonValueKind.Undefined:
+                    break;
+                default:
+                    return (null, string.Empty, "method must be a payment method id or name.");
+            }
+        }
+
+        if (id is { } wanted)
+        {
+            var byId = methods.FirstOrDefault(m => m.PaymentMethodId == wanted);
+            return byId is null
+                ? (null, string.Empty, $"Unknown payment method id {wanted}.")
+                : (byId, "id", null);
+        }
+
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            var byName = methods.FirstOrDefault(m => string.Equals(m.Name, name, StringComparison.OrdinalIgnoreCase));
+            return byName is null
+                ? (null, string.Empty, $"Unknown payment method '{name}'. Active methods: {string.Join(", ", methods.Select(m => m.Name))}.")
+                : (byName, "name", null);
+        }
+
+        return (null, string.Empty, "Say how the money went back: method is a payment method id or name.");
+    }
 
     public Task<BookingReceipt> GetReceiptAsync(int bookingId)
         => _bookings.GetReceiptAsync(bookingId);
@@ -64,37 +218,4 @@ public class BookingService : IBookingService
 
     public Task<BookingReport> GetReportAsync(DateTime fromDate, DateTime toDate, string groupBy)
         => _bookings.GetReportAsync(fromDate, toDate, groupBy);
-
-    /// <summary>
-    /// Queues the guest's copy, and REFUSES TO LET THAT FAILURE MATTER.
-    ///
-    /// This is the same judgement LiveNotifier makes about a broadcast, for the same reason. The
-    /// booking has been taken: the slot is held, the room's calendar shows it, the guest is standing
-    /// there having been told a price. If writing an outbox row then fails, the correct outcome is a
-    /// guest who does not receive an email — not a 500 on an operation that already committed, and
-    /// certainly not a guest who re-submits and is told their own slot was just taken.
-    ///
-    /// Only SqlException 50000 is swallowed — the procedure's own refusals, of which there is
-    /// exactly one it can raise here ("Booking not found.", unreachable on an id we just created).
-    /// A connection failure or a deadlock is NOT caught: those are real faults, they are not specific
-    /// to the email, and a 500 that says so is better than silence.
-    ///
-    /// A guest with no address is not a failure at all — the procedure returns quietly, by design.
-    /// </summary>
-    private async Task QueueEmailQuietlyAsync(int? bookingId)
-    {
-        if (bookingId is not { } id)
-            return;
-
-        try
-        {
-            await _bookings.QueueEmailAsync(id);
-        }
-        catch (SqlException ex) when (ex.Number == 50000)
-        {
-            // Nothing to do and nowhere useful to say it: the booking stands, which is the part
-            // that matters. The row's absence from core.EMAIL_OUTBOX is the record that it did not
-            // go out.
-        }
-    }
 }

@@ -52,7 +52,42 @@ public class BookingStatusRequest
     /// <summary>Confirmed | Completed | Cancelled | NoShow. Anything else is refused by the procedure, by name.</summary>
     public string Status { get; set; } = string.Empty;
 
+    /// <summary>The cancellation note. <see cref="Reason"/> is the older spelling the current web app sends; either is accepted.</summary>
+    public string? Note { get; set; }
+
     public string? Reason { get; set; }
+
+    /// <summary>
+    /// 'Staff' (default) or 'Guest'. Who ASKED for the cancellation, which decides the refund:
+    /// Guest = the guest rang and asked → refund minus the deposit; Staff = the café cancelled →
+    /// everything paid goes back (booking.fn_RefundDue).
+    /// </summary>
+    public string CancelledBy { get; set; } = "Staff";
+
+    /// <summary>Note first, then Reason — one string reaches the procedure whichever the client sent.</summary>
+    public string? EffectiveNote => string.IsNullOrWhiteSpace(Note) ? Reason : Note;
+}
+
+/// <summary>
+/// POST /api/bookings/{id}/refunds — one refund line against a cancelled booking (booking.usp_Refund_Add).
+///
+/// <see cref="Method"/> IS EITHER A PaymentMethodId OR A METHOD NAME ("Cash", "Card", "Whish",
+/// "OMT"). The JSON may carry a number or a string; the service resolves a name through
+/// usp_PaymentMethod_GetAll and says which it used. <see cref="PaymentMethodId"/> is accepted too,
+/// for a client that already has the id.
+/// </summary>
+public class BookingRefundRequest
+{
+    /// <summary>Positive. The procedure refuses more than what was paid, naming what remains.</summary>
+    public decimal Amount { get; set; }
+
+    /// <summary>A PaymentMethodId (number) or a method name (string).</summary>
+    public System.Text.Json.JsonElement? Method { get; set; }
+
+    public int? PaymentMethodId { get; set; }
+
+    /// <summary>The transfer or card slip number, when there is one. Optional.</summary>
+    public string? Reference { get; set; }
 }
 
 /// <summary>POST /api/bookings/{id}/payments — one movement of money against one booking.</summary>
@@ -144,4 +179,46 @@ public class RoomAddonUpsertRequest
 
     public decimal Price { get; set; }
     public bool IsActive { get; set; } = true;
+}
+
+/// <summary>
+/// POST /api/public/booking/quote — price a slot without taking it. Times are MINUTES FROM MIDNIGHT
+/// of <see cref="Date"/>; EndMin may exceed 1440 (01:00 next day = 1500).
+/// </summary>
+public class PublicQuoteRequest
+{
+    public string RoomCode { get; set; } = string.Empty;
+    public DateTime Date { get; set; }
+    public int StartMin { get; set; }
+    public int EndMin { get; set; }
+    public List<int>? AddonIds { get; set; }
+}
+
+/// <summary>
+/// POST /api/public/booking — the website's booking. Source is NOT here: the repository nails it to
+/// 'Website', so a caller cannot post 'Manual' and skip the lead-time rules.
+/// </summary>
+public class PublicBookingRequest
+{
+    public string RoomCode { get; set; } = string.Empty;
+    public DateTime Date { get; set; }
+
+    /// <summary>0..1439.</summary>
+    public int StartMin { get; set; }
+
+    /// <summary>Greater than StartMin, at most 1800. BUG-22: compared as minutes, never as a wrapped clock time.</summary>
+    public int EndMin { get; set; }
+
+    public int Persons { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string Phone { get; set; } = string.Empty;
+    public string? Email { get; set; }
+    public string? Notes { get; set; }
+    public List<int>? AddonIds { get; set; }
+}
+
+/// <summary>POST /api/public/booking/{ref}/cancel — the phone number the booking was made with (last 8 digits must match).</summary>
+public class PublicCancelRequest
+{
+    public string? Phone { get; set; }
 }

@@ -7,12 +7,10 @@ namespace MokaCo.HRMS.Repository.Booking;
 
 /// <summary>
 /// Dapper access to the room catalogue and the availability feed, entirely through the
-/// booking.usp_Room_* / booking.usp_Availability_* procedures.
+/// booking.usp_Room_* / booking.usp_Availability_* / booking.usp_Public_* procedures.
 ///
-/// NOT ONE LINE OF SQL IS WRITTEN HERE. Every rule these calls are subject to — a duplicate room
-/// code, a close time before an open time, a price type that is not PerHour or Fixed — lives in the
-/// procedure and reaches the caller as SqlException 50000 with its own wording intact. A validation
-/// re-implemented in C# would be a second opinion that drifts.
+/// NOT ONE LINE OF SQL IS WRITTEN HERE. Every rule these calls are subject to lives in the procedure
+/// and reaches the caller as SqlException 50000 with its own wording intact.
 /// </summary>
 public class RoomRepository : IRoomRepository
 {
@@ -36,10 +34,32 @@ public class RoomRepository : IRoomRepository
     }
 
     /// <summary>
+    /// Six result sets, read in the order the procedure writes them (a GridReader has no way back).
+    /// ReadSingle on the rules — there is exactly one row and its absence would be a broken
+    /// procedure, not a case to handle.
+    /// </summary>
+    public async Task<PublicCatalogSets> GetPublicCatalogSetsAsync()
+    {
+        using var db = _factory.Create();
+        using var multi = await db.QueryMultipleAsync(
+            "booking.usp_Public_GetCatalog",
+            commandType: CommandType.StoredProcedure);
+
+        return new PublicCatalogSets
+        {
+            Rooms = (await multi.ReadAsync<PublicRoom>()).ToList(),
+            Hours = (await multi.ReadAsync<PublicRoomHours>()).ToList(),
+            Addons = (await multi.ReadAsync<PublicRoomAddon>()).ToList(),
+            Tiers = (await multi.ReadAsync<DepositTier>()).ToList(),
+            Rules = await multi.ReadSingleAsync<BookingRules>(),
+            Discounts = (await multi.ReadAsync<CatalogRoomDiscount>()).ToList(),
+        };
+    }
+
+    /// <summary>
     /// QuerySingleOrDefault, not QuerySingle: on a refusal the procedure RAISERRORs and RETURNs
-    /// without producing a result set at all. Both forms surface the SqlException, but QuerySingle
-    /// would be able to raise "sequence contains no elements" over the top of it, and the
-    /// procedure's message is the whole value of the failure.
+    /// without producing a result set, and QuerySingle would raise "sequence contains no elements"
+    /// over the top of the message that is the whole value of the failure.
     /// </summary>
     public async Task<Room?> UpsertRoomAsync(int? roomId, RoomUpsertRequest request)
     {
@@ -111,49 +131,32 @@ public class RoomRepository : IRoomRepository
     }
 
     /// <summary>
-    /// Two result sets flattened into one answer. The FIRST MAY BE EMPTY — a room that has never had
-    /// that weekday configured has no ROOM_HOURS row — and an empty first set means closed, which is
-    /// what <see cref="DayAvailability"/> already defaults to. Reading it with ReadFirstOrDefault is
-    /// what makes the missing row an ordinary case instead of an exception.
+    /// Two result sets: the frame (RoomId, RoomCode, OnDate, IsClosed, OpenMin, CloseMin, the rules
+    /// and LocalNow — Dapper maps them by name onto <see cref="DayAvailability"/>) and the taken
+    /// ranges as StartMin/EndMin. The frame is EMPTY for an unknown room code, hence the null.
     /// </summary>
-    public async Task<DayAvailability> GetDayAsync(int roomId, DateTime onDate)
+    public async Task<DayAvailability?> GetDayAsync(string roomCode, DateTime onDate)
     {
         using var db = _factory.Create();
         using var multi = await db.QueryMultipleAsync(
             "booking.usp_Availability_GetDay",
-            new { RoomId = roomId, OnDate = onDate.Date },
+            new { RoomId = (int?)null, RoomCode = roomCode, OnDate = onDate.Date },
             commandType: CommandType.StoredProcedure);
 
-        var hours = await multi.ReadFirstOrDefaultAsync<DayHoursRow>();
-        var busy = (await multi.ReadAsync<BusyInterval>()).ToList();
+        var day = await multi.ReadFirstOrDefaultAsync<DayAvailability>();
+        if (day is null)
+            return null;
 
-        return new DayAvailability
-        {
-            OpenTime = hours?.OpenTime,
-            CloseTime = hours?.CloseTime,
-            IsClosed = hours is null || hours.IsClosed,
-            Busy = busy,
-        };
+        day.Taken = (await multi.ReadAsync<TakenRange>()).ToList();
+        return day;
     }
 
-    public async Task<IEnumerable<MonthDayAvailability>> GetMonthAsync(int roomId, DateTime monthDate)
+    public async Task<IEnumerable<MonthDayAvailability>> GetMonthAsync(string roomCode, DateTime monthDate)
     {
         using var db = _factory.Create();
         return await db.QueryAsync<MonthDayAvailability>(
             "booking.usp_Availability_GetMonth",
-            new { RoomId = roomId, MonthDate = monthDate.Date },
+            new { RoomId = (int?)null, RoomCode = roomCode, MonthDate = monthDate.Date },
             commandType: CommandType.StoredProcedure);
-    }
-
-    /// <summary>
-    /// The shape of usp_Availability_GetDay's first result set, and nothing else — which is why it is
-    /// private to this file rather than a model. The public answer is the flattened
-    /// <see cref="DayAvailability"/>; a caller has no use for a hours-row-that-might-not-exist.
-    /// </summary>
-    private sealed class DayHoursRow
-    {
-        public TimeSpan OpenTime { get; set; }
-        public TimeSpan CloseTime { get; set; }
-        public bool IsClosed { get; set; }
     }
 }

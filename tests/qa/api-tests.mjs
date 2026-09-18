@@ -48,7 +48,7 @@ async function login(user, password = PW) {
 }
 /** Calls the API as `user` (null = anonymous). Returns {status, json, text}. */
 async function api(user, method, path, body, opts = {}) {
-  const headers = {};
+  const headers = { ...(opts.headers ?? {}) };
   if (user) headers.Authorization = `Bearer ${tokens.get(user)}`;
   let payload;
   if (body instanceof FormData) payload = body;
@@ -401,64 +401,154 @@ async function phase2() {
   const my = await api('qa.e1', 'GET', '/api/payslips/my-status');
   check('P10a', 'dashboard salary status for E1 before any QA run', 'no payslip / "not prepared" (204 or null)', `${my.status} ${my.text.slice(0, 120) || '(empty)'}`, my.status === 204 || my.status === 404 || my.json === null || my.text === '' || my.json?.statusCode == null);
 
-  /* ---- bookings ---- */
+  /* ---- bookings: the public API is the website contract (mokanco-lb/src/scripts/api.ts):
+          base /api/public/booking, minutes from midnight, {error, code} refusals, Origin gated ---- */
   const room = ids.room;
+  const ORIGIN = 'http://localhost:4321';                                 // listed in core.SETTING BookingCorsOrigins
+  const pub = (method, path, body, headers = { Origin: ORIGIN }) => api(null, method, path, body, { headers });
+  const idOf = (ref) => (ref ? +sql(`SELECT BookingId FROM booking.BOOKING WHERE BookingRef=${q(ref)}`) : 0);
   const hold = (id) => sql(`UPDATE core.EMAIL_OUTBOX SET [Status]='QaHeld' WHERE BookingId=${id} AND [Status]='Pending'`);
   const kinds = (id) => sql(`SELECT ISNULL(STRING_AGG(MailKind + '/' + Channel, ','), '') FROM core.EMAIL_OUTBOX WHERE BookingId=${id}`);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const isRef = (ref) => /^MC-[A-Z0-9]{8}$/.test(ref ?? '');
+  const guest = (n, date, startMin, endMin, extra = {}) => ({ roomCode: 'qa-room', date, startMin, endMin, persons: 2, name: `QA Guest ${n}`, phone: `+9617000000${n.replace(/\D/g, '').slice(-1) || '1'}`, email: `qa-guest-${n.toLowerCase().replace(/[^a-z0-9]+/g, '-')}@example.invalid`, notes: null, addonIds: [], ...extra });
+  /* NOTE: the public WRITE rate limit is 5 per minute per IP (public-booking-write). Creates, cancels
+     and releases below are grouped so that no minute sees more than five; the sleep before B6 is that. */
+  const cat = await pub('GET', '/api/public/booking/catalog');
+  const qaRoom = cat.json?.rooms?.find((r) => r.code === 'qa-room');
+  check('B0a', 'GET /api/public/booking/catalog (Origin allowed) -> rooms with hours in minutes, rules, timeZone Asia/Beirut', 'qa-room present with openMin 540 / closeMin 1500 x7, rules.localNow ISO with offset',
+    `${cat.status} timeZone=${cat.json?.timeZone} qa-room hours=${JSON.stringify(qaRoom?.hours?.[0])} n=${qaRoom?.hours?.length} localNow=${cat.json?.rules?.localNow} addons=${JSON.stringify(qaRoom?.addons)} discounts=${JSON.stringify(qaRoom?.discounts)}`,
+    cat.status === 200 && cat.json?.timeZone === 'Asia/Beirut' && qaRoom?.hours?.length === 7 && qaRoom.hours.every((h) => h.openMin === 540 && h.closeMin === 1500 && !h.isClosed) && /\+0[23]:00$/.test(cat.json?.rules?.localNow ?? ''));
   const d1 = plusDays(10);
-  const b1 = await api(null, 'POST', '/api/public/booking/bookings', { roomId: room, bookDate: d1, startTime: '10:00:00', endTime: '12:00:00', persons: 2, guestName: 'QA Guest B1', guestPhone: '+96170000001', guestEmail: 'qa-guest-b1@example.invalid' });
-  if (b1.json?.bookingId) { hold(b1.json.bookingId); state('booking.b1', b1.json.bookingId); }
-  check('B1a', 'public create on a free slot -> Pending', '200 status Pending', `${b1.status} ${JSON.stringify(b1.json).slice(0, 160)}`, b1.status === 200 && b1.json?.status === 'Pending');
-  const refDb = b1.json?.bookingId ? sql(`SELECT BookingRef FROM booking.BOOKING WHERE BookingId=${b1.json.bookingId}`) : '';
-  check('B1d', 'the public create response carries the booking reference (MC-...) the guest is told to keep', 'bookingRef in the response', `response keys=${Object.keys(b1.json ?? {}).join(',')}; DB ref=${refDb}`, !!(b1.json?.bookingRef ?? b1.json?.ref));
-  check('B3a', 'creation queues Request + StaffAlert e-mails only (no Confirmation)', 'Request/Email,StaffAlert/Email', kinds(b1.json?.bookingId ?? 0), /Request\/Email/.test(kinds(b1.json?.bookingId ?? 0)) && /StaffAlert\/Email/.test(kinds(b1.json?.bookingId ?? 0)) && !/Confirmation/.test(kinds(b1.json?.bookingId ?? 0)));
-  const b1b = await api(null, 'POST', '/api/public/booking/bookings', { roomId: room, bookDate: d1, startTime: '10:00:00', endTime: '12:00:00', persons: 2, guestName: 'QA Guest B1 again', guestPhone: '+96170000001', guestEmail: 'qa-guest-b1@example.invalid' });
-  if (b1b.json?.bookingId) hold(b1b.json.bookingId);
-  check('B1b', 'identical second create -> 409 slot_taken', '409 {"code":"slot_taken"}', `${b1b.status} ${b1b.text.slice(0, 120)}`, b1b.status === 409 && b1b.json?.code === 'slot_taken');
+  const b1 = await pub('POST', '/api/public/booking', guest('B1', d1, 600, 720));
+  const b1Id = idOf(b1.json?.ref);
+  if (b1Id) { hold(b1Id); state('booking.b1', b1Id); }
+  check('B1a', 'public create on a free slot -> 201 Pending, times echoed in minutes with Beirut moments', '201 status Pending startMin 600 endMin 720 startAt ...T10:00:00+03:00', `${b1.status} ${JSON.stringify(b1.json).slice(0, 220)}`,
+    b1.status === 201 && b1.json?.status === 'Pending' && b1.json?.startMin === 600 && b1.json?.endMin === 720 && b1.json?.timeZone === 'Asia/Beirut' && /T10:00:00\+0[23]:00$/.test(b1.json?.startAt ?? ''));
+  const refDb = b1Id ? sql(`SELECT BookingRef FROM booking.BOOKING WHERE BookingId=${b1Id}`) : '';
+  check('B1d', 'the public create response carries the booking reference (MC-...) the guest is told to keep', 'ref MC-XXXXXXXX equal to the DB row', `ref=${b1.json?.ref}; DB ref=${refDb}; keys=${Object.keys(b1.json ?? {}).join(',')}`, isRef(b1.json?.ref) && b1.json.ref === refDb);
+  check('B3a', 'creation queues Request + StaffAlert e-mails only (no Confirmation) - written by the DB trigger, not the API', 'Request/Email,StaffAlert/Email', kinds(b1Id), /Request\/Email/.test(kinds(b1Id)) && /StaffAlert\/Email/.test(kinds(b1Id)) && !/Confirmation/.test(kinds(b1Id)));
+  const b1b = await pub('POST', '/api/public/booking', guest('B1 again', d1, 600, 720, { phone: '+96170000001' }));
+  const b1bId = idOf(b1b.json?.ref); if (b1bId) hold(b1bId);
+  check('B1b', 'identical second create -> 409 slot_taken with the procedure\'s sentence', '409 {"code":"slot_taken"}', `${b1b.status} ${b1b.text.slice(0, 120)}`, b1b.status === 409 && b1b.json?.code === 'slot_taken' && /just taken/.test(b1b.json?.error ?? ''));
   const d2 = plusDays(11);
-  const b2 = await api(null, 'POST', '/api/public/booking/bookings', { roomId: room, bookDate: d2, startTime: '22:00:00', endTime: '01:00:00', persons: 2, guestName: 'QA Guest B2', guestPhone: '+96170000002', guestEmail: 'qa-guest-b2@example.invalid' });
-  if (b2.json?.bookingId) { hold(b2.json.bookingId); state('booking.b2', b2.json.bookingId); }
-  check('B2a', 'public create ending 01:00 (endMin 1500) succeeds', '200 Pending, hours 3', `${b2.status} ${b2.json?.error ?? JSON.stringify(b2.json).slice(0, 120)}`, b2.status === 200);
-  if (b2.status !== 200) {
+  const b2 = await pub('POST', '/api/public/booking', guest('B2', d2, 1320, 1500));
+  let b2Id = idOf(b2.json?.ref);
+  if (b2Id) { hold(b2Id); state('booking.b2', b2Id); }
+  check('B2a', 'public create 22:00-01:00 (startMin 1320, endMin 1500) succeeds', '201, hours 3, endAt next day 01:00 with offset', `${b2.status} ${b2.json?.error ?? JSON.stringify(b2.json).slice(0, 200)}`,
+    b2.status === 201 && Number(b2.json?.hours) === 3 && b2.json?.endMin === 1500 && /T01:00:00\+0[23]:00$/.test(b2.json?.endAt ?? ''));
+  if (b2.status !== 201) {
     /* the procedure accepts it; create the same booking through it so the availability read can be checked */
     sql(`EXEC booking.usp_Booking_Create @RoomId=${room}, @BookDate='${d2}', @StartTime='22:00', @EndTime='01:00', @Persons=2, @GuestName=N'QA Guest B2 (proc)', @GuestPhone='+96170000002', @Source='Manual'`);
-    const id2 = sql(`SELECT MAX(BookingId) FROM booking.BOOKING WHERE GuestName=N'QA Guest B2 (proc)'`); if (id2) { hold(+id2); state('booking.b2', id2); }
+    const id2 = sql(`SELECT MAX(BookingId) FROM booking.BOOKING WHERE GuestName=N'QA Guest B2 (proc)'`); if (id2) { hold(+id2); state('booking.b2', id2); b2Id = +id2; }
     note('B2: the API refused the after-midnight end, so the booking was created through usp_Booking_Create (Manual) for the availability check.');
   }
-  const dayB2 = await api(null, 'GET', `/api/public/booking/rooms/${room}/day?date=${d2}`);
-  const busy = JSON.stringify(dayB2.json?.busy ?? dayB2.json?.taken ?? dayB2.json);
-  check('B2b', 'availability for that day (GET rooms/{id}/day) shows the 22:00-01:00 slot as taken', 'busy contains 22:00 / 01:00 (1320 / 1500)', `${dayB2.status} ${JSON.stringify(dayB2.json).slice(0, 220)}`, dayB2.status === 200 && (/1320|22:00/.test(busy)) && (/1500|01:00/.test(busy)));
-  check('B2e', 'day availability reports the room\'s opening hours (QA room 09:00-01:00)', 'openTime 09:00:00, closeTime 01:00:00, isClosed false', `openTime=${dayB2.json?.openTime} closeTime=${dayB2.json?.closeTime} isClosed=${dayB2.json?.isClosed}`, dayB2.json?.openTime === '09:00:00' && dayB2.json?.closeTime === '01:00:00');
-  const conf = await api('qa.hr', 'PUT', `/api/bookings/${b1.json?.bookingId}/status`, { status: 'Confirmed' });
-  if (b1.json?.bookingId) hold(b1.json.bookingId);
-  check('B3b', 'staff confirm in HRMS -> Confirmed and a Confirmation e-mail is queued only now', 'status Confirmed; outbox gains Confirmation/Email', `${conf.status} ${conf.json?.status}; outbox=${kinds(b1.json?.bookingId ?? 0)}`, conf.status === 200 && conf.json?.status === 'Confirmed' && /Confirmation\/Email/.test(kinds(b1.json?.bookingId ?? 0)));
-  /* B4: staff cancel with a payment on file */
-  const d3 = plusDays(12), d4 = plusDays(13);
+  const dayB2 = await pub('GET', `/api/public/booking/availability?room=qa-room&date=${d2}`);
+  check('B2b', 'GET availability?room&date shows the 22:00-01:00 slot as taken, in minutes', 'taken contains {startMin 1320, endMin 1500}', `${dayB2.status} taken=${JSON.stringify(dayB2.json?.taken)} free=${JSON.stringify(dayB2.json?.free)}`,
+    dayB2.status === 200 && (dayB2.json?.taken ?? []).some((t) => t.startMin === 1320 && t.endMin === 1500));
+  check('B2e', 'day availability reports the room\'s opening hours in minutes (QA room 09:00-01:00) and the free time up to the taken slot', 'openMin 540, closeMin 1500, isClosed false, a free range ending at 1320, earliestStartMin 540',
+    `openMin=${dayB2.json?.openMin} closeMin=${dayB2.json?.closeMin} isClosed=${dayB2.json?.isClosed} earliest=${dayB2.json?.earliestStartMin} free=${JSON.stringify(dayB2.json?.free)} turnaround=${dayB2.json?.turnaroundMinutes}`,
+    dayB2.json?.openMin === 540 && dayB2.json?.closeMin === 1500 && dayB2.json?.isClosed === false && dayB2.json?.earliestStartMin === 540 && (dayB2.json?.free ?? []).some((f) => f.endMin === 1320));
+  const monthB2 = await pub('GET', `/api/public/booking/availability/month?room=qa-room&month=${d2.slice(0, 7)}`);
+  const dayWord = monthB2.json?.days?.find((d) => d.date === d2)?.status;
+  check('B2f', 'GET availability/month?room&month paints the day with the 22:00-01:00 booking as partial and a past day as past', `${d2} partial; ${plusDays(-1).slice(0, 7) === d2.slice(0, 7) ? 'yesterday past' : 'first of month past-or-open'}`,
+    `${monthB2.status} month=${monthB2.json?.month} ${d2}=${dayWord} first=${monthB2.json?.days?.[0]?.status} n=${monthB2.json?.days?.length}`, monthB2.status === 200 && dayWord === 'partial' && monthB2.json?.days?.length >= 28);
+  const quote = await pub('POST', '/api/public/booking/quote', { roomCode: 'qa-room', date: d2, startMin: 600, endMin: 780, addonIds: [ids.addon] });
+  check('B5d', 'POST quote for 3 h + the 15 add-on prices the room with the 10 % discount and the add-on undiscounted', 'roomGross 60, discountAmount 6, roomTotal 54, addonTotal 15, total 69, depositPercent 20, deposit 13.80',
+    `${quote.status} ${JSON.stringify(quote.json).slice(0, 300)}`, quote.status === 200 && Number(quote.json?.roomGross) === 60 && Number(quote.json?.discountAmount) === 6 && Number(quote.json?.addonTotal) === 15 && Number(quote.json?.total) === 69 && Number(quote.json?.deposit) === 13.8);
+  const conf = await api('qa.hr', 'PUT', `/api/bookings/${b1Id}/status`, { status: 'Confirmed' });
+  if (b1Id) hold(b1Id);
+  check('B3b', 'staff confirm in HRMS -> Confirmed and a Confirmation e-mail is queued only now (by the trigger)', 'status Confirmed; outbox gains Confirmation/Email', `${conf.status} ${conf.json?.status}; outbox=${kinds(b1Id)}`, conf.status === 200 && conf.json?.status === 'Confirmed' && /Confirmation\/Email/.test(kinds(b1Id)));
+  /* B4: staff cancel with a payment on file, cancelled-by Staff vs Guest, refunds through the API */
+  const d3 = plusDays(12), d4 = plusDays(13), d6 = plusDays(15);
   const m1 = await api('qa.hr', 'POST', '/api/bookings/manual', { roomId: room, bookDate: d3, startTime: '14:00:00', endTime: '16:00:00', persons: 2, guestName: 'QA Guest B4a', guestPhone: '+96170000004' });
   const m2 = await api('qa.hr', 'POST', '/api/bookings/manual', { roomId: room, bookDate: d4, startTime: '14:00:00', endTime: '16:00:00', persons: 2, guestName: 'QA Guest B4b', guestPhone: '+96170000005' });
-  for (const m of [m1, m2]) if (m.json?.bookingId) hold(m.json.bookingId);
-  state('booking.b4a', m1.json?.bookingId); state('booking.b4b', m2.json?.bookingId);
+  const m3 = await api('qa.hr', 'POST', '/api/bookings/manual', { roomId: room, bookDate: d6, startTime: '14:00:00', endTime: '16:00:00', persons: 2, guestName: 'QA Guest B4c', guestPhone: '+96170000008' });
+  for (const m of [m1, m2, m3]) if (m.json?.bookingId) hold(m.json.bookingId);
+  state('booking.b4a', m1.json?.bookingId); state('booking.b4b', m2.json?.bookingId); state('booking.b4c', m3.json?.bookingId);
+  check('B4m', 'POST /api/bookings/manual still takes roomId + times and now surfaces the reference, hours, discount and deposit percent', '200 bookingId, bookingRef MC-..., status Confirmed, hours 2',
+    `${m1.status} ${JSON.stringify(m1.json).slice(0, 220)}`, m1.status === 200 && isRef(m1.json?.bookingRef) && m1.json?.status === 'Confirmed' && Number(m1.json?.hours) === 2);
   const pay1 = await api('qa.hr', 'POST', `/api/bookings/${m1.json?.bookingId}/payments`, { paymentMethodId: 1, amount: 30, reference: 'QA cash' });
   const pay2 = await api('qa.hr', 'POST', `/api/bookings/${m2.json?.bookingId}/payments`, { paymentMethodId: 1, amount: 30, reference: 'QA cash' });
-  const cancel = await api('qa.hr', 'PUT', `/api/bookings/${m1.json?.bookingId}/status`, { status: 'Cancelled', reason: 'QA staff cancel' });
+  const pay3 = await api('qa.hr', 'POST', `/api/bookings/${m3.json?.bookingId}/payments`, { paymentMethodId: 1, amount: 30, reference: 'QA cash' });
+  const cancel = await api('qa.hr', 'PUT', `/api/bookings/${m1.json?.bookingId}/status`, { status: 'Cancelled', cancelledBy: 'Staff', note: 'QA staff cancel' });
   if (m1.json?.bookingId) hold(m1.json.bookingId);
   const b4aRow = m1.json?.bookingId ? sql(`SELECT CONCAT(CancelledBy, '|', RefundAmount, '|', RefundStatus, '|', DepositDue) FROM booking.BOOKING WHERE BookingId=${m1.json.bookingId}`) : '';
   const [cb, ra, rs, dd] = b4aRow.split('|');
-  check('B4a', 'staff cancel of a booking with 30 paid (total 40) -> refund due = everything paid (30)', 'cancelledBy Staff, RefundAmount 30.00, RefundStatus Due',
-    `manual ${m1.status} pay ${pay1.status}/${pay2.status}; cancel ${cancel.status} -> DB cancelledBy=${cb} refundAmount=${ra} refundStatus=${rs} (deposit ${dd}); response=${JSON.stringify(cancel.json)}`,
-    cancel.status === 200 && cb === 'Staff' && Number(ra) === 30 && rs === 'Due');
-  note('B4: the HRMS API cannot mark a cancellation as requested by the GUEST (BookingStatusRequest has no CancelledBy) and exposes no refund-recording or guest-cancel endpoint; those two rules are exercised at procedure level in cases/05_bookings.sql.');
+  check('B4a', 'staff cancel {status, cancelledBy Staff, note} of a booking with 30 paid (total 40) -> refund due = everything paid (30); the response is the booking row', 'cancelledBy Staff, refundAmount 30.00, refundStatus Due (response and DB)',
+    `manual ${m1.status} pay ${pay1.status}/${pay2.status}/${pay3.status}; cancel ${cancel.status} response cancelledBy=${cancel.json?.cancelledBy} refundAmount=${cancel.json?.refundAmount} refundStatus=${cancel.json?.refundStatus}; DB cancelledBy=${cb} refundAmount=${ra} refundStatus=${rs} (deposit ${dd})`,
+    cancel.status === 200 && cancel.json?.status === 'Cancelled' && cancel.json?.cancelledBy === 'Staff' && Number(cancel.json?.refundAmount) === 30 && cancel.json?.refundStatus === 'Due' && cb === 'Staff' && Number(ra) === 30 && rs === 'Due');
+  const dep3 = Number(sql(`SELECT DepositDue FROM booking.BOOKING WHERE BookingId=${m3.json?.bookingId ?? 0}`) || 0);
+  const cancelG = await api('qa.hr', 'PUT', `/api/bookings/${m3.json?.bookingId}/status`, { status: 'Cancelled', cancelledBy: 'Guest', reason: 'QA guest asked by phone' });
+  if (m3.json?.bookingId) hold(m3.json.bookingId);
+  check('B4e', 'staff cancel as cancelledBy Guest (the guest rang; `reason` still accepted as the note) -> refund = paid - deposit', `cancelledBy Guest, refundAmount ${(30 - dep3).toFixed(2)} (30 paid - ${dep3.toFixed(2)} deposit), refundStatus Due`,
+    `${cancelG.status} cancelledBy=${cancelG.json?.cancelledBy} refundAmount=${cancelG.json?.refundAmount} refundStatus=${cancelG.json?.refundStatus} depositDue=${cancelG.json?.depositDue} ${cancelG.json?.error ?? ''}`,
+    cancelG.status === 200 && cancelG.json?.cancelledBy === 'Guest' && Number(cancelG.json?.refundAmount) === 30 - dep3 && cancelG.json?.refundStatus === 'Due');
+  const r1 = await api('qa.hr', 'POST', `/api/bookings/${m1.json?.bookingId}/refunds`, { amount: 10, method: 'Cash', reference: 'QA partial refund' });
+  const r2 = await api('qa.hr', 'POST', `/api/bookings/${m1.json?.bookingId}/refunds`, { amount: 20, method: 1, reference: 'QA rest' });
+  if (m1.json?.bookingId) hold(m1.json.bookingId);
+  const refundLines = (r) => (r.json?.payments ?? []).filter((p) => p.isRefund).map((p) => `${p.amount}/${p.method}`).join(',');
+  check('B4c', 'POST /api/bookings/{id}/refunds (method by name "Cash", then by id 1) on the staff-cancelled booking flips RefundStatus Due -> Partial (10) -> Refunded (30) and lists the negative lines with isRefund',
+    'after 10: Partial; after 30: Refunded, refundedUtc set, payments -10/Cash,-20/Cash', `${r1.status} ${r1.json?.refundStatus} (${r1.json?.methodResolvedBy}) lines=${refundLines(r1)}; ${r2.status} ${r2.json?.refundStatus} (${r2.json?.methodResolvedBy}) refundedUtc=${r2.json?.refundedUtc} lines=${refundLines(r2)} ${r1.json?.error ?? ''} ${r2.json?.error ?? ''}`,
+    r1.status === 200 && r1.json?.refundStatus === 'Partial' && r1.json?.methodResolvedBy === 'name' && r2.status === 200 && r2.json?.refundStatus === 'Refunded' && r2.json?.methodResolvedBy === 'id' && !!r2.json?.refundedUtc && refundLines(r2) === '-10/Cash,-20/Cash');
+  const r3 = await api('qa.hr', 'POST', `/api/bookings/${m1.json?.bookingId}/refunds`, { amount: 1, method: 'Cash' });
+  check('B4f', 'a refund past what was paid is refused with the procedure\'s sentence', '400 "Refund exceeds what was paid"', `${r3.status} ${r3.text.slice(0, 120)}`, r3.status === 400 && /exceeds what was paid/.test(r3.json?.error ?? ''));
+  const g1 = await api('qa.hr', 'GET', `/api/bookings/${m1.json?.bookingId}`);
+  check('B4g', 'GET /api/bookings/{id} carries refundAmount, refundStatus, refundedUtc, cancelledBy and the payment lines with isRefund', 'status Cancelled, cancelledBy Staff, refundAmount 30, refundStatus Refunded, 3 payments (1 paid + 2 refunds)',
+    `${g1.status} status=${g1.json?.status} cancelledBy=${g1.json?.cancelledBy} refundAmount=${g1.json?.refundAmount} refundStatus=${g1.json?.refundStatus} refundedUtc=${g1.json?.refundedUtc} payments=${JSON.stringify((g1.json?.payments ?? []).map((p) => [p.amount, p.isRefund]))}`,
+    g1.status === 200 && g1.json?.cancelledBy === 'Staff' && Number(g1.json?.refundAmount) === 30 && g1.json?.refundStatus === 'Refunded' && !!g1.json?.refundedUtc && (g1.json?.payments ?? []).filter((p) => p.isRefund).length === 2 && (g1.json?.payments ?? []).filter((p) => !p.isRefund).length === 1);
   /* B5: 3 hours -> 10 % discount on the room only; deposit on the discounted total (incl. add-on) */
   const d5 = plusDays(14);
-  const b5 = await api(null, 'POST', '/api/public/booking/bookings', { roomId: room, bookDate: d5, startTime: '10:00:00', endTime: '13:00:00', persons: 2, guestName: 'QA Guest B5', guestPhone: '+96170000006', guestEmail: 'qa-guest-b5@example.invalid', addonIds: [ids.addon] });
-  if (b5.json?.bookingId) { hold(b5.json.bookingId); state('booking.b5', b5.json.bookingId); }
-  const b5Row = b5.json?.bookingId ? sql(`SELECT CONCAT(DiscountPercent, '|', DiscountAmount, '|', TotalAmount, '|', DepositPercent, '|', DepositDue) FROM booking.BOOKING WHERE BookingId=${b5.json.bookingId}`) : '';
+  const b5 = await pub('POST', '/api/public/booking', guest('B5', d5, 600, 780, { phone: '+96170000006', addonIds: [ids.addon] }));
+  const b5Id = idOf(b5.json?.ref);
+  if (b5Id) { hold(b5Id); state('booking.b5', b5Id); }
+  const b5Row = b5Id ? sql(`SELECT CONCAT(DiscountPercent, '|', DiscountAmount, '|', TotalAmount, '|', DepositPercent, '|', DepositDue) FROM booking.BOOKING WHERE BookingId=${b5Id}`) : '';
   const [dp, da, ta, depP, depD] = b5Row.split('|');
-  check('B5a', '3-hour booking at 20/h with a 15 fixed add-on and a 10 % discount from 3 h: discount 6 on the room only, total 69',
-    'discountAmount 6.00, totalAmount 69.00', `${b5.status} response total=${b5.json?.totalAmount}; DB discount%=${dp} discount=${da} total=${ta} ${b5.json?.error ?? ''}`, b5.status === 200 && Number(da) === 6 && Number(ta) === 69);
-  check('B5b', 'deposit computed on the discounted total with the lead-time tier (>=168 h -> 20 %)', 'depositPercent 20, depositDue 13.80',
-    `response depositDue=${b5.json?.depositDue}; DB depositPercent=${depP} depositDue=${depD}`, Number(depP) === 20 && Number(depD) === 13.8);
-  note(`B5: the public create response exposes only {${Object.keys(b5.json ?? {}).join(', ')}} - no reference, discount, hours or deposit percent, although usp_Booking_Create returns them.`);
+  check('B5a', '3-hour booking at 20/h with a 15 fixed add-on and a 10 % discount from 3 h: discount 6 on the room only, total 69 - in the response and in the row',
+    'discountAmount 6.00, total 69.00', `${b5.status} response total=${b5.json?.total} discountPercent=${b5.json?.discountPercent} discountAmount=${b5.json?.discountAmount}; DB discount%=${dp} discount=${da} total=${ta} ${b5.json?.error ?? ''}`, b5.status === 201 && Number(b5.json?.discountAmount) === 6 && Number(b5.json?.total) === 69 && Number(da) === 6 && Number(ta) === 69);
+  check('B5b', 'deposit computed on the discounted total with the lead-time tier (>=168 h -> 20 %) - response carries deposit and depositPercent', 'depositPercent 20, deposit 13.80',
+    `response deposit=${b5.json?.deposit} depositPercent=${b5.json?.depositPercent}; DB depositPercent=${depP} depositDue=${depD}`, Number(b5.json?.depositPercent) === 20 && Number(b5.json?.deposit) === 13.8 && Number(depP) === 20 && Number(depD) === 13.8);
+  /* B6: the guest cancels online with the phone number; B7: the access filter and the pause switch */
+  const d7 = plusDays(17);
+  const b6 = await pub('POST', '/api/public/booking', guest('B6', d7, 600, 720, { phone: '+96170000007' }));   // 5th public write this minute
+  const b6Id = idOf(b6.json?.ref);
+  if (b6Id) { hold(b6Id); state('booking.b6', b6Id); }
+  state('setting.BookingWebsiteEnabled', '1');                                     // cleanup.sql restores it even if this run is interrupted
+  sql(`UPDATE core.SETTING SET SettingValue='0' WHERE SettingKey='BookingWebsiteEnabled'`);
+  note('B6/B7: waiting 61 s for the public write rate-limit window (5/min) and the settings cache (60 s) to roll over.');
+  await sleep(61000);
+  let paused = null;
+  for (let waited = 0; waited <= 30; waited += 5) { paused = await pub('POST', '/api/public/booking/quote', { roomCode: 'qa-room', date: d7, startMin: 600, endMin: 720, addonIds: [] }); if (paused.status === 503) break; await sleep(5000); }
+  const catPaused = await pub('GET', '/api/public/booking/catalog');
+  const createPaused = await pub('POST', '/api/public/booking', guest('B7', d7, 780, 840));
+  const createPausedId = idOf(createPaused.json?.ref); if (createPausedId) hold(createPausedId);
+  check('B7b', 'BookingWebsiteEnabled=0 -> POST quote and POST create answer 503 paused; GET catalog stays up and says websiteEnabled false', '503 {"code":"paused"} x2; catalog 200 websiteEnabled=false',
+    `quote ${paused?.status} ${paused?.text?.slice(0, 80)}; create ${createPaused.status} ${createPaused.json?.code}; catalog ${catPaused.status} websiteEnabled=${catPaused.json?.rules?.websiteEnabled}`,
+    paused?.status === 503 && paused?.json?.code === 'paused' && createPaused.status === 503 && createPaused.json?.code === 'paused' && catPaused.status === 200 && catPaused.json?.rules?.websiteEnabled === false);
+  sql(`UPDATE core.SETTING SET SettingValue='1' WHERE SettingKey='BookingWebsiteEnabled'`);
+  const wrongPhone = await pub('POST', `/api/public/booking/${b6.json?.ref}/cancel`, { phone: '70 999 999' });
+  check('B6b', 'POST {ref}/cancel with a phone whose last 8 digits do not match -> 400 invalid_input, booking untouched', '400 {"code":"invalid_input"}; status still Pending',
+    `${wrongPhone.status} ${wrongPhone.text.slice(0, 100)}; DB status=${b6Id ? sql(`SELECT [Status] FROM booking.BOOKING WHERE BookingId=${b6Id}`) : 'n/a'}`, wrongPhone.status === 400 && wrongPhone.json?.code === 'invalid_input' && (b6Id ? sql(`SELECT [Status] FROM booking.BOOKING WHERE BookingId=${b6Id}`) === 'Pending' : false));
+  const cancelled = await pub('POST', `/api/public/booking/${b6.json?.ref}/cancel`, { phone: '70 000 007' });
+  if (b6Id) hold(b6Id);
+  check('B6a', 'POST {ref}/cancel {phone} inside the window (the phone spelled without the country code) -> the recap with the refund figures', 'ref, status Cancelled, cancelledBy Guest, refundAmount 0 (nothing paid), refundStatus None',
+    `${cancelled.status} ref=${cancelled.json?.ref} status=${cancelled.json?.status} cancelledBy=${cancelled.json?.cancelledBy} refundAmount=${cancelled.json?.refundAmount} refundStatus=${cancelled.json?.refundStatus} ${cancelled.json?.error ?? ''}`,
+    cancelled.status === 200 && cancelled.json?.ref === b6.json?.ref && cancelled.json?.status === 'Cancelled' && cancelled.json?.cancelledBy === 'Guest' && Number(cancelled.json?.refundAmount) === 0 && cancelled.json?.refundStatus === 'None');
+  const recap = await pub('GET', `/api/public/booking/${b6.json?.ref}`);
+  check('B6c', 'GET {ref} recap after the cancellation: status, minutes, "First L." name, money - and never the phone or e-mail', 'status Cancelled, canCancelOnline false, guestName "QA B.", no guestPhone/guestEmail/email/phone keys, addons []',
+    `${recap.status} ${JSON.stringify(recap.json).slice(0, 260)}`,
+    recap.status === 200 && recap.json?.status === 'Cancelled' && recap.json?.canCancelOnline === false && recap.json?.guestName === 'QA B.' && recap.json?.startMin === 600 && recap.json?.endMin === 720 && !Object.keys(recap.json ?? {}).some((k) => /phone|email/i.test(k)));
+  const evil = await pub('GET', '/api/public/booking/catalog', undefined, { Origin: 'http://evil.example' });
+  const noOrigin = await pub('GET', '/api/public/booking/catalog', undefined, {});
+  const keyOff = await pub('GET', '/api/public/booking/catalog', undefined, { 'X-Booking-Key': 'anything' });
+  check('B7a', 'an origin not in BookingCorsOrigins, no origin at all, or a key while BookingApiKey is empty -> 401 unauthorized', '401 {"code":"unauthorized"} x3',
+    `${evil.status} ${evil.json?.code}; ${noOrigin.status} ${noOrigin.json?.code}; ${keyOff.status} ${keyOff.json?.code}`, [evil, noOrigin, keyOff].every((r) => r.status === 401 && r.json?.code === 'unauthorized'));
+  const preflight = await fetch(`${API}/api/public/booking/quote`, { method: 'OPTIONS', headers: { Origin: ORIGIN, 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'content-type' } });
+  check('B7c', 'CORS preflight from the site origin is answered from BookingCorsOrigins (DB setting), GET/POST only', '204 Access-Control-Allow-Origin http://localhost:4321',
+    `${preflight.status} acao=${preflight.headers.get('access-control-allow-origin')} methods=${preflight.headers.get('access-control-allow-methods')}`, (preflight.status === 204 || preflight.status === 200) && preflight.headers.get('access-control-allow-origin') === ORIGIN);
+  const verify = await pub('GET', '/api/public/booking/verify?ref=MC-ABCD1234');
+  check('B7d', 'GET verify?ref= answers 501 not_implemented (step 2)', '501 {"code":"not_implemented"}', `${verify.status} ${verify.json?.code}`, verify.status === 501 && verify.json?.code === 'not_implemented');
+  state('booking.routes', `catalog=${cat.status},availability=${dayB2.status},quote=${quote.status},byref=${recap.status},create=${b1.status},cancel=${cancelled.status}`);
 
   x1Summary('phase2');
 }

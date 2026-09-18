@@ -29,6 +29,9 @@ using MokaCo.HRMS.Services.Booking;
 using MokaCo.HRMS.Api.Hubs;
 using MokaCo.HRMS.Api.Jobs;
 using MokaCo.HRMS.Api.Controllers;
+using MokaCo.HRMS.Api.PublicBooking;
+using Microsoft.AspNetCore.Cors.Infrastructure;
+using Microsoft.AspNetCore.Mvc;
 using System.Threading.RateLimiting;
 using Quartz;
 using Scalar.AspNetCore;
@@ -223,6 +226,16 @@ builder.Services.AddQuartz(q =>
         .WithIdentity("NightlyAttendanceTrigger")
         // seconds-first cron: 01:00 every day
         .WithCronSchedule("0 0 1 * * ?"));
+
+    // Bookings: every five minutes, cancel website payment holds whose clock ran out unpaid
+    // (booking.usp_Booking_ExpireHolds). Tidying, not enforcement — every availability query
+    // already excludes an expired hold. See BookingHoldExpiryJob.
+    var bookingHoldExpiryJobKey = new JobKey("BookingHoldExpiryJob");
+    q.AddJob<BookingHoldExpiryJob>(opts => opts.WithIdentity(bookingHoldExpiryJobKey));
+    q.AddTrigger(t => t
+        .ForJob(bookingHoldExpiryJobKey)
+        .WithIdentity("BookingHoldExpiryTrigger")
+        .WithCronSchedule("0 0/5 * * * ?"));
 });
 builder.Services.AddQuartzHostedService(opts => opts.WaitForJobsToComplete = true);
 
@@ -369,20 +382,14 @@ builder.Services.AddRateLimiter(options =>
 // --- CORS for the React front end (adjust origin) ---
 const string CorsPolicy = "MokaCoFront";
 
-// The PUBLIC BOOKING ORIGINS: the marketing site, which is a different origin from the admin app and
-// must not inherit its policy.
-//
-// SETTING: "BookingCorsOrigins" in appsettings.json — comma-separated, e.g.
-// "https://mokaco.com,https://www.mokaco.com". EMPTY BY DEFAULT, and an installation that has not
-// named its website gets a policy matching no origin: no CORS headers, therefore same-origin only.
-// That is the safe default — an allowlist nobody filled in should permit nothing, not everything.
-//
-// It is CONFIGURATION rather than a core.SETTING row because CORS policies are built once at
-// startup. Putting it on the Settings page would offer an admin a control that appears to work and
-// silently does nothing until the next restart. Changing this needs a restart, and saying so here
-// is the honest version.
-var bookingCorsOrigins = (builder.Configuration["BookingCorsOrigins"] ?? string.Empty)
-    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+// The PUBLIC BOOKING ORIGINS come from core.SETTING BookingCorsOrigins, NOT from appsettings.json.
+// PublicBookingGate reads that row (with BookingWebsiteEnabled and BookingApiKey) once a minute, and
+// PublicBookingCorsPolicyProvider builds the "PublicBooking" policy from it per request — preflight
+// included — so an origin added on the Settings page works within a minute and without a restart.
+// The same reading is what PublicBookingAccessAttribute judges a caller by, so the CORS answer and
+// the access answer cannot disagree. An empty list matches no origin: same-origin only.
+builder.Services.AddSingleton<PublicBookingGate>();
+builder.Services.AddSingleton<IPublicBookingGate>(sp => sp.GetRequiredService<PublicBookingGate>());
 
 builder.Services.AddCors(o =>
 {
@@ -396,20 +403,47 @@ builder.Services.AddCors(o =>
          // combined with a wildcard origin, which is the rule that keeps it safe.
          .AllowCredentials());
 
-    // Applied ONLY where [EnableCors(PublicBooking)] says so — PublicBookingController and nothing
-    // else. NO AllowCredentials: these endpoints are anonymous, carry no cookie and no token, so
-    // letting a browser attach credentials to them would widen the policy for no purpose.
-    o.AddPolicy(PublicBookingController.BookingCorsPolicy, p =>
-        p.WithOrigins(bookingCorsOrigins)
-         .AllowAnyHeader()
-         .WithMethods("GET", "POST"));
+    // "PublicBooking" is NOT registered here: the provider below answers for it dynamically.
 });
+
+// Registered AFTER AddCors on purpose — AddCors TryAdds the framework provider, and the last
+// registration is the one the container resolves. Every policy other than "PublicBooking" is still
+// answered by the framework's own provider (the class wraps it).
+builder.Services.AddSingleton<ICorsPolicyProvider, PublicBookingCorsPolicyProvider>();
 
 // --- Live updates (SignalR): signals only, never data ---
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<ILiveNotifier, LiveNotifier>();
 
 builder.Services.AddControllers();
+
+// THE PUBLIC BOOKING API ANSWERS EVERY REFUSAL AS { error, code }, model-binding failures included.
+// [ApiController] would otherwise answer a malformed body with a ProblemDetails document the website
+// cannot read a sentence out of. Scoped to that path: every other controller keeps the default.
+builder.Services.Configure<ApiBehaviorOptions>(options =>
+{
+    var frameworkDefault = options.InvalidModelStateResponseFactory;
+    options.InvalidModelStateResponseFactory = context =>
+    {
+        if (!context.HttpContext.Request.Path.StartsWithSegments("/api/public/booking"))
+            return frameworkDefault(context);
+
+        var first = context.ModelState
+            .Where(entry => entry.Value?.Errors.Count > 0)
+            .Select(entry => new { Field = entry.Key, Message = entry.Value!.Errors[0].ErrorMessage })
+            .FirstOrDefault();
+
+        // The binder's own messages name .NET types and JSON paths; a guest gets one sentence.
+        return new BadRequestObjectResult(new
+        {
+            error = "Please check the details and try again.",
+            code = BookingRefusals.InvalidInput,
+            field = string.IsNullOrEmpty(first?.Field) ? null : char.ToLowerInvariant(first.Field[0]) + first.Field[1..],
+            timeZone = BeirutTime.IanaId,
+        });
+    };
+});
+
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
