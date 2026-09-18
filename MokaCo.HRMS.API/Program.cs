@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
 using MokaCo.HRMS.Api.Auth;
+using MokaCo.HRMS.Api.Errors;
 using MokaCo.HRMS.Repository.Common;
 using MokaCo.HRMS.Repository.Security;
 using MokaCo.HRMS.Repository.Core;
@@ -417,6 +418,10 @@ builder.Services.AddSingleton<ILiveNotifier, LiveNotifier>();
 
 builder.Services.AddControllers();
 
+// EVERY UNHANDLED EXCEPTION LEAVES AS { error, traceId } (BUG-03) — a constraint violation as a 4xx
+// sentence, a bug as a 500 that carries a reference and nothing else. See ApiErrorMap for the table.
+builder.Services.AddExceptionHandler<ApiExceptionHandler>();
+
 // THE PUBLIC BOOKING API ANSWERS EVERY REFUSAL AS { error, code }, model-binding failures included.
 // [ApiController] would otherwise answer a malformed body with a ProblemDetails document the website
 // cannot read a sentence out of. Scoped to that path: every other controller keeps the default.
@@ -447,6 +452,12 @@ builder.Services.Configure<ApiBehaviorOptions>(options =>
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
+
+// FIRST IN THE PIPELINE, and therefore INSIDE the developer exception page that WebApplication adds
+// by itself in Development: the handler answers before that page can, so no environment returns a
+// stack trace or SQL text from an API route. The empty lambda is deliberate — ApiExceptionHandler
+// always writes the response, so there is no fallback branch to configure.
+app.UseExceptionHandler(_ => { });
 
 if (app.Environment.IsDevelopment())
 {

@@ -37,7 +37,6 @@ public class AuthService : IAuthService
 
         if (user.LockoutEnd is not null && user.LockoutEnd > DateTime.UtcNow)
             return AuthResult.Fail("Account is temporarily locked. Try again later.");
-        Console.WriteLine(new Argon2PasswordHasher().Hash("admin"));
 
         if (!_hasher.Verify(request.Password, user.PasswordHash))
         {

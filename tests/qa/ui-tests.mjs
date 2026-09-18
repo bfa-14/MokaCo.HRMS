@@ -121,7 +121,15 @@ async function main() {
     check('X4d', 'Operations Manager opening /payroll/runs (not in routeAccess for the role) sees an access-denied view, not the page', 'access denied view', `path=${m.path} text="${m.text.slice(0, 120).replace(/\n/g, ' ')}"`, denied);
     await cdp.navigate(`${WEB}/settings`, 3500);
     m = await metrics();
-    check('X4e', 'Operations Manager opening /settings sees an access-denied view', 'access denied view', `path=${m.path} text="${m.text.slice(0, 120).replace(/\n/g, ' ')}"`, /permission|access denied|not allowed/i.test(m.text) || m.path !== '/settings');
+    /* /settings stays an open route on purpose (everybody's Preferences live there), so the refusal is
+       a "No access" card BELOW the preferences — beyond the 400 characters metrics() keeps. Read the
+       whole page, and also require that none of the system tabs is offered. */
+    const st = await cdp.evaluate(`({ text: document.body.innerText, tabs: [...document.querySelectorAll('[role="tab"]')].map((t) => t.textContent.trim()) })`);
+    const deniedAt = st.text.search(/no access|permission|access denied|not allowed/i);
+    const systemTabs = st.tabs.filter((t) => /attendance|payroll|leave|workflow|booking|danger/i.test(t));
+    check('X4e', 'Operations Manager opening /settings sees an access-denied view for the system settings (own preferences only, no system tabs)', 'access denied wording on the page, 0 system tabs',
+      `path=${m.path} tabs=[${st.tabs.join(', ')}] denied="${deniedAt < 0 ? 'none' : st.text.slice(deniedAt, deniedAt + 90).replace(/\n/g, ' ')}"`,
+      m.path !== '/settings' || (deniedAt >= 0 && systemTabs.length === 0));
     await cdp.navigate(`${WEB}/attendance/daily`, 4000);
     m = await metrics();
     check('X4f', 'Operations Manager opens /attendance/daily (ATTENDANCE_VIEW granted) normally', 'page shown, still logged in', `path=${m.path} text="${m.text.slice(0, 80).replace(/\n/g, ' ')}"`, m.path === '/attendance/daily' && !/permission/i.test(m.text.slice(0, 200)));

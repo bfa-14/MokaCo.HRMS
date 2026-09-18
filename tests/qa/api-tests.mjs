@@ -147,6 +147,12 @@ async function phase1() {
   const fk = await api('qa.hr', 'PUT', '/api/roster/day', { employeeId: 999999, workDate: '2026-08-20', shiftId: ids.morning, isRestDay: false });
   check('X1b', 'PUT /api/roster/day for a non-existent employee: clean JSON error, no SQL constraint text or stack trace',
     '4xx {error:"..."}', `${fk.status} ${fk.text.slice(0, 200).replace(/\s+/g, ' ')}`, fk.status < 500 && looksClean(fk.text) && !!fk.json?.error);
+  /* X1c: a constraint no controller maps (a shift that does not exist -> FK 547) reaches the global
+     exception handler: 400 {error, traceId} in plain words, in Development too. Nothing is written. */
+  const fk2 = await api('qa.hr', 'PUT', '/api/roster/day', { employeeId: e1, workDate: '2026-10-20', shiftId: 999999, isRestDay: false });
+  check('X1c', 'PUT /api/roster/day with a non-existent shift (unmapped FK violation): the global handler answers 400 {error, traceId}, no constraint text',
+    '400 {error:"The referenced record does not exist or the value is not allowed.", traceId}', `${fk2.status} ${fk2.text.slice(0, 200).replace(/\s+/g, ' ')}`,
+    fk2.status === 400 && looksClean(fk2.text) && /does not exist or the value is not allowed/.test(fk2.json?.error ?? '') && !!fk2.json?.traceId);
 
   /* ---- R4c-R4e: the lock on a month that still has FUTURE days (the month after this one, E1 only) ----
      pending month read-only -> approved: a future day may change, the month stays Approved and says
