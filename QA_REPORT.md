@@ -6,6 +6,23 @@ Run it with `bash tests/qa/run.sh` (writes `tests/qa/last-run.log`). Last run: *
 
 Two things the suite had to work around, both real defects and listed below: the roster approval never activates the roster (the suite applies the effect by hand after recording the failure), and the real database already holds a locked primary run for 2026-08, so the payroll cases run inside one SQL transaction that is rolled back (see `cases/04_payroll.sql`); the refusals for a locked run/month are exercised against the real locked run because those procedures refuse before writing.
 
+## Status after the fix pack (re-run 2026-09-18)
+
+`bash tests/qa/run.sh` now gives **205 checks, 204 passed, 1 failed**, and the clean-up checks pass (real-data row counts and the non-QA roster checksum are unchanged). The table further down is the ORIGINAL finding list of 2026-09-17 and is kept as written; this section says what happened to each entry. Some cases were re-targeted where the rule itself changed (the public booking contract, the tolerance rule that replaced grace), and X1c, A13b and the R4c–R4e lock cases are new.
+
+| Bugs | Fixed in | State |
+|---|---|---|
+| BUG-01, BUG-02 (roster approval applies and locks) | `66124f7` (API/SQL 75), web part `6d01b04d` | fixed, cases pass |
+| BUG-08 to BUG-14, BUG-16, BUG-27 (attendance day rule, leave days, reprocessing, exit permissions and decided variances, auto-process) | `09e5e17` (SQL 76) | fixed, cases pass |
+| BUG-15 (grace) | `86cf3e9` (SQL 77), web `1f2c978a` | replaced by the tolerance rule: late/early beyond `AttendanceToleranceMinutes` becomes an anomaly HR decides; undecided anomalies block payroll readiness |
+| BUG-06, BUG-07, BUG-17, BUG-18 (payroll: rest days, LBP run rate, tax deduction setting, Primary default) | `16bf493` (SQL 78) | fixed, cases pass. Run 17 (August) was NOT touched; the differences are in `docs/august-2026-recalc.md` |
+| BUG-19 to BUG-25 (bookings: website contract, 409 `slot_taken`, after-midnight, availability minutes, refunds, guest cancel) | `afaeaf2` (SQL 74, 79), web `6d01b04d` | fixed, cases pass; website → HRMS verified end to end (below) |
+| BUG-03, BUG-26 (error leak, login hash print) | `5f79184` | fixed, X1b / X1c / X1-phase1 / X1-phase2 pass |
+| BUG-05, BUG-28 (web: `/settings` for a user without SETTING_MANAGE, roster toolbar at 390 px) | `6d01b04d` | fixed. `/settings` stays an open route on purpose (everybody's Preferences live there); the system settings are refused with the No access card and no system tab is offered (X4e) |
+| **BUG-04** (a branch manager sees every employee) | — | **open on purpose.** It is a rule change (new permission `EMP_VIEW_ALL`, branch scoping inside the procedures) that waits for the owner's decision. **X4a is the one failing check.** |
+
+Website end-to-end (2026-09-18, `mokanco-lb` dev server on :4321 against the API on :5078, the real wizard driven in headless Chrome): room Mokha, 29 Sep 14:00–17:00 → the confirmation page showed the reference, the same `MC-` reference was in `booking.BOOKING` as `Pending` / `Website`; the staff alert and the guest's request e-mail were queued; staff Confirm → status `Confirmed` on the public recap, confirmation e-mail and WhatsApp message queued. The booking was made under a `QA ` guest name and removed with its queued messages by `cleanup.sql`. One thing seen on the way: the confirmation page tries a live socket at `/hubs/booking`, which the API does not map (401), so it falls back to its 30-second poll. It works, just not instantly.
+
 ## Bugs
 
 | ID | Area | Case (log IDs) | Steps to reproduce | Expected | Actual | Severity | Suspected location |
