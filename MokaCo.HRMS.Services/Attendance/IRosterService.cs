@@ -4,7 +4,7 @@ namespace MokaCo.HRMS.Services.Attendance;
 
 public interface IRosterService
 {
-    Task<IEnumerable<ShiftAssignment>> GetAsync(DateTime fromDate, DateTime toDate, int? employeeId);
+    Task<IEnumerable<ShiftAssignment>> GetAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId = null);
     Task<int> SetDayAsync(RosterDayRequest request);
     Task DeleteAsync(int shiftAssignmentId);
     Task<RosterGenerateResult> GenerateAsync(RosterGenerateRequest request);

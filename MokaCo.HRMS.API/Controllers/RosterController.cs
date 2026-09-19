@@ -43,12 +43,13 @@ public class RosterController : ControllerBase
 
     [HttpGet]
     [HasPermission("ATTENDANCE_VIEW")]
-    public async Task<IActionResult> Get([FromQuery] DateTime from, [FromQuery] DateTime to, [FromQuery] int? employeeId)
+    public async Task<IActionResult> Get([FromQuery] DateTime from, [FromQuery] DateTime to, [FromQuery] int? employeeId,
+        [FromQuery] int? branchId = null)      // D7: one branch's roster, by the branch each employee belonged to ON the work date
     {
         if (from > to)
             return BadRequest(new { error = "'from' must be on or before 'to'." });
 
-        return Ok(await _roster.GetAsync(from, to, employeeId));
+        return Ok(await _roster.GetAsync(from, to, employeeId, branchId));
     }
 
     /// <summary>Sets ONE employee-day — what clicking a single calendar cell calls.</summary>

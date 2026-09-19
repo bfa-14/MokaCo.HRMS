@@ -15,12 +15,12 @@ public class RosterRepository : IRosterRepository
     private readonly IDbConnectionFactory _factory;
     public RosterRepository(IDbConnectionFactory factory) => _factory = factory;
 
-    public async Task<IEnumerable<ShiftAssignment>> GetByDateRangeAsync(DateTime fromDate, DateTime toDate, int? employeeId)
+    public async Task<IEnumerable<ShiftAssignment>> GetByDateRangeAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId = null)
     {
         using var db = _factory.Create();
         return await db.QueryAsync<ShiftAssignment>(
             "attendance.usp_ShiftAssignment_GetByDateRange",
-            new { FromDate = fromDate, ToDate = toDate, EmployeeId = employeeId },
+            new { FromDate = fromDate, ToDate = toDate, EmployeeId = employeeId, BranchId = branchId },
             commandType: CommandType.StoredProcedure);
     }
 

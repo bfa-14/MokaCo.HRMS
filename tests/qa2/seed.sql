@@ -294,11 +294,11 @@ FROM hr.EMPLOYEE e WHERE e.FullName LIKE N'QA2 E%';
 GO
 
 /* ---- 5. rosters through the real generator: Mon-Sat, Sunday rest ------------
-   M and M+1 for everybody; the two DST weeks for E3. E4 (part-timer) works Mon-Fri only and has NO row at
+   M, M+1 and M+2 for everybody; the two DST weeks for E3. E4 (part-timer) works Mon-Fri only and has NO row at
    all on Saturdays: that is the "unrostered day". E5 / E6 only while employed. The ROSTER_MONTH headers are
    written Approved directly — the approval chain itself is suite 1's subject (R3); A4 exercises the rest. */
 DECLARE @M DATE = CAST((SELECT [Value] FROM dbo.QA2_STATE WHERE [Key] = 'month') + '-01' AS DATE);
-DECLARE @MEnd DATE = EOMONTH(@M), @N DATE = DATEADD(MONTH, 1, @M), @NEnd DATE = EOMONTH(DATEADD(MONTH, 1, @M));
+DECLARE @MEnd DATE = EOMONTH(@M), @N DATE = DATEADD(MONTH, 1, @M), @NEnd DATE = EOMONTH(DATEADD(MONTH, 2, @M));   -- rosters run to the end of M+2: the roster cases (A4) need FUTURE days of an approved month whatever today is
 DECLARE @Spring DATE = CAST((SELECT [Value] FROM dbo.QA2_STATE WHERE [Key] = 'dst.spring.sunday') AS DATE);
 DECLARE @Autumn DATE = CAST((SELECT [Value] FROM dbo.QA2_STATE WHERE [Key] = 'dst.autumn.sunday') AS DATE);
 DECLARE @Morning INT = (SELECT ShiftId FROM attendance.SHIFT WHERE Name = N'QA2 Morning');
@@ -334,7 +334,7 @@ SET @f = DATEADD(DAY, -1, @M); EXEC attendance.usp_ShiftAssignment_GenerateRange
 INSERT INTO attendance.ROSTER_MONTH (BranchId, MonthDate, [Status], ApprovedAt)
 SELECT b.BranchId, m.MonthDate, 'Approved', SYSUTCDATETIME()
 FROM hr.BRANCH b
-CROSS JOIN (SELECT @M AS MonthDate UNION SELECT @N UNION SELECT DATEADD(MONTH, -1, @M)
+CROSS JOIN (SELECT @M AS MonthDate UNION SELECT @N UNION SELECT DATEADD(MONTH, 2, @M) UNION SELECT DATEADD(MONTH, -1, @M)
             UNION SELECT DATEFROMPARTS(YEAR(@Spring), MONTH(@Spring), 1) UNION SELECT DATEFROMPARTS(YEAR(DATEADD(DAY,-3,@Spring)), MONTH(DATEADD(DAY,-3,@Spring)), 1)
             UNION SELECT DATEFROMPARTS(YEAR(@Autumn), MONTH(@Autumn), 1) UNION SELECT DATEFROMPARTS(YEAR(DATEADD(DAY,1,@Autumn)), MONTH(DATEADD(DAY,1,@Autumn)), 1)) m
 WHERE b.Name LIKE N'QA2 Branch %'

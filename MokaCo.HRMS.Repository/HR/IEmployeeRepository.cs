@@ -13,7 +13,8 @@ public interface IEmployeeRepository
     Task UpdateAsync(
         int employeeId, int branchId, int departmentId, int positionId, string fullName,
         string? nationalId, string? nssfNumber, DateTime hireDate, DateTime? terminationDate, int? modifiedBy,
-        string? email, string? phoneNumber, string? preferredLanguage);
+        string? email, string? phoneNumber, string? preferredLanguage, DateTime? branchEffectiveFrom);
+    Task<IEnumerable<EmployeeBranchHistoryRow>> GetBranchHistoryAsync(int employeeId);
     Task SoftDeleteAsync(int employeeId, int? modifiedBy);
 
     // ---- employee <-> user account linking ----

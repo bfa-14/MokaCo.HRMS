@@ -8,6 +8,9 @@ public interface IEmployeeService
     Task<EmployeeProfile?> GetProfileAsync(int employeeId);
     Task<int> CreateAsync(EmployeeCreateRequest request, int? createdBy);
     Task UpdateAsync(int employeeId, EmployeeUpdateRequest request, int? modifiedBy);
+
+    /// <summary>D7: the branches an employee has belonged to, newest first.</summary>
+    Task<IEnumerable<EmployeeBranchHistoryRow>> GetBranchHistoryAsync(int employeeId);
     Task SoftDeleteAsync(int employeeId, int? modifiedBy);
 
     // ---- employee <-> user account linking ----

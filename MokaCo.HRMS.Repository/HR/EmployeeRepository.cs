@@ -64,7 +64,7 @@ public class EmployeeRepository : IEmployeeRepository
     public async Task UpdateAsync(
         int employeeId, int branchId, int departmentId, int positionId, string fullName,
         string? nationalId, string? nssfNumber, DateTime hireDate, DateTime? terminationDate, int? modifiedBy,
-        string? email, string? phoneNumber, string? preferredLanguage)
+        string? email, string? phoneNumber, string? preferredLanguage, DateTime? branchEffectiveFrom)
     {
         using var db = _factory.Create();
         await db.ExecuteAsync(
@@ -83,8 +83,19 @@ public class EmployeeRepository : IEmployeeRepository
                 ModifiedBy = modifiedBy,
                 Email = email,
                 PhoneNumber = phoneNumber,
-                PreferredLanguage = preferredLanguage
+                PreferredLanguage = preferredLanguage,
+                // Only read by the procedure when the branch changes: the transfer's effective date (SQL 85, D7).
+                BranchEffectiveFrom = branchEffectiveFrom?.Date
             },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<IEnumerable<EmployeeBranchHistoryRow>> GetBranchHistoryAsync(int employeeId)
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<EmployeeBranchHistoryRow>(
+            "hr.usp_EmployeeBranchHistory_Get",
+            new { EmployeeId = employeeId },
             commandType: CommandType.StoredProcedure);
     }
 

@@ -134,7 +134,7 @@ public class EmployeeContactValidationTests
         var repo = new Mock<IEmployeeRepository>(MockBehavior.Strict);
         repo.Setup(r => r.UpdateAsync(
                 5, 1, 1, 1, "Old Timer", null, null, new DateTime(2010, 3, 1), null, 1,
-                null, null, null))
+                null, null, null, null))      // the last null: no transfer date — the branch did not change
             .Returns(Task.CompletedTask);
         var service = new EmployeeService(repo.Object);
 

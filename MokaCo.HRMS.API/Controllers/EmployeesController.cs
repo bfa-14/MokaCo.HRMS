@@ -76,6 +76,11 @@ public class EmployeesController : ControllerBase
         }
     }
 
+    /// <remarks>
+    /// A CHANGED BRANCH IS A TRANSFER (D7): it takes effect on branchEffectiveFrom (omitted = today in Beirut), and the
+    /// days before it stay under the old branch in rosters, attendance and reports. The procedure refuses a date before
+    /// the hire, before a later transfer already on file, or in a period that is paid; its sentence travels as it is.
+    /// </remarks>
     [HttpPut("{id:int}")]
     [HasPermission("EMP_EDIT")]
     public async Task<IActionResult> Update(int id, [FromBody] EmployeeUpdateRequest request)
@@ -84,6 +89,11 @@ public class EmployeesController : ControllerBase
         await NotifyPeopleAsync();
         return NoContent();
     }
+
+    /// <summary>D7: the branches this employee has belonged to, newest first, each with the dates it covers.</summary>
+    [HttpGet("{id:int}/branch-history")]
+    [HasPermission("EMP_VIEW")]
+    public async Task<IActionResult> GetBranchHistory(int id) => Ok(await _employees.GetBranchHistoryAsync(id));
 
     /// <summary>
     /// Sets the employee's approval tier — which published chain their requests follow. Kept separate

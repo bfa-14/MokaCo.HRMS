@@ -24,6 +24,12 @@ public class ShiftAssignment
 
     /// <summary>1 = rostered day off. Punchless rest days become 'RestDay' records, NOT absences.</summary>
     public bool IsRestDay { get; set; }
+
+    /// <summary>
+    /// D7: the branch the employee belonged to ON this work date (hr.fn_EmployeeBranchOn). After a transfer the days
+    /// before it stay in the old branch's roster and the days from it appear in the new one.
+    /// </summary>
+    public int? BranchId { get; set; }
 }
 
 /// <summary>

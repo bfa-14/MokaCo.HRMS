@@ -4,7 +4,8 @@ namespace MokaCo.HRMS.Repository.Attendance;
 
 public interface IRosterRepository
 {
-    Task<IEnumerable<ShiftAssignment>> GetByDateRangeAsync(DateTime fromDate, DateTime toDate, int? employeeId);
+    /// <summary>branchId (optional, SQL 85): the rows of ONE branch, by the branch each employee belonged to on the work date.</summary>
+    Task<IEnumerable<ShiftAssignment>> GetByDateRangeAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId = null);
     Task<int> UpsertDayAsync(int employeeId, DateTime workDate, int? shiftId, bool isRestDay);
     Task DeleteAsync(int shiftAssignmentId);
 

@@ -49,7 +49,10 @@ public class EmployeeService : IEmployeeService
             string.IsNullOrWhiteSpace(request.PhoneNumber)
                 ? null
                 : ContactRules.NormalisePhone(request.PhoneNumber) ?? request.PhoneNumber.Trim(),
-            request.PreferredLanguage);
+            request.PreferredLanguage,
+            request.BranchEffectiveFrom);
+
+    public Task<IEnumerable<EmployeeBranchHistoryRow>> GetBranchHistoryAsync(int employeeId) => _repo.GetBranchHistoryAsync(employeeId);
 
     public Task SoftDeleteAsync(int employeeId, int? modifiedBy) => _repo.SoftDeleteAsync(employeeId, modifiedBy);
 

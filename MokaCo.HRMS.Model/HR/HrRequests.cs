@@ -95,6 +95,30 @@ public class EmployeeUpdateRequest
 
     /// <summary>'en' or 'ar'. Omitted means 'en' — the procedure defaults it, so an older caller still works.</summary>
     public string? PreferredLanguage { get; set; }
+
+    /// <summary>
+    /// D7: only read when BranchId CHANGES — the day the transfer takes effect (yyyy-MM-dd; omitted = today in Beirut).
+    /// A branch change is a transfer with a date: rosters, attendance and reports keep the days before it under the
+    /// old branch. A date ahead is recorded now and becomes the employee's current branch on that day.
+    /// </summary>
+    public DateTime? BranchEffectiveFrom { get; set; }
+}
+
+/// <summary>One row of an employee's branch history (hr.EMPLOYEE_BRANCH_HISTORY): the branch they belonged to from a date on.</summary>
+public class EmployeeBranchHistoryRow
+{
+    public int EmployeeBranchHistoryId { get; set; }
+    public int EmployeeId { get; set; }
+    public int BranchId { get; set; }
+    public string BranchName { get; set; } = string.Empty;
+    public DateTime EffectiveFrom { get; set; }
+
+    /// <summary>The day before the next transfer; null for the branch they are in (or will be in) last.</summary>
+    public DateTime? EffectiveTo { get; set; }
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public int? CreatedBy { get; set; }
+    public string? CreatedByName { get; set; }
 }
 
 /// <summary>Body of PUT /api/employees/{id}/approval-tier — the requester's tier (1/2/3).</summary>

@@ -19,8 +19,8 @@ public class RosterService : IRosterService
     private readonly IRosterRepository _repo;
     public RosterService(IRosterRepository repo) => _repo = repo;
 
-    public Task<IEnumerable<ShiftAssignment>> GetAsync(DateTime fromDate, DateTime toDate, int? employeeId)
-        => _repo.GetByDateRangeAsync(fromDate, toDate, employeeId);
+    public Task<IEnumerable<ShiftAssignment>> GetAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId = null)
+        => _repo.GetByDateRangeAsync(fromDate, toDate, employeeId, branchId);
 
     /* Every assignment WRITE goes through attendance.usp_Roster_AssertEditable in the database
        (75_roster_approval_applies_and_locks.sql): a month with a roster approval still open is
