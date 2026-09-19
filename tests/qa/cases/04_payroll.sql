@@ -163,7 +163,7 @@ BEGIN TRY
     /* ---- P2: E2 hired 15 Aug ---- */
     SELECT @amt = Amount, @act = CONCAT('basic=', Amount, ' note="', Note, '"') FROM payroll.PAYSLIP_LINE l JOIN payroll.PAYSLIP ps ON ps.PayslipId = l.PayslipId WHERE ps.PayrollRunId = @RunId AND ps.EmployeeId = @E2 AND l.ComponentName = N'Basic Salary';
     SET @amt2 = ROUND(1500 * CAST(17 AS DECIMAL(6,2)) / 31, 2);
-    INSERT INTO @res SELECT 'P2', 'E2 hired 15 Aug: basic prorated by CALENDAR days employed / days in month (17/31), and the rule shown on the payslip line', CONCAT('basic=', @amt2, ' note="Prorated 0.55 of the month"'), @act, CASE WHEN @amt = @amt2 AND @act LIKE '%Prorated 0.55%' THEN 1 ELSE 0 END;
+    INSERT INTO @res SELECT 'P2', 'E2 hired 15 Aug: basic prorated by CALENDAR days employed / days in month (17/31), and the rule shown on the payslip line', CONCAT('basic=', @amt2, ' note="Prorated 17/31 of the month (0.55): 2026-08-15 to 2026-08-31"'), @act, CASE WHEN @amt = @amt2 AND @act LIKE '%Prorated 17/31 of the month (0.55)%' THEN 1 ELSE 0 END;   -- script 86: the line names the days and the dates
 
     /* ---- P3: E7 terminated 20 Aug ---- */
     SELECT @amt = Amount, @act = CONCAT('basic=', Amount, ' note="', Note, '"') FROM payroll.PAYSLIP_LINE l JOIN payroll.PAYSLIP ps ON ps.PayslipId = l.PayslipId WHERE ps.PayrollRunId = @RunId AND ps.EmployeeId = @E7 AND l.ComponentName = N'Basic Salary';
@@ -181,10 +181,13 @@ BEGIN TRY
     INSERT INTO @res SELECT 'P4b', 'E5: paid annual (3) + sick (1, inside the full-pay tier) are NOT deducted; PaidLeaveDays = 4', '0 leave/attendance deduction lines, PaidLeaveDays=4', CONCAT(@act, '; PaidLeaveDays=', @amt), CASE WHEN @n = 0 AND @amt = 4 THEN 1 ELSE 0 END;
     /* E1: absence on 7 Aug + short days; expected = shortfall of real working days only */
     DECLARE @dayRate1 DECIMAL(18,4) = CAST(3500 / @DaysPerMonth AS DECIMAL(18,4));
-    DECLARE @shortE1 DECIMAL(9,4) = (SELECT SUM(1 - a.DayFraction) FROM attendance.ATTENDANCE_RECORD a WHERE a.EmployeeId = @E1 AND a.WorkDate BETWEEN '2026-08-01' AND '2026-08-31' AND a.[Status] IN ('Present', 'Absent') AND a.DayFraction < 1);
+    /* script 86: the deduction is the EXACT share of each day that is missing (shortfall minutes / the day's standard), rounded once on the
+       money — not 1 - DayFraction, which is already rounded to two decimals */
+    DECLARE @shortE1 DECIMAL(18,8) = (SELECT SUM(CASE WHEN a.ShortfallMinutes > 0 AND a.StandardMinutes > 0 THEN CAST(a.ShortfallMinutes AS DECIMAL(18,8)) / a.StandardMinutes ELSE CAST(1 - a.DayFraction AS DECIMAL(18,8)) END)
+                                      FROM attendance.ATTENDANCE_RECORD a WHERE a.EmployeeId = @E1 AND a.WorkDate BETWEEN '2026-08-01' AND '2026-08-31' AND a.[Status] IN ('Present', 'Absent') AND a.DayFraction < 1);
     DECLARE @restE1 DECIMAL(9,4) = (SELECT ISNULL(SUM(1 - a.DayFraction), 0) FROM attendance.ATTENDANCE_RECORD a WHERE a.EmployeeId = @E1 AND a.WorkDate BETWEEN '2026-08-01' AND '2026-08-31' AND a.[Status] = 'RestDay' AND a.DayFraction < 1);
     SELECT @amt = SUM(Amount), @act = CONCAT('amount=', SUM(Amount), ' qty=', SUM(Quantity), ' note="', MAX(Note), '"') FROM payroll.PAYSLIP_LINE l JOIN payroll.PAYSLIP ps ON ps.PayslipId = l.PayslipId WHERE ps.PayrollRunId = @RunId AND ps.EmployeeId = @E1 AND l.ComponentName = N'Late Deduction';
-    SET @amt2 = ROUND(CAST(@shortE1 AS DECIMAL(6,2)) * @dayRate1, 2);
+    SET @amt2 = ROUND(@shortE1 * @dayRate1, 2);
     INSERT INTO @res SELECT 'P4c', 'E1: the absence (7 Aug) and the short working days are deducted at Basic/26 — and ONLY those (rest days excluded)', CONCAT('amount=', @amt2, ' (', CAST(@shortE1 AS DECIMAL(6,2)), ' days short on working days; rest-day rows would add ', CAST(@restE1 AS DECIMAL(6,2)), ')'), ISNULL(@act, 'no line'), CASE WHEN @amt = @amt2 THEN 1 ELSE 0 END;
     SELECT @amt = SUM(Amount), @act = CONCAT('amount=', SUM(Amount), ' qty=', SUM(Quantity), ' note="', MAX(Note), '"') FROM payroll.PAYSLIP_LINE l JOIN payroll.PAYSLIP ps ON ps.PayslipId = l.PayslipId WHERE ps.PayrollRunId = @RunId AND ps.EmployeeId = @E9 AND l.ComponentName = N'Late Deduction';
     INSERT INTO @res SELECT 'P4d', 'E9 (perfect attendance on every working day, 5 rostered Sundays) has NO attendance deduction', 'no Late Deduction line', ISNULL(@act, 'no line'), CASE WHEN @amt IS NULL THEN 1 ELSE 0 END;

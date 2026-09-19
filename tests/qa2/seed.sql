@@ -364,6 +364,10 @@ INSERT INTO dbo.QA2_DAY VALUES ('A1i', @E4, @sat);
 INSERT INTO dbo.QA2_DAY
 SELECT 'A1o', @E4, x.WorkDate FROM (SELECT sa.WorkDate, ROW_NUMBER() OVER (ORDER BY sa.WorkDate) n FROM attendance.SHIFT_ASSIGNMENT sa
                                     WHERE sa.EmployeeId = @E4 AND sa.IsRestDay = 0 AND sa.WorkDate BETWEEN @M AND EOMONTH(@M)) x WHERE x.n = 2;
+/* E7 and E9 do NOT work the branch holiday (A1h's date): their payslips are the exact-figure cases (A5g, A5d) and a
+   holiday-work premium would be one more wage line in them. E2 and the others do work it (A5k). */
+INSERT INTO dbo.QA2_DAY SELECT 'A5g.E7', EmployeeId, (SELECT WorkDate FROM dbo.QA2_DAY WHERE CaseId = 'A1h') FROM hr.EMPLOYEE WHERE FullName = N'QA2 E7';
+INSERT INTO dbo.QA2_DAY SELECT 'A5d.E9', EmployeeId, (SELECT WorkDate FROM dbo.QA2_DAY WHERE CaseId = 'A1h') FROM hr.EMPLOYEE WHERE FullName = N'QA2 E9';
 /* E11 (branch 2, Mon-Fri): the two half-day-leave days are the 2nd Wednesday and Thursday of M — the cases write their punches */
 DECLARE @E11 INT = (SELECT EmployeeId FROM hr.EMPLOYEE WHERE FullName = N'QA2 E11');
 DECLARE @wed1 DATE = DATEADD(DAY, 2, @M); WHILE DATEDIFF(DAY, '19000103', @wed1) % 7 <> 0 SET @wed1 = DATEADD(DAY, 1, @wed1);   -- first Wednesday on/after the 3rd
