@@ -99,6 +99,15 @@ public class EmployeeRepository : IEmployeeRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    public async Task CancelFutureTransferAsync(int employeeBranchHistoryId, int? actedByUserId)
+    {
+        using var db = _factory.Create();
+        await db.ExecuteAsync(
+            "hr.usp_EmployeeBranchHistory_CancelFuture",
+            new { EmployeeBranchHistoryId = employeeBranchHistoryId, ActedByUserId = actedByUserId },
+            commandType: CommandType.StoredProcedure);
+    }
+
     public async Task SoftDeleteAsync(int employeeId, int? modifiedBy)
     {
         using var db = _factory.Create();

@@ -96,6 +96,19 @@ public class EmployeesController : ControllerBase
     public async Task<IActionResult> GetBranchHistory(int id) => Ok(await _employees.GetBranchHistoryAsync(id));
 
     /// <summary>
+    /// D7: withdraws a transfer that was recorded AHEAD of its date. One that has taken effect is part of the record
+    /// (rosters, attendance and payroll were filed under it) and the procedure refuses it — transfer the employee again instead.
+    /// </summary>
+    [HttpDelete("{id:int}/branch-history/{historyId:int}")]
+    [HasPermission("EMP_EDIT")]
+    public async Task<IActionResult> CancelFutureTransfer(int id, int historyId)
+    {
+        await _employees.CancelFutureTransferAsync(historyId, CurrentUserId);
+        await NotifyPeopleAsync();
+        return NoContent();
+    }
+
+    /// <summary>
     /// Sets the employee's approval tier — which published chain their requests follow. Kept separate
     /// from the main edit because it is a workflow decision (management/executive get shorter chains),
     /// not a demographic field, and it has its own validation. EMP_EDIT, the same trust as any edit.

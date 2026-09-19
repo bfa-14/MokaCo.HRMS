@@ -627,6 +627,24 @@ BEGIN
 END;
 GO
 
+/* ───────────────────────── a transfer recorded ahead of its date can be cancelled until it takes effect ───────────────────────── */
+CREATE OR ALTER PROCEDURE hr.usp_EmployeeBranchHistory_CancelFuture
+    @EmployeeBranchHistoryId INT, @ActedByUserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @Today DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Middle East Standard Time' AS DATE);
+    DECLARE @Emp INT, @From DATE;
+    SELECT @Emp = EmployeeId, @From = EffectiveFrom FROM hr.EMPLOYEE_BRANCH_HISTORY WHERE EmployeeBranchHistoryId = @EmployeeBranchHistoryId;
+    IF @Emp IS NULL BEGIN RAISERROR('That branch history row does not exist.', 16, 1); RETURN; END
+    /* the past is a record: rosters, attendance and payroll were filed under it */
+    IF @From <= @Today
+    BEGIN RAISERROR('This transfer has already taken effect and is part of the record. Transfer the employee again instead.', 16, 1); RETURN; END
+    DELETE FROM hr.EMPLOYEE_BRANCH_HISTORY WHERE EmployeeBranchHistoryId = @EmployeeBranchHistoryId;
+    SELECT @EmployeeBranchHistoryId AS EmployeeBranchHistoryId, CAST(1 AS BIT) AS Cancelled;
+END;
+GO
+
 /* ───────────────────────── verification ───────────────────────── */
 DECLARE @p INT = (SELECT COUNT(*) FROM sys.parameters WHERE (object_id = OBJECT_ID('hr.usp_Employee_Update') AND name = '@BranchEffectiveFrom')
                                                          OR (object_id = OBJECT_ID('attendance.usp_ShiftAssignment_GetByDateRange') AND name = '@BranchId'));

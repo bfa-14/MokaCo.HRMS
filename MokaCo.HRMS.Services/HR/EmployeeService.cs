@@ -54,6 +54,8 @@ public class EmployeeService : IEmployeeService
 
     public Task<IEnumerable<EmployeeBranchHistoryRow>> GetBranchHistoryAsync(int employeeId) => _repo.GetBranchHistoryAsync(employeeId);
 
+    public Task CancelFutureTransferAsync(int employeeBranchHistoryId, int? actedByUserId) => _repo.CancelFutureTransferAsync(employeeBranchHistoryId, actedByUserId);
+
     public Task SoftDeleteAsync(int employeeId, int? modifiedBy) => _repo.SoftDeleteAsync(employeeId, modifiedBy);
 
     // ---- employee <-> user account linking ----

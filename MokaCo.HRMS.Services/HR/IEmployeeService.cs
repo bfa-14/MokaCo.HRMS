@@ -11,6 +11,9 @@ public interface IEmployeeService
 
     /// <summary>D7: the branches an employee has belonged to, newest first.</summary>
     Task<IEnumerable<EmployeeBranchHistoryRow>> GetBranchHistoryAsync(int employeeId);
+
+    /// <summary>D7: withdraws a transfer recorded ahead of its date. The procedure refuses one that has already taken effect.</summary>
+    Task CancelFutureTransferAsync(int employeeBranchHistoryId, int? actedByUserId);
     Task SoftDeleteAsync(int employeeId, int? modifiedBy);
 
     // ---- employee <-> user account linking ----

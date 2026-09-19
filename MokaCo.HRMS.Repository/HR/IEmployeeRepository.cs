@@ -15,6 +15,8 @@ public interface IEmployeeRepository
         string? nationalId, string? nssfNumber, DateTime hireDate, DateTime? terminationDate, int? modifiedBy,
         string? email, string? phoneNumber, string? preferredLanguage, DateTime? branchEffectiveFrom);
     Task<IEnumerable<EmployeeBranchHistoryRow>> GetBranchHistoryAsync(int employeeId);
+    /// <summary>hr.usp_EmployeeBranchHistory_CancelFuture: a transfer that has not taken effect yet is withdrawn; one that has is refused.</summary>
+    Task CancelFutureTransferAsync(int employeeBranchHistoryId, int? actedByUserId);
     Task SoftDeleteAsync(int employeeId, int? modifiedBy);
 
     // ---- employee <-> user account linking ----
