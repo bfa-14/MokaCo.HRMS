@@ -78,6 +78,7 @@ public class IclockController : ControllerBase
     private readonly IImportService _import;
     private readonly ISettingService _settings;
     private readonly ILiveNotifier _live;
+    private readonly IAttendanceService _attendance;
     private readonly ILogger<IclockController> _log;
 
     public IclockController(
@@ -85,8 +86,10 @@ public class IclockController : ControllerBase
         IImportService import,
         ISettingService settings,
         ILiveNotifier live,
+        IAttendanceService attendance,
         ILogger<IclockController> log)
     {
+        _attendance = attendance;
         _devices = devices;
         _import = import;
         _settings = settings;
@@ -217,7 +220,10 @@ public class IclockController : ControllerBase
             // Only when something actually landed. Signalling on a batch of duplicates would make
             // every open attendance page refetch on a device's retry timer, all day, for nothing.
             if (result.ChangedAnything)
+            {
                 await _live.NotifyAsync("attendance");
+                await ProcessPushedPunchesAsync(device, result.Inserted);
+            }
 
             return Text(OkBody);
         }
@@ -370,6 +376,36 @@ public class IclockController : ControllerBase
     {
         using var reader = new StreamReader(Request.Body, Encoding.UTF8, leaveOpen: true);
         return await reader.ReadToEndAsync();
+    }
+
+    /// <summary>
+    /// D6 (SQL 83): punches that were just PUSHED are processed straight away, under the same switch the pull
+    /// worker uses (MachinePullAutoProcess). The processor re-derives every employee-day that has a new punch
+    /// from ALL its punches — so a punch that arrives late, for a day already processed, corrects that day now
+    /// instead of tonight, and the anomaly it answers disappears (or the one it causes appears).
+    ///
+    /// IT NEVER FAILS THE PUSH. The terminal must be told OK once its batch is stored, or it re-sends the same
+    /// batch for ever; whatever is not processed here is still there for the nightly job.
+    /// </summary>
+    private async Task ProcessPushedPunchesAsync(Device device, int inserted)
+    {
+        try
+        {
+            var autoProcess = await _settings.GetAsync("MachinePullAutoProcess");
+            if (autoProcess?.SettingValue?.Trim() != "1")
+                return;
+
+            var processed = await _attendance.ProcessAsync(null);
+            _log.LogInformation(
+                "iclock push from {Serial}: {Inserted} new punch(es) stored, {Days} employee-day(s) processed into attendance; {LateDays} of them had already been processed (late-arriving punches) and were re-derived.",
+                device.SerialNumber, inserted, processed.EmployeeDaysProcessed, processed.LateDaysReprocessed);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex,
+                "iclock push from {Serial}: the {Inserted} punch(es) are stored but processing them failed; the nightly job will process them.",
+                device.SerialNumber, inserted);
+        }
     }
 
     private void LogPushOutcome(Device device, AttlogPushResult result)

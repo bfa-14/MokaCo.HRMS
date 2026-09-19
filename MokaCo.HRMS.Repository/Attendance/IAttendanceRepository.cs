@@ -48,4 +48,13 @@ public interface IAttendanceRepository
     /// this layer should invent on the procedure's behalf.
     /// </summary>
     Task<RosterMonthStatus?> GetRosterMonthAsync(int branchId, DateTime monthDate);
+
+    /// <summary>Employee-days with punches but no record because the approved roster has no row for them (SQL 83).</summary>
+    Task<IEnumerable<WorkedWithoutRoster>> GetWorkedWithoutRosterAsync(DateTime fromDate, DateTime toDate, int? branchId);
+
+    /// <summary>D9: the unknown device users, one line per (device, PIN).</summary>
+    Task<IEnumerable<QuarantinedDeviceUser>> GetDeviceQuarantineAsync(int? branchId);
+
+    /// <summary>D9: enrol the PIN to the employee, hand over the quarantined punches and REPLAY them into their days.</summary>
+    Task<QuarantineMapResult> MapQuarantinedDeviceUserAsync(QuarantineMapRequest request, int actedByUserId);
 }

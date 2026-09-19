@@ -78,7 +78,9 @@ public static class ApiErrorMap
         message.Contains("already", StringComparison.OrdinalIgnoreCase)
         || message.Contains("taken", StringComparison.OrdinalIgnoreCase)
         || message.Contains("waiting", StringComparison.OrdinalIgnoreCase)
-        || message.Contains("locked", StringComparison.OrdinalIgnoreCase);
+        || message.Contains("locked", StringComparison.OrdinalIgnoreCase)
+        // D10: "This period is paid — raise a payroll adjustment instead." The input is fine; the month's state refuses it.
+        || message.Contains("is paid", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// The procedure's sentence alone. SqlException.Message joins EVERY error of the batch with line

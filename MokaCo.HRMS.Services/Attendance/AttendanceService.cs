@@ -125,4 +125,13 @@ public class AttendanceService : IAttendanceService
     /// </summary>
     public Task<RosterMonthStatus?> GetRosterMonthAsync(int branchId, DateTime monthDate)
         => _repo.GetRosterMonthAsync(branchId, monthDate);
+
+    public Task<IEnumerable<WorkedWithoutRoster>> GetWorkedWithoutRosterAsync(DateTime fromDate, DateTime toDate, int? branchId)
+        => _repo.GetWorkedWithoutRosterAsync(fromDate, toDate, branchId);
+
+    public Task<IEnumerable<QuarantinedDeviceUser>> GetDeviceQuarantineAsync(int? branchId)
+        => _repo.GetDeviceQuarantineAsync(branchId);
+
+    public Task<QuarantineMapResult> MapQuarantinedDeviceUserAsync(QuarantineMapRequest request, int actedByUserId)
+        => _repo.MapQuarantinedDeviceUserAsync(request, actedByUserId);
 }

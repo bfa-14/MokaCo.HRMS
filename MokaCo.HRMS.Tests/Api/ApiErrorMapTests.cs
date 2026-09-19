@@ -19,6 +19,7 @@ public class ApiErrorMapTests
     [InlineData("That time was just taken — pick another slot.", 409)]
     [InlineData("Waiting for approval — request #59.", 409)]
     [InlineData("This payroll run is locked.", 409)]
+    [InlineData("This period is paid — raise a payroll adjustment instead.", 409)]
     public void A_procedure_refusal_keeps_its_sentence_and_is_a_400_or_a_409(string raised, int status)
     {
         var error = ApiErrorMap.ForSql(50000, raised, Trace);

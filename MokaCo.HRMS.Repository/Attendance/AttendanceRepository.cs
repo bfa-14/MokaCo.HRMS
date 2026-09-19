@@ -24,10 +24,17 @@ public class AttendanceRepository : IAttendanceRepository
     public async Task<ProcessResult> ProcessRawLogsAsync(DateTime? workDate)
     {
         using var db = _factory.Create();
-        return await db.QuerySingleAsync<ProcessResult>(
-            "attendance.usp_Attendance_ProcessRawLogs",
-            new { WorkDate = workDate },
-            commandType: CommandType.StoredProcedure);
+
+        // The result set keeps its one column (INSERT-EXEC callers rely on that shape); the count of days that had
+        // already been processed — late-arriving punches — comes back through an OUTPUT parameter (SQL 83, D6).
+        var parameters = new DynamicParameters();
+        parameters.Add("WorkDate", workDate, DbType.Date);
+        parameters.Add("LateDaysOut", dbType: DbType.Int32, direction: ParameterDirection.Output);
+
+        var result = await db.QuerySingleAsync<ProcessResult>(
+            "attendance.usp_Attendance_ProcessRawLogs", parameters, commandType: CommandType.StoredProcedure);
+        result.LateDaysReprocessed = parameters.Get<int?>("LateDaysOut") ?? 0;
+        return result;
     }
 
     /// <summary>
@@ -278,6 +285,33 @@ public class AttendanceRepository : IAttendanceRepository
                    banner reads Draft for a month that is actually pending. */
                 MonthDate = new DateTime(monthDate.Year, monthDate.Month, 1),
             },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<IEnumerable<WorkedWithoutRoster>> GetWorkedWithoutRosterAsync(DateTime fromDate, DateTime toDate, int? branchId)
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<WorkedWithoutRoster>(
+            "attendance.usp_Attendance_GetWorkedWithoutRoster",
+            new { FromDate = fromDate.Date, ToDate = toDate.Date, BranchId = branchId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<IEnumerable<QuarantinedDeviceUser>> GetDeviceQuarantineAsync(int? branchId)
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<QuarantinedDeviceUser>(
+            "attendance.usp_DevicePunchQuarantine_GetAll",
+            new { BranchId = branchId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<QuarantineMapResult> MapQuarantinedDeviceUserAsync(QuarantineMapRequest request, int actedByUserId)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleAsync<QuarantineMapResult>(
+            "attendance.usp_DevicePunchQuarantine_MapToEmployee",
+            new { request.DeviceId, EnrollPin = request.EnrollPin.Trim(), request.EmployeeId, ActedByUserId = actedByUserId },
             commandType: CommandType.StoredProcedure);
     }
 }

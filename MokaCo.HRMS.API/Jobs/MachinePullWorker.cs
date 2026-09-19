@@ -266,6 +266,14 @@ public class MachinePullWorker : BackgroundService
                 "Machine pull auto-process: {Landed} new punch(es) landed, {Days} employee-day(s) processed into attendance (each rebuilt from all of its punches, by attributed date).",
                 landed, result.EmployeeDaysProcessed);
 
+            // D6: a punch for a day that had ALREADY been processed (the terminal was offline, a slow push). The day was
+            // derived again from all its punches in this same cycle; said out loud because an anomaly that appears or
+            // disappears on a past day would otherwise look like somebody edited it.
+            if (result.LateDaysReprocessed > 0)
+                _logger.LogInformation(
+                    "Machine pull auto-process: {LateDays} of those day(s) had already been processed — late-arriving punch(es); each was re-derived and its anomalies re-evaluated.",
+                    result.LateDaysReprocessed);
+
             if (result.EmployeeDaysProcessed > 0)
                 await services.GetRequiredService<ILiveNotifier>().NotifyAsync("attendance");
         }

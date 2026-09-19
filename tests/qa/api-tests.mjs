@@ -367,11 +367,10 @@ async function phase2() {
     'LateArrival 12 undecided shift 07:00-16:00 punch 07:12-16:00 for 4 Aug; 0 rows for 5 Aug', `4 Aug: ${fmt(aug4)}; 5 Aug rows=${aug5.length}`,
     !!aug4 && aug4.minutes === 12 && aug4.decision == null && String(aug4.shiftStart).slice(11, 16) === '07:00' && String(aug4.punchIn).slice(11, 16) === '07:12' && aug5.length === 0);
 
-  /* A11: the approved exit permission resolves the early departure automatically */
+  /* A11: what an approved exit permission covers is no anomaly at all (script 83 — it used to be listed as auto-Excused) */
   const aug13 = findAn('2026-08-13', 'EarlyDeparture');
-  check('A11d', 'E1 left 55 min early on 13 Aug with a 60-min approved exit permission -> the EarlyDeparture anomaly is Excused automatically, note "covered by exit permission #N"',
-    'EarlyDeparture 55 Excused, note names the permission, decidedBy empty (automatic)', `${fmt(aug13)} decidedBy=${aug13?.decidedBy ?? 'null'} note="${aug13?.note ?? ''}"`,
-    !!aug13 && aug13.minutes === 55 && aug13.decision === 'Excused' && /exit permission #\d+/i.test(aug13.note ?? ''));
+  check('A11d', 'E1 left 55 min early on 13 Aug with a 60-min approved exit permission -> fully covered: the anomalies list has no EarlyDeparture row for that day',
+    'no EarlyDeparture anomaly for 13 Aug', `${aug13 ? fmt(aug13) : 'none'}`, !aug13);
 
   /* ---- A6: the missing out punch is a MissingPunch anomaly: Excuse is refused, Correct enters the time through the manual path ---- */
   const aug10 = findAn('2026-08-10', 'MissingPunch');

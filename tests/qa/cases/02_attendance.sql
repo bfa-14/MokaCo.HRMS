@@ -161,12 +161,15 @@ EXEC dbo.QA_Check 'A11b', 'applying the approved 60 min does not reduce the day 
 SET @pass = 0; SELECT @pass = CASE WHEN Fraction = 1.00 THEN 1 ELSE 0 END FROM @r WHERE WorkDate = '2026-08-13';
 EXEC dbo.QA_Check 'A11c', 'the approved permission protects pay: the 55 early minutes are covered, DayFraction 1.00 (it is converted to leave at period close)', 'fraction=1.00', @act, @pass;
 SET @act = NULL; SET @pass = 0;
-SELECT @act = CONCAT(an.[Type], '/', an.[Minutes], '/', ISNULL(an.Decision, 'undecided'), ' note="', ISNULL(an.Note, ''), '"'),
-       @pass = CASE WHEN an.[Type] = 'EarlyDeparture' AND an.[Minutes] = 55 AND an.Decision = 'Excused' AND an.Note LIKE '%exit permission #%' THEN 1 ELSE 0 END
-FROM attendance.ATTENDANCE_ANOMALY an JOIN attendance.ATTENDANCE_RECORD a ON a.AttendanceId = an.AttendanceId
-WHERE a.EmployeeId = @E1 AND a.WorkDate = '2026-08-13' AND an.[Type] = 'EarlyDeparture';
-SET @act = ISNULL(@act, 'no EarlyDeparture anomaly row');
-EXEC dbo.QA_Check 'A11d', 'the 55-minute early departure is an EarlyDeparture anomaly that the approved 60-minute exit permission resolves automatically as Excused ("covered by exit permission #N")', 'EarlyDeparture/55/Excused note names the permission', @act, @pass;
+/* script 83 (QA2 A1b/A1c): what an approved permission covers is NO anomaly at all — HR is shown only the uncovered part.
+   (Until then the whole early departure was reported and auto-excused.) The record still names the permission. */
+SELECT @act = CONCAT('early=', a.EarlyExitMinutes, ' earlyDeduct=', a.EarlyDeductMinutes, ' fraction=', a.DayFraction, ' exitPermissionId=', ISNULL(CAST(a.ExitPermissionId AS VARCHAR(10)), 'NULL'),
+                     ' exitLeave=', a.ExitLeaveMinutes, ' anomalies=', ISNULL((SELECT STRING_AGG(CONCAT(an.[Type], '/', an.[Minutes], '/', ISNULL(an.Decision, 'undecided')), ',') FROM attendance.ATTENDANCE_ANOMALY an WHERE an.AttendanceId = a.AttendanceId), 'none')),
+       @pass = CASE WHEN a.EarlyExitMinutes = 0 AND a.EarlyDeductMinutes = 0 AND a.DayFraction = 1.00 AND a.ExitPermissionId IS NOT NULL
+                     AND NOT EXISTS (SELECT 1 FROM attendance.ATTENDANCE_ANOMALY an WHERE an.AttendanceId = a.AttendanceId AND an.[Type] = 'EarlyDeparture') THEN 1 ELSE 0 END
+FROM attendance.ATTENDANCE_RECORD a WHERE a.EmployeeId = @E1 AND a.WorkDate = '2026-08-13';
+SET @act = ISNULL(@act, 'no record');
+EXEC dbo.QA_Check 'A11d', 'the 55-minute early departure is fully covered by the approved 60-minute exit permission: nothing is left for HR to decide', 'no EarlyDeparture anomaly; early 0, nothing deducted, full day; the record names the permission', @act, @pass;
 
 /* A8 overnight (E3) */
 SET @act = NULL; SET @pass = 0;

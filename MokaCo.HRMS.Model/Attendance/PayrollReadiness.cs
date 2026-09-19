@@ -102,6 +102,12 @@ public class AttendanceBranchSummary
 public class ProcessResult
 {
     public int EmployeeDaysProcessed { get; set; }
+
+    /// <summary>
+    /// Of those, the days that ALREADY had a record: a punch arrived after the day had been processed (a terminal that
+    /// was offline, a late push) and the day was derived again from all its punches in the same run (SQL 83, D6).
+    /// </summary>
+    public int LateDaysReprocessed { get; set; }
 }
 
 /// <summary>How many rostered-but-punchless days were written as Absent/RestDay.</summary>

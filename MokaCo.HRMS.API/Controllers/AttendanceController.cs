@@ -344,6 +344,45 @@ public class AttendanceController : ControllerBase
     }
 
     /// <summary>The HR decision queue: days where what happened differs from what was approved, and nobody has said what that means.</summary>
+    /// <summary>
+    /// "Worked without roster": employee-days with punches but no attendance record, because the APPROVED roster of
+    /// the month gives the employee no row for that day. Nothing is deducted or paid for them; HR adds the day to
+    /// the roster (the next reprocess derives it) or leaves it.
+    /// </summary>
+    [HttpGet("worked-without-roster")]
+    [HasPermission("ATTENDANCE_VIEW")]
+    public async Task<IActionResult> GetWorkedWithoutRoster(
+        [FromQuery] DateTime from, [FromQuery] DateTime to, [FromQuery] int? branchId = null)
+    {
+        if (from > to)
+            return BadRequest(new { error = "'from' must be on or before 'to'." });
+
+        return Ok(await _attendance.GetWorkedWithoutRosterAsync(from, to, branchId));
+    }
+
+    /// <summary>D9: unknown device users — punches that arrived under a PIN enrolled to nobody, one line per (device, PIN).</summary>
+    [HttpGet("device-quarantine")]
+    [HasPermission("ATTENDANCE_VIEW")]
+    public async Task<IActionResult> GetDeviceQuarantine([FromQuery] int? branchId = null)
+        => Ok(await _attendance.GetDeviceQuarantineAsync(branchId));
+
+    /// <summary>
+    /// D9 "map to employee": enrols the PIN, gives the quarantined punches to the employee and REPLAYS them —
+    /// every day they belong to is derived from all its punches. Days already paid stay as they were paid and are
+    /// counted in the answer. ATTENDANCE_IMPORT is the right that already covers "map PINs".
+    /// </summary>
+    [HttpPost("device-quarantine/map")]
+    [HasPermission("ATTENDANCE_IMPORT")]
+    public async Task<IActionResult> MapDeviceQuarantine([FromBody] QuarantineMapRequest request)
+    {
+        if (request.DeviceId <= 0 || request.EmployeeId <= 0 || string.IsNullOrWhiteSpace(request.EnrollPin))
+            return BadRequest(new { error = "Choose the device user (device and PIN) and the employee it belongs to." });
+
+        var result = await _attendance.MapQuarantinedDeviceUserAsync(request, User.UserId());
+        await _live.NotifyAsync("attendance");
+        return Ok(result);
+    }
+
     [HttpGet("exit-variances")]
     [HasPermission("ATTENDANCE_VIEW")]
     public async Task<IActionResult> GetExitVariances(

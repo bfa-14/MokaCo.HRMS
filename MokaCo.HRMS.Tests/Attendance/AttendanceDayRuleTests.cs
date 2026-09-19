@@ -28,7 +28,8 @@ public class AttendanceDayRuleTests
         int LateMinutes, int LateDeductMinutes, int EarlyExitMinutes, int MidDayGapMinutes,
         int ExitActualMinutes, int ExitApprovedMinutes, int ExitVarianceMinutes, int OvertimeMinutes,
         int WorkedMinutes, int CoveredMinutes, decimal? DayFraction, bool IsFullDay,
-        int ShortfallMinutes, int BreakApplied, int StandardMinutes, int EarlyDeductMinutes, int ToleranceMinutes);
+        int ShortfallMinutes, int BreakApplied, int StandardMinutes, int EarlyDeductMinutes, int ToleranceMinutes,
+        int PermEdgeMinutes);
 
     private static async Task<Outcome> RuleAsync(
         DateTime? firstIn, DateTime? lastOut,
@@ -36,17 +37,18 @@ public class AttendanceDayRuleTests
         string? lateDecision = null, string? earlyDecision = null, decimal fullDayThreshold = 1.00m,
         bool restDay = false, bool onLeave = false, bool holiday = false,
         DateTime? shiftStart = null, DateTime? shiftEnd = null, int? standard = null, bool noShift = false,
-        int tolerance = Tolerance, int breakMinutes = Break)
+        int tolerance = Tolerance, int breakMinutes = Break,
+        int permLate = 0, int permEarly = 0, int dstExtra = 0)      // script 83: permission windows at the edges of the day, the autumn DST hour
     {
         await using var db = new SqlConnection(DbFactAttribute.ConnectionString);
         var rows = await db.QueryAsync<Outcome>(
             """
             SELECT [Status], EffectiveInUtc, EffectiveOutUtc, LateMinutes, LateDeductMinutes, EarlyExitMinutes, MidDayGapMinutes,
                    ExitActualMinutes, ExitApprovedMinutes, ExitVarianceMinutes, OvertimeMinutes, WorkedMinutes, CoveredMinutes,
-                   DayFraction, IsFullDay, ShortfallMinutes, BreakApplied, StandardMinutes, EarlyDeductMinutes, ToleranceMinutes
+                   DayFraction, IsFullDay, ShortfallMinutes, BreakApplied, StandardMinutes, EarlyDeductMinutes, ToleranceMinutes, PermEdgeMinutes
             FROM attendance.fn_AttendanceDayRule(@ShiftStart, @ShiftEnd, @Break, @Tolerance, @Standard, @FirstIn, @LastOut, @Gap,
                                                  @ExitApproved, @Disposition, @OtApproved, @LateDecision, @EarlyDecision,
-                                                 @Threshold, @RestDay, @OnLeave, @Holiday)
+                                                 @Threshold, @RestDay, @OnLeave, @Holiday, @PermLate, @PermEarly, @DstExtra)
             """,
             new
             {
@@ -57,7 +59,8 @@ public class AttendanceDayRuleTests
                 FirstIn = firstIn, LastOut = lastOut, Gap = gapMinutes,
                 ExitApproved = exitApproved, Disposition = disposition, OtApproved = overtimeApproved,
                 LateDecision = lateDecision, EarlyDecision = earlyDecision, Threshold = fullDayThreshold,
-                RestDay = restDay, OnLeave = onLeave, Holiday = holiday
+                RestDay = restDay, OnLeave = onLeave, Holiday = holiday,
+                PermLate = permLate, PermEarly = permEarly, DstExtra = dstExtra
             });
         return Assert.Single(rows);
     }
@@ -276,7 +279,8 @@ public class AttendanceDayRuleTests
     {
         var r = await RuleAsync(Day.AddHours(7), Day.AddHours(15).AddMinutes(5), exitApproved: 60);
 
-        Assert.Equal(55, r.EarlyExitMinutes);          // still reported (the writer excuses the anomaly automatically)
+        Assert.Equal(0, r.EarlyExitMinutes);           // script 83: what a permission covers is no anomaly at all (it used to be reported whole and auto-excused)
+        Assert.Equal(55, r.PermEdgeMinutes);           // the permission minutes used at the edge of the day
         Assert.Equal(0, r.ExitActualMinutes);          // not a mid-day gap
         Assert.Equal(60, r.ExitApprovedMinutes);
         Assert.Equal(-60, r.ExitVarianceMinutes);      // nothing to queue
@@ -291,7 +295,7 @@ public class AttendanceDayRuleTests
         // out 15:00 (60 early), 20 minutes approved, HR deducts: 40 come off, 20 stay covered
         var r = await RuleAsync(Day.AddHours(7), Day.AddHours(15), exitApproved: 20, earlyDecision: "Deducted");
 
-        Assert.Equal(60, r.EarlyExitMinutes);
+        Assert.Equal(40, r.EarlyExitMinutes);          // script 83: the anomaly IS the uncovered part (was the whole 60)
         Assert.Equal(40, r.EarlyDeductMinutes);
         Assert.Equal(20, r.CoveredMinutes);
         Assert.Equal(450, r.WorkedMinutes);            // (15:00 − 07:00) − 30
@@ -306,7 +310,7 @@ public class AttendanceDayRuleTests
 
         Assert.Equal(45, r.ExitActualMinutes);
         Assert.Equal(-15, r.ExitVarianceMinutes);
-        Assert.Equal(30, r.EarlyExitMinutes);
+        Assert.Equal(15, r.EarlyExitMinutes);          // script 83: the uncovered half of the 30 (it used to be reported whole)
         Assert.Equal(15, r.EarlyDeductMinutes);
         Assert.Equal(60, r.CoveredMinutes);            // 45 + 15
     }
@@ -463,6 +467,101 @@ public class AttendanceDayRuleTests
         Assert.Equal(0, r.EarlyExitMinutes);
         Assert.Equal(480, r.WorkedMinutes);           // 8h30 − 30
         Assert.Equal(0.89m, r.DayFraction);
+    }
+
+    /* ======================================================================================
+       Script 83 (QA2): permission WINDOWS at the edges of the day, a rest day worked, the DST hour.
+       The Morning shift here is 07:00–16:00, break 30, standard 510, tolerance 10.
+       ====================================================================================== */
+
+    /* ---- A1a: a "late permission" — 30 approved minutes whose window covers the 25 minutes of lateness ---- */
+    [DbFact]
+    public async Task A_permission_at_the_start_of_the_shift_covers_the_lateness_and_leaves_no_anomaly()
+    {
+        var r = await RuleAsync(Day.AddHours(7).AddMinutes(25), Day.AddHours(16), exitApproved: 30, permLate: 30);
+
+        Assert.Equal(0, r.LateMinutes);              // nothing left for HR to decide
+        Assert.Equal(0, r.LateDeductMinutes);
+        Assert.Equal(1.00m, r.DayFraction);
+        Assert.Equal(25, r.PermEdgeMinutes);         // the minutes actually used: what goes to the leave conversion on the Actual basis
+        Assert.Equal(0, r.ExitActualMinutes);        // still means the MID-DAY exit, and there was none
+    }
+
+    /* ---- A1b: early 40 with a 30-minute permission at the end -> an anomaly for the 10 uncovered minutes only ---- */
+    [DbFact]
+    public async Task A_permission_at_the_end_of_the_shift_leaves_only_the_uncovered_minutes_as_the_anomaly()
+    {
+        var undecided = await RuleAsync(Day.AddHours(7), Day.AddHours(15).AddMinutes(20), exitApproved: 30, permEarly: 30);
+        Assert.Equal(10, undecided.EarlyExitMinutes);
+        Assert.Equal(1.00m, undecided.DayFraction);
+        Assert.Equal(30, undecided.PermEdgeMinutes);
+
+        // deciding Deduct costs the 10 minutes — never the 30 the permission covered
+        var deducted = await RuleAsync(Day.AddHours(7), Day.AddHours(15).AddMinutes(20), exitApproved: 30, permEarly: 30, earlyDecision: "Deducted");
+        Assert.Equal(10, deducted.EarlyDeductMinutes);
+        Assert.Equal(500, deducted.WorkedMinutes + deducted.CoveredMinutes);   // 510 − 10
+    }
+
+    /* ---- uncovered minutes BELOW the tolerance are nothing at all: early 35, permission 30 -> 5 < 10 ---- */
+    [DbFact]
+    public async Task What_a_permission_leaves_uncovered_is_held_to_the_tolerance_like_any_other_delay()
+    {
+        var r = await RuleAsync(Day.AddHours(7), Day.AddHours(15).AddMinutes(25), exitApproved: 30, permEarly: 30);
+
+        Assert.Equal(0, r.EarlyExitMinutes);
+        Assert.Equal(1.00m, r.DayFraction);
+    }
+
+    /* ---- a permission for ANOTHER time of day does not excuse lateness: no window over the late minutes ---- */
+    [DbFact]
+    public async Task A_permission_elsewhere_in_the_day_does_not_cover_a_late_arrival()
+    {
+        var r = await RuleAsync(Day.AddHours(7).AddMinutes(25), Day.AddHours(16), exitApproved: 30, permLate: 0);
+
+        Assert.Equal(25, r.LateMinutes);
+        Assert.Equal(0, r.PermEdgeMinutes);
+    }
+
+    /* ---- the pooled remainder still covers an early departure, as it did before the windows (HR's own figure has no window) ---- */
+    [DbFact]
+    public async Task Approved_minutes_without_a_window_still_cover_an_early_departure()
+    {
+        var r = await RuleAsync(Day.AddHours(7), Day.AddHours(15).AddMinutes(5), exitApproved: 60);
+
+        Assert.Equal(0, r.EarlyExitMinutes);         // 55 early, 60 approved and nothing else to spend them on
+        Assert.Equal(55, r.PermEdgeMinutes);
+        Assert.Equal(1.00m, r.DayFraction);
+    }
+
+    /* ---- A1g: a rest day worked is overtime only as far as an overtime request was approved ---- */
+    [DbTheory]
+    [InlineData(0, 0)]
+    [InlineData(240, 240)]
+    [InlineData(120, 120)]      // approved less than worked: the approved part only
+    [InlineData(600, 240)]      // approved more than worked: what was worked
+    public async Task A_rest_day_worked_is_overtime_only_within_the_approved_request(int approved, int expected)
+    {
+        var r = await RuleAsync(Day.AddHours(8), Day.AddHours(12), restDay: true, noShift: true, standard: 0, breakMinutes: 0, overtimeApproved: approved);
+
+        Assert.Equal("RestDay", r.Status);
+        Assert.Equal(240, r.WorkedMinutes);          // visible either way
+        Assert.Equal(expected, r.OvertimeMinutes);
+        Assert.Null(r.DayFraction);                  // never measured, never Absent
+    }
+
+    /* ---- A2b: the autumn DST night is one real hour longer than its wall length; paid only with an approved request ---- */
+    [DbTheory]
+    [InlineData(0, 0)]
+    [InlineData(60, 60)]
+    [InlineData(30, 30)]
+    public async Task The_repeated_hour_of_the_autumn_night_is_overtime_only_within_the_approved_request(int approved, int expected)
+    {
+        var start = new DateTime(2025, 10, 25, 22, 0, 0); var end = new DateTime(2025, 10, 26, 6, 0, 0);
+        var r = await RuleAsync(start, end, shiftStart: start, shiftEnd: end, standard: 450, overtimeApproved: approved, dstExtra: 60);
+
+        Assert.Equal(expected, r.OvertimeMinutes);
+        Assert.Equal(1.00m, r.DayFraction);
+        Assert.Equal(0, r.LateMinutes + r.EarlyExitMinutes);
     }
 }
 

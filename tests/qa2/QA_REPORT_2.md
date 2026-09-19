@@ -1,0 +1,45 @@
+# MokaCo HRMS — QA2 scenario suite report
+
+Suite: `tests/qa2/` (`bash tests/qa2/run.sh`, log in `tests/qa2/last-run.log`). Everything it creates is prefixed `QA2 ` (users `qa2.*`), is removed by `tests/qa2/cleanup.sql`, and the clean-up compares every real table's row count plus checksums of the real rosters, attendance records and leave ledger with the baseline taken by the seed. Month under test M = the previous month (computed on Beirut's clock; 2026-08 when this was written). The DST nights are seeded explicitly: the Saturday nights before the last Sunday of March (2026-03-28) and of October (2025-10-25).
+
+Every case states EXPECTED from the rules in the mission prompt, then ACTUAL; a difference is a bug. The table lists every difference found on the FIRST run of each area, before any fix. "Disposition" at the end says what happened to each.
+
+## Bugs
+
+| ID | Area | Case (log IDs) | Steps to reproduce | Expected | Actual (first run) | Severity | Location |
+|---|---|---|---|---|---|---|---|
+| QA2-01 | Attendance | An exit permission does not reduce the late / early anomaly (A1a, A1b) | E1, shift 07:00–15:00. (a) approved exit permission 07:00–07:30, punch in 07:25. (b) approved permission 14:30–15:00, punch out 14:20. | (a) no anomaly, full pay, the permission minutes go to the period-close leave conversion. (b) an EarlyDeparture anomaly for the 10 uncovered minutes only. | (a) `LateArrival 25 undecided`, `ExitLeaveMinutes 0`. (b) `EarlyDeparture 40 undecided`. Permission minutes only ever covered the mid-day gap and then the early DEDUCTION, never the anomaly, and never lateness. | major | `attendance.fn_AttendanceDayRule`, `usp_Attendance_ComputeDay` |
+| QA2-02 | Attendance | A second exit permission the same day is refused (A1c) | E1: raise 14:00–14:30 and 14:30–15:00 for the same date. | Both accepted (the windows do not overlap); a 50-minute early departure is fully covered, no anomaly. | Second create: "This employee already has a pending or approved exit permission for that date."; `EarlyDeparture 50 undecided`. | major | `workflow.usp_ExitPermission_Create` |
+| QA2-03 | Attendance | A rest day worked with an approved overtime request is never overtime (A1g) | E1 called in on a rest day 08:00–12:00 with an approved overtime request of 240 min. | RestDay, 240 worked minutes visible, overtime 240 (0 without a request). | RestDay, worked 240, `OvertimeMinutes 0` with or without the request — payroll pays LEAST(approved, detected) = 0. | major | `attendance.fn_AttendanceDayRule` (rest days were "not measured", overtime included) |
+| QA2-04 | Attendance | No public holidays (A1h) — feature D1 | Holiday on a rostered working day; E1 does not punch, E2 works. | E1 Holiday (paid, not Absent); E2 Holiday with worked minutes for the premium. | No holiday table: E1 `Absent`, fraction 0.00 (a day deducted); E2 `Present`. `ComputeDay` looked for an `hr.PUBLIC_HOLIDAY` that never existed. | major | missing `core.HOLIDAY`; `usp_Attendance_ComputeDay` |
+| QA2-05 | Attendance | An unrostered day gets an attendance record (A1i) | E4 has no roster row at all on a Saturday of an approved month; punches 08:00–12:00. | No record, no deduction; listed for HR in "worked without roster". | A `Present` record on the default 8-hour standard; no list exists. | minor | `usp_Attendance_ComputeDay`; missing `usp_Attendance_GetWorkedWithoutRoster` |
+| QA2-06 | Attendance | A decision survives a changed punch (A1k) | E1 out 14:00 (early 60) decided Deduct; HR corrects the out-punch to 14:30. | Day recomputed; decision cleared with a note; HR sees the 30-minute anomaly again. | `EarlyDeparture 30 Deducted`, `EarlyDeductMinutes 30`: the old decision silently applied to a different fact. | major | `usp_Attendance_SyncAnomalies` ("the decision never moves"), both writers |
+| QA2-07 | Attendance | Unknown device users cannot be replayed (A1o) — feature D9 | Two punches from PIN `Q2X99` enrolled to nobody; map the PIN to E4. | Quarantined, visible, never lost; mapping replays them into E4's day. | The punches were kept (EmployeeId NULL) and `usp_EmployeeDevice_Map` hands them over, but nothing derives the day and there is no quarantine object / map procedure. | minor | missing `attendance.DEVICE_PUNCH_QUARANTINE`, `usp_DevicePunchQuarantine_MapToEmployee` |
+| QA2-08 | Attendance | The repeated hour of the autumn DST night cannot be paid (A2b2) | E3 22:00–06:00 on 2025-10-25 (9 real hours), overtime request of 60 approved. | Full day; overtime 60 with the request, 0 without. | Overtime 0 either way (punches and shifts are wall-clock, so the hour is invisible). | minor | `fn_AttendanceDayRule`, `usp_Attendance_ComputeDay` |
+| QA2-09 | Attendance | "Overtime must be approved before it is worked" is judged on the server clock | Read `workflow.usp_Overtime_Create`. | Beirut's date. | `CAST(GETDATE() AS DATE)`: between midnight UTC-side and Beirut's midnight the wrong day is refused or accepted. | minor | `workflow.usp_Overtime_Create` |
+
+Passed on the first run, no change needed: A1d (permission over the break), A1e (approved overtime + late, independent), A1f (leave + punches), A1j1–A1j3 (Deduct kept on reprocess; tolerance 10 → 15 re-evaluates undecided rows only; bulk Excuse), A1m (debounce storm), A1n (late-arriving punch re-derives the day), A2a (month-end night), A2b1 (spring night), A2c (early-in ignored, early-out 10), A2d (leave night + stray 01:00 punch).
+
+## Rules decided
+
+Where the prompt was ambiguous, the rule written there was applied and the reading is recorded here.
+
+1. **Permission windows.** A permission covers lateness / an early departure by its WINDOW: the approved minutes that overlap [shift start, first in) or (last out, shift end]. What is left of the approved total covers the mid-day gap and then, as before script 83, an early departure (HR's own approved figure has no window and stays pooled). A permission for another time of day does not excuse a late arrival. Each permission counts for no more than its approved minutes.
+2. **What a permission covers is no anomaly at all.** Until script 83 the whole early departure was reported and auto-marked Excused; now only the uncovered part (if it reaches the tolerance) is shown to HR. The record still names the permission and carries the used minutes (`ExitLeaveMinutes` on the Actual basis) into the period-close conversion. Suite 1's A11d was re-targeted accordingly.
+3. **Unrostered day = a day missing from an APPROVED roster month.** Only then is no record created. Where the month's roster is not approved (or does not exist) the roster is inert, exactly as before, and days keep their record on the default standard day — otherwise every real branch without an approved roster would stop producing attendance records. If the owner wants the stricter reading (no record without a roster, anywhere), it is one condition in `usp_Attendance_ComputeDay` (`@MonthApproved = 1 AND`).
+4. **A decision answers a fact.** The same punches reprocessed — also with another tolerance or a newly approved permission — keep every decision (A1j). A punch that CHANGED (a correction, a late-arriving punch, the machine re-sending the day) withdraws an Excused / Deducted decision with a note that says what it was (A1k). `Corrected` rows are never touched.
+5. **"The period is paid" is per employee** (D10): a locked primary run of the month that holds a payslip for THAT employee. A locked run says nothing about somebody it never paid; refusing their attendance would make it uncorrectable for ever (and real August is locked while both suites seed August data for their own employees). Automatic processing never raises on a paid day — it leaves the day as it was paid (`Outcome = 'Locked'`) and carries on; every HR-facing writer refuses with "This period is paid — raise a payroll adjustment instead."
+6. **Tolerance in the suite** is changed through the QA2 shift's own `GraceMinutes` (NULL = the setting), never through the global `AttendanceToleranceMinutes` row, which is real data.
+7. **Overtime for a past month** cannot be raised through `usp_Overtime_Create` (pre-approval is the rule, and it was kept). The fixture raises and approves it for a future date through the real procedures and moves that QA2 row's `WorkDate`.
+8. **DST.** Punch times are the terminal's wall clock and shifts are built from `WorkDate + StartTime` with no zone, so both DST nights are complete wall-clock days with no anomaly. Only the autumn night's extra REAL hour is new logic: overtime within what an approved overtime request leaves.
+9. **D9 quarantine is a view**, `attendance.DEVICE_PUNCH_QUARANTINE`, over the punches `usp_RawLog_Insert` already stores with no employee. A second table would be a second copy of the same punches.
+
+## Features added
+
+(filled in as each lands — see "Disposition")
+
+## Disposition
+
+| ID | What happened | Commit |
+|---|---|---|
+| QA2-01 … QA2-09 | fixed in `docs/82_qa2_foundation.sql` + `docs/83_qa2_attendance.sql`; A1 and A2 all pass | attendance commit |

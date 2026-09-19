@@ -234,8 +234,26 @@ public class AttendanceAnomalyTests
         Assert.Equal(1.00m, r.DayFraction);
     }
 
+    /* A decision answers a FACT (script 83, QA2 A1j / A1k). The same punches reprocessed keep it; a punch that
+       CHANGED after the decision — the machine re-sends the day, HR corrects a time — withdraws it with a note,
+       and HR decides the anomaly as it now stands. (Until script 83 the decision survived a changed punch.) */
     [DbFact]
-    public async Task Reprocessing_updates_the_minutes_but_never_the_decision()
+    public async Task Reprocessing_the_same_punches_keeps_the_decision()
+    {
+        await using var f = await ExampleDayAsync();
+        var late = (await f.AnomaliesAsync(Day)).Single(a => a.Type == "LateArrival");
+        await f.DecideAsync(late.AnomalyId, "Deduct");
+
+        await f.ReprocessAsync(Day);
+
+        var again = (await f.AnomaliesAsync(Day)).Single(a => a.Type == "LateArrival");
+        Assert.Equal(late.AnomalyId, again.AnomalyId);
+        Assert.Equal("Deducted", again.Decision);
+        Assert.Equal(late.Minutes, (await f.RecordAsync(Day)).LateDeductMinutes);
+    }
+
+    [DbFact]
+    public async Task A_punch_that_changes_after_the_decision_withdraws_it()
     {
         await using var f = await ExampleDayAsync();
         var late = (await f.AnomaliesAsync(Day)).Single(a => a.Type == "LateArrival");
@@ -249,11 +267,10 @@ public class AttendanceAnomalyTests
         var again = (await f.AnomaliesAsync(Day)).Single(a => a.Type == "LateArrival");
         Assert.Equal(late.AnomalyId, again.AnomalyId);  // the same row
         Assert.Equal(12, again.Minutes);
-        Assert.Equal("Deducted", again.Decision);
+        Assert.Null(again.Decision);                    // decided about 07:10; the punch is 07:12 now
         Assert.Equal(Day.AddHours(7).AddMinutes(12), again.PunchInUtc);
         var r = await f.RecordAsync(Day);
-        Assert.Equal(12, r.LateDeductMinutes);
-        Assert.Equal(0.98m, r.DayFraction);            // 468 + 10 covered early = 478 / 480
+        Assert.Equal(0, r.LateDeductMinutes);           // nothing is deducted on a withdrawn decision
     }
 
     /* ---- manually entered attendance follows the same rule ---- */
