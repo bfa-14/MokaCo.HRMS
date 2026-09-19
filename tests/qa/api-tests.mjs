@@ -130,6 +130,35 @@ async function phase1() {
   check('X4a', 'a Manager (branch manager of QA Branch) sees only own-branch employees on GET /api/employees',
     'no employees of other branches in the list', `status ${empList.status}, ${(empList.json ?? []).length} employees returned, ${foreign.length} from other branches (e.g. ${foreign.slice(0, 2).map((e) => e.fullName + '/' + e.branch).join(', ')})`,
     empList.status === 200 && foreign.length === 0);
+  /* BUG-04 (script 87): the scope is in the procedures. EMP_VIEW_ALL = everybody; without it, own rows + managed branches. */
+  const hrList = await api('qa.hr', 'GET', '/api/employees');
+  const hrForeign = (hrList.json ?? []).filter((e) => e.branch !== 'QA Branch').length;
+  check('X4h', 'HR (EMP_VIEW_ALL) still sees the employees of every branch on GET /api/employees', 'employees of other branches present',
+    `status ${hrList.status}, ${(hrList.json ?? []).length} employees, ${hrForeign} from other branches`, hrList.status === 200 && hrForeign > 0);
+  {
+    const opsEmp = +sql(`SELECT e.EmployeeId FROM hr.EMPLOYEE e JOIN security.[USER] u ON u.UserId = e.UserId WHERE u.Username = N'qa.ops'`);
+    const managed = sql(`SELECT ISNULL(STRING_AGG(CAST(BranchId AS VARCHAR(10)), ','), '') FROM hr.BRANCH WHERE ManagerEmployeeId = ${opsEmp}`).split(',').filter(Boolean).map(Number);
+    for (const [idc, path, what] of [['X4i', '/api/attendance?from=2026-08-01&to=2026-08-31', 'attendance list'], ['X4j', '/api/roster?from=2026-08-01&to=2026-08-31', 'roster']]) {
+      const mine = await api('qa.ops', 'GET', path);
+      const all = await api('qa.hr', 'GET', path);
+      const outside = (mine.json ?? []).filter((r) => r.employeeId !== opsEmp && !managed.includes(r.branchId));
+      check(idc, `an Operations Manager (ATTENDANCE_VIEW, no EMP_VIEW_ALL) gets only own rows and managed branches in the ${what}; HR gets everything`,
+        '0 rows outside the scope, and fewer rows than HR',
+        `ops: status ${mine.status}, ${(mine.json ?? []).length} rows, ${outside.length} outside (manages [${managed.join(',')}]); hr: ${(all.json ?? []).length} rows`,
+        mine.status === 200 && outside.length === 0 && (all.json ?? []).length > (mine.json ?? []).length);
+    }
+    const r = sql(`DECLARE @u INT = (SELECT UserId FROM security.[USER] WHERE Username = N'qa.manager'), @B INT = ${ids.branch};
+      DECLARE @t TABLE (a INT, EmployeeId INT, c NVARCHAR(200), d INT, e NVARCHAR(100), f TIME, g TIME, h DATE, i BIT, BranchId INT);
+      INSERT INTO @t EXEC attendance.usp_ShiftAssignment_GetByDateRange @FromDate = '2026-08-01', @ToDate = '2026-08-31', @CallerUserId = @u;
+      DECLARE @n TABLE (a INT, EmployeeId INT, c NVARCHAR(200), d INT, e NVARCHAR(100), f TIME, g TIME, h DATE, i BIT, BranchId INT);
+      INSERT INTO @n EXEC attendance.usp_ShiftAssignment_GetByDateRange @FromDate = '2026-08-01', @ToDate = '2026-08-31';
+      SELECT CONCAT((SELECT COUNT(*) FROM @t), '|', (SELECT COUNT(*) FROM @t WHERE BranchId <> @B), '|', (SELECT COUNT(*) FROM @n))`).split('|').map(Number);
+    check('X4k', 'the roster procedure called for the QA Branch manager returns that branch only; with no caller (the system) it returns everything',
+      'rows > 0, 0 of another branch, fewer than the unscoped call', `manager rows=${r[0]} otherBranch=${r[1]} unscoped=${r[2]}`, r[0] > 0 && r[1] === 0 && r[2] > r[0]);
+    const hygiene = sql(`SELECT CONCAT((SELECT COUNT(*) FROM security.ROLE_PERMISSION rp JOIN security.[ROLE] r ON r.RoleId = rp.RoleId JOIN security.PERMISSION p ON p.PermissionId = rp.PermissionId
+        WHERE r.Name = N'Employee' AND p.Code IN ('REQUEST_RAISE_OTHERS', 'REQUEST_VIEW_ALL', 'WORKFLOW_CONFIGURE')), '|', (SELECT SettingValue FROM core.SETTING WHERE SettingKey = 'AllowSystemReset'))`);
+    check('X4l', 'role hygiene: the Employee role holds none of REQUEST_RAISE_OTHERS / REQUEST_VIEW_ALL / WORKFLOW_CONFIGURE, and AllowSystemReset is 0', '0|0', hygiene, hygiene === '0|0');
+  }
   const opsPayroll = await api('qa.ops', 'GET', '/api/payroll/runs');
   check('X4b', 'an Operations Manager gets 403 on GET /api/payroll/runs (no PAYROLL_* permission)', '403', `${opsPayroll.status} body=${opsPayroll.text.slice(0, 80) || '(empty)'}`, opsPayroll.status === 403);
   const opsSettings = await api('qa.ops', 'GET', '/api/settings');

@@ -18,11 +18,11 @@ public interface IAttendanceRepository
     Task<MarkLeaveDaysResult> MarkLeaveDaysAsync(string periodYearMonth);
 
     /* -- reads -- */
-    Task<IEnumerable<AttendanceRecord>> GetByDateRangeAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId);
+    Task<IEnumerable<AttendanceRecord>> GetByDateRangeAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId, int? callerUserId = null);
     Task<AttendanceDetail?> GetByIdAsync(long attendanceId);
     /// <summary>One row per anomaly (late arrival / early departure at or beyond the tolerance, missing punch) of the days in range — script 77.</summary>
-    Task<IEnumerable<AttendanceAnomaly>> GetAnomaliesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided, int? branchId);
-    Task<IEnumerable<ExitVariance>> GetExitVariancesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided);
+    Task<IEnumerable<AttendanceAnomaly>> GetAnomaliesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided, int? branchId, int? callerUserId = null);
+    Task<IEnumerable<ExitVariance>> GetExitVariancesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided, int? callerUserId = null);
 
     /* -- HR overrides -- */
     Task<AttendanceRecord?> ManualUpsertAsync(ManualAttendanceRequest request);
@@ -50,7 +50,7 @@ public interface IAttendanceRepository
     Task<RosterMonthStatus?> GetRosterMonthAsync(int branchId, DateTime monthDate);
 
     /// <summary>Employee-days with punches but no record because the approved roster has no row for them (SQL 83).</summary>
-    Task<IEnumerable<WorkedWithoutRoster>> GetWorkedWithoutRosterAsync(DateTime fromDate, DateTime toDate, int? branchId);
+    Task<IEnumerable<WorkedWithoutRoster>> GetWorkedWithoutRosterAsync(DateTime fromDate, DateTime toDate, int? branchId, int? callerUserId = null);
 
     /// <summary>D9: the unknown device users, one line per (device, PIN).</summary>
     Task<IEnumerable<QuarantinedDeviceUser>> GetDeviceQuarantineAsync(int? branchId);

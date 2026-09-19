@@ -40,7 +40,7 @@ public class AttendanceCorrectionsController : ControllerBase
     /// <summary>The queue. While anything sits here, payroll is blocked for that period.</summary>
     [HttpGet("pending")]
     [HasPermission("ATTENDANCE_VIEW")]
-    public async Task<IActionResult> GetPending() => Ok(await _corrections.GetPendingAsync());
+    public async Task<IActionResult> GetPending() => Ok(await _corrections.GetPendingAsync(User.UserId()));
 
     [HttpGet("by-record/{attendanceId:long}")]
     [HasPermission("ATTENDANCE_VIEW")]

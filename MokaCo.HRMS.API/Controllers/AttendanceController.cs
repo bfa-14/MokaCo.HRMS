@@ -64,7 +64,7 @@ public class AttendanceController : ControllerBase
         if (from > to)
             return BadRequest(new { error = "'from' must be on or before 'to'." });
 
-        return Ok(await _attendance.GetAsync(from, to, employeeId, branchId));
+        return Ok(await _attendance.GetAsync(from, to, employeeId, branchId, User.UserId()));
     }
 
     /// <summary>One day WITH the paired intervals behind it — the audit trail that shows WHY worked time is what it is.</summary>
@@ -143,7 +143,7 @@ public class AttendanceController : ControllerBase
         if (from > to)
             return BadRequest(new { error = "'from' must be on or before 'to'." });
 
-        return Ok(await _attendance.GetAnomaliesAsync(from, to, onlyUndecided, branchId));
+        return Ok(await _attendance.GetAnomaliesAsync(from, to, onlyUndecided, branchId, User.UserId()));
     }
 
     /// <summary>
@@ -357,7 +357,7 @@ public class AttendanceController : ControllerBase
         if (from > to)
             return BadRequest(new { error = "'from' must be on or before 'to'." });
 
-        return Ok(await _attendance.GetWorkedWithoutRosterAsync(from, to, branchId));
+        return Ok(await _attendance.GetWorkedWithoutRosterAsync(from, to, branchId, User.UserId()));
     }
 
     /// <summary>D9: unknown device users — punches that arrived under a PIN enrolled to nobody, one line per (device, PIN).</summary>
@@ -389,7 +389,7 @@ public class AttendanceController : ControllerBase
         [FromQuery] DateTime from,
         [FromQuery] DateTime to,
         [FromQuery] bool onlyUndecided = true)
-        => Ok(await _attendance.GetExitVariancesAsync(from, to, onlyUndecided));
+        => Ok(await _attendance.GetExitVariancesAsync(from, to, onlyUndecided, User.UserId()));
 
     /* ---- payroll interface ---- */
 

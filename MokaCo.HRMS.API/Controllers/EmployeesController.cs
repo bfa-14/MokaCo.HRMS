@@ -49,7 +49,7 @@ public class EmployeesController : ControllerBase
 
     [HttpGet]
     [HasPermission("EMP_VIEW")]
-    public async Task<IActionResult> GetAll() => Ok(await _employees.GetAllAsync());
+    public async Task<IActionResult> GetAll() => Ok(await _employees.GetAllAsync(User.UserId()));
 
     [HttpGet("{id:int}")]
     [HasPermission("EMP_VIEW")]
@@ -185,7 +185,7 @@ public class EmployeesController : ControllerBase
         if (to < from)
             return BadRequest(new { error = "The end of the range is before its start." });
 
-        return Ok(await _roster.GetAsync(from, to, id));
+        return Ok(await _roster.GetAsync(from, to, id, callerUserId: User.UserId()));
     }
 
     /// <summary>

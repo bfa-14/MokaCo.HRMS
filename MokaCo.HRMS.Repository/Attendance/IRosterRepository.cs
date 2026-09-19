@@ -5,7 +5,7 @@ namespace MokaCo.HRMS.Repository.Attendance;
 public interface IRosterRepository
 {
     /// <summary>branchId (optional, SQL 85): the rows of ONE branch, by the branch each employee belonged to on the work date.</summary>
-    Task<IEnumerable<ShiftAssignment>> GetByDateRangeAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId = null);
+    Task<IEnumerable<ShiftAssignment>> GetByDateRangeAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId = null, int? callerUserId = null);
     Task<int> UpsertDayAsync(int employeeId, DateTime workDate, int? shiftId, bool isRestDay);
     Task DeleteAsync(int shiftAssignmentId);
 
@@ -14,7 +14,7 @@ public interface IRosterRepository
     Task<RosterGenerateResult> CopyPeriodAsync(string sourceYearMonth, string targetYearMonth, int? employeeId, bool overwrite);
     Task<RosterGenerateResult> ApplyPatternForMonthAsync(string yearMonth, int? employeeId, bool overwrite);
 
-    Task<IEnumerable<RosterGap>> GetGapsAsync(DateTime fromDate, DateTime toDate);
+    Task<IEnumerable<RosterGap>> GetGapsAsync(DateTime fromDate, DateTime toDate, int? callerUserId = null);
 
     Task<IEnumerable<ShiftPattern>> GetPatternsAsync(int employeeId);
 

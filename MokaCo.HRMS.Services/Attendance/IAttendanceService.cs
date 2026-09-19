@@ -16,11 +16,11 @@ public interface IAttendanceService
     Task<MarkAbsenteesResult> MarkAbsenteesAsync(DateTime workDate);
     Task<MarkLeaveDaysResult> MarkLeaveDaysAsync(string periodYearMonth);
 
-    Task<IEnumerable<AttendanceRecord>> GetAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId);
+    Task<IEnumerable<AttendanceRecord>> GetAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId, int? callerUserId = null);
     Task<AttendanceDetail?> GetByIdAsync(long attendanceId);
-    Task<IEnumerable<AttendanceAnomaly>> GetAnomaliesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided, int? branchId);
+    Task<IEnumerable<AttendanceAnomaly>> GetAnomaliesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided, int? branchId, int? callerUserId = null);
     Task<IEnumerable<RawLog>> GetRawAsync(int employeeId, DateTime workDate);
-    Task<IEnumerable<ExitVariance>> GetExitVariancesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided);
+    Task<IEnumerable<ExitVariance>> GetExitVariancesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided, int? callerUserId = null);
 
     Task<AttendanceRecord?> ManualUpsertAsync(ManualAttendanceRequest request);
     Task<AttendanceRecord?> SetExitApprovalAsync(long attendanceId, ExitApprovalRequest request);
@@ -45,7 +45,7 @@ public interface IAttendanceService
     Task<RosterMonthStatus?> GetRosterMonthAsync(int branchId, DateTime monthDate);
 
     /// <summary>Employee-days with punches but no record because the approved roster has no row for them (SQL 83).</summary>
-    Task<IEnumerable<WorkedWithoutRoster>> GetWorkedWithoutRosterAsync(DateTime fromDate, DateTime toDate, int? branchId);
+    Task<IEnumerable<WorkedWithoutRoster>> GetWorkedWithoutRosterAsync(DateTime fromDate, DateTime toDate, int? branchId, int? callerUserId = null);
 
     /// <summary>D9: the unknown device users, one line per (device, PIN).</summary>
     Task<IEnumerable<QuarantinedDeviceUser>> GetDeviceQuarantineAsync(int? branchId);

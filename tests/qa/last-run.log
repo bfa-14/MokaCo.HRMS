@@ -1,8 +1,8 @@
 
-=============== 0. cleanup of any previous QA run (2026-09-19 08:49:43) ===============
+=============== 0. cleanup of any previous QA run (2026-09-19 10:42:13) ===============
 CLEANUP DONE
 
-=============== 1. seed (2026-09-19 08:49:43) ===============
+=============== 1. seed (2026-09-19 10:42:13) ===============
 RowsInserted
 ------------
 31
@@ -29,31 +29,31 @@ RowsInserted
 31
 ShiftAssignmentId
 -----------------
-32339
+35942
 RoomId|DayOfWeek|OpenTime|CloseTime|OpenMin|CloseMin|IsClosed
 ------|---------|--------|---------|-------|--------|--------
-1035|1|09:00:00|01:00:00|540|1500|0
+1037|1|09:00:00|01:00:00|540|1500|0
 RoomId|DayOfWeek|OpenTime|CloseTime|OpenMin|CloseMin|IsClosed
 ------|---------|--------|---------|-------|--------|--------
-1035|2|09:00:00|01:00:00|540|1500|0
+1037|2|09:00:00|01:00:00|540|1500|0
 RoomId|DayOfWeek|OpenTime|CloseTime|OpenMin|CloseMin|IsClosed
 ------|---------|--------|---------|-------|--------|--------
-1035|3|09:00:00|01:00:00|540|1500|0
+1037|3|09:00:00|01:00:00|540|1500|0
 RoomId|DayOfWeek|OpenTime|CloseTime|OpenMin|CloseMin|IsClosed
 ------|---------|--------|---------|-------|--------|--------
-1035|4|09:00:00|01:00:00|540|1500|0
+1037|4|09:00:00|01:00:00|540|1500|0
 RoomId|DayOfWeek|OpenTime|CloseTime|OpenMin|CloseMin|IsClosed
 ------|---------|--------|---------|-------|--------|--------
-1035|5|09:00:00|01:00:00|540|1500|0
+1037|5|09:00:00|01:00:00|540|1500|0
 RoomId|DayOfWeek|OpenTime|CloseTime|OpenMin|CloseMin|IsClosed
 ------|---------|--------|---------|-------|--------|--------
-1035|6|09:00:00|01:00:00|540|1500|0
+1037|6|09:00:00|01:00:00|540|1500|0
 RoomId|DayOfWeek|OpenTime|CloseTime|OpenMin|CloseMin|IsClosed
 ------|---------|--------|---------|-------|--------|--------
-1035|7|09:00:00|01:00:00|540|1500|0
+1037|7|09:00:00|01:00:00|540|1500|0
 DiscountId|RoomId|MinHours|DiscountPercent|IsActive
 ----------|------|--------|---------------|--------
-1030|1035|3.0|10.00|1
+1032|1037|3.0|10.00|1
 what|LeaveTypeName|EmployeesOpened|DaysGranted|ProratedEmployees
 ----|-------------|---------------|-----------|-----------------
 LeaveYear_Open (seed)|Annual|11|161.00|2
@@ -64,7 +64,7 @@ QA employees|11
 QA roster rows|223
 QA punches|358
 
-=============== 2. rosters (SQL) (2026-09-19 08:49:43) ===============
+=============== 2. rosters (SQL) (2026-09-19 10:42:14) ===============
 PASS | R1 | roster for M covers every day of every QA employee's active span with a shift or a rest day | expected=missing/empty days = 0 | actual=employee-days=223 missing/empty=0
 PASS | R1b | building the QA roster changed nothing on non-QA branches (checksum of all non-QA roster rows) | expected=-83074 | actual=-83074
 PASS | R2a | rest-day configuration: every Sunday is a rest day for all QA employees; E4 has all 5 Saturdays as rest days | expected=sundays-with-shift=0, E4 saturday rest days=5 | actual=sundays-with-shift=0, E4 saturday rest days=5
@@ -74,7 +74,7 @@ NOTE | R5 rule found: usp_ShiftAssignment_CopyPeriod copies the MOST FREQUENT sh
 PASS | R5b | copy roster carries one-off exceptions exactly (source Wed 12 Aug = Evening) | expected=documented rule: exceptions are not copied (majority per weekday) -> 0 Evening rows | actual=Evening rows in September=0
 PASS | R5c | copy roster re-run with Overwrite=0 inserts nothing | expected=0 | actual=0
 
-=============== 3. API phase 1 (roster approval, leaves, exit permission, deputy rules, permissions) (2026-09-19 08:49:43) ===============
+=============== 3. API phase 1 (roster approval, leaves, exit permission, deputy rules, permissions) (2026-09-19 10:42:14) ===============
 PASS | X0 | login qa.owner | expected=200 + accessToken | actual=200 + token
 PASS | X0 | login qa.hr | expected=200 + accessToken | actual=200 + token
 PASS | X0 | login qa.manager | expected=200 + accessToken | actual=200 + token
@@ -82,48 +82,53 @@ PASS | X0 | login qa.ops | expected=200 + accessToken | actual=200 + token
 PASS | X0 | login qa.e1 | expected=200 + accessToken | actual=200 + token
 PASS | X0 | login qa.e5 | expected=200 + accessToken | actual=200 + token
 PASS | X1a | wrong password: 401 with a plain-words JSON error | expected=401 {"error":"Invalid username or password."} | actual=401 {"error":"Invalid username or password."}
-FAIL | X4a | a Manager (branch manager of QA Branch) sees only own-branch employees on GET /api/employees | expected=no employees of other branches in the list | actual=status 200, 32 employees returned, 21 from other branches (e.g. Ali Sleiman/Beirut-Verdun, Bilal/Beirut-Verdun)
+PASS | X4a | a Manager (branch manager of QA Branch) sees only own-branch employees on GET /api/employees | expected=no employees of other branches in the list | actual=status 200, 11 employees returned, 0 from other branches (e.g. )
+PASS | X4h | HR (EMP_VIEW_ALL) still sees the employees of every branch on GET /api/employees | expected=employees of other branches present | actual=status 200, 32 employees, 21 from other branches
+PASS | X4i | an Operations Manager (ATTENDANCE_VIEW, no EMP_VIEW_ALL) gets only own rows and managed branches in the attendance list; HR gets everything | expected=0 rows outside the scope, and fewer rows than HR | actual=ops: status 200, 0 rows, 0 outside (manages []); hr: 4 rows
+PASS | X4j | an Operations Manager (ATTENDANCE_VIEW, no EMP_VIEW_ALL) gets only own rows and managed branches in the roster; HR gets everything | expected=0 rows outside the scope, and fewer rows than HR | actual=ops: status 200, 0 rows, 0 outside (manages []); hr: 874 rows
+PASS | X4k | the roster procedure called for the QA Branch manager returns that branch only; with no caller (the system) it returns everything | expected=rows > 0, 0 of another branch, fewer than the unscoped call | actual=manager rows=223 otherBranch=0 unscoped=874
+PASS | X4l | role hygiene: the Employee role holds none of REQUEST_RAISE_OTHERS / REQUEST_VIEW_ALL / WORKFLOW_CONFIGURE, and AllowSystemReset is 0 | expected=0|0 | actual=0|0
 PASS | X4b | an Operations Manager gets 403 on GET /api/payroll/runs (no PAYROLL_* permission) | expected=403 | actual=403 body=(empty)
 PASS | X4c | an Operations Manager gets 403 on GET /api/settings | expected=403 | actual=403
-PASS | R3a | HR submits the QA Branch August roster for approval | expected=200 + requestInstanceId, status Pending | actual=200 {"requestInstanceId":1742,"status":"Pending","currentStepNo":1}
+PASS | R3a | HR submits the QA Branch August roster for approval | expected=200 + requestInstanceId, status Pending | actual=200 {"requestInstanceId":1833,"status":"Pending","currentStepNo":1}
 PASS | R3b | roster month status after submit | expected=PendingApproval | actual=PendingApproval
-PASS | R3c | step 1 (BranchManager = qa.manager) approves with password | expected=200, currentStepNo 2 | actual=200 {"requestInstanceId":1742,"status":"Pending","currentStepNo":2}
-PASS | R3d | step 2 (HR role; the submitter may sign an organisational request) approves | expected=200, currentStepNo 3 | actual=200 {"requestInstanceId":1742,"status":"Pending","currentStepNo":3}
-PASS | R3e | step 3 (Owner) approves; request closes Approved | expected=200, status Approved | actual=200 {"requestInstanceId":1742,"status":"Approved","currentStepNo":null}
-PASS | R3f | after the final approval the roster month becomes Approved (approval effect applied) | expected=Approved | actual=Approved (request 1742 status Approved)
+PASS | R3c | step 1 (BranchManager = qa.manager) approves with password | expected=200, currentStepNo 2 | actual=200 {"requestInstanceId":1833,"status":"Pending","currentStepNo":2}
+PASS | R3d | step 2 (HR role; the submitter may sign an organisational request) approves | expected=200, currentStepNo 3 | actual=200 {"requestInstanceId":1833,"status":"Pending","currentStepNo":3}
+PASS | R3e | step 3 (Owner) approves; request closes Approved | expected=200, status Approved | actual=200 {"requestInstanceId":1833,"status":"Approved","currentStepNo":null}
+PASS | R3f | after the final approval the roster month becomes Approved (approval effect applied) | expected=Approved | actual=Approved (request 1833 status Approved)
 PASS | R3g | editing a PAST day of an APPROVED month is refused: 409 with the lock sentence (no SQL text) | expected=409 + {error:"This day is already in an approved roster..."} | actual=409 {"error":"This day is already in an approved roster and attendance was recorded — correct the attendance record instead."}
 PASS | R4a | the changed day is visible in the roster calendar read | expected=n/a: edit was refused | actual=edit refused with 409
 PASS | R4b | changing an approved day requires re-approval | expected=n/a: edit was refused | actual=edit refused with 409
 PASS | X1b | PUT /api/roster/day for a non-existent employee: clean JSON error, no SQL constraint text or stack trace | expected=4xx {error:"..."} | actual=400 {"error":"Employee not found."}
-PASS | X1c | PUT /api/roster/day with a non-existent shift (unmapped FK violation): the global handler answers 400 {error, traceId}, no constraint text | expected=400 {error:"The referenced record does not exist or the value is not allowed.", traceId} | actual=400 {"error":"The referenced record does not exist or the value is not allowed.","traceId":"ee522f97eef521a1731bdb67a6ee50e5"}
-PASS | R4c | a month waiting for approval is read-only: PUT /api/roster/day on 2026-10-15 while request 1743 is pending | expected=409 {error:"Waiting for approval — request #N. Withdraw or wait..."} | actual=generate 200, submit 200, edit 409 Waiting for approval — request #1743. Withdraw or wait for the decision before editing.
+PASS | X1c | PUT /api/roster/day with a non-existent shift (unmapped FK violation): the global handler answers 400 {error, traceId}, no constraint text | expected=400 {error:"The referenced record does not exist or the value is not allowed.", traceId} | actual=400 {"error":"The referenced record does not exist or the value is not allowed.","traceId":"7438d86def667fd8c0d86bcc30f0cd0f"}
+PASS | R4c | a month waiting for approval is read-only: PUT /api/roster/day on 2026-10-15 while request 1834 is pending | expected=409 {error:"Waiting for approval — request #N. Withdraw or wait..."} | actual=generate 200, submit 200, edit 409 Waiting for approval — request #1834. Withdraw or wait for the decision before editing.
 PASS | R4d | a FUTURE day (2026-10-15) of an APPROVED month may be changed by HR: 200; the month stays Approved and reports changedSinceApproval | expected=Approved before; 200; Approved + changedSinceApproval=true after | actual=Approved before; 200; Approved + changedSinceApproval=true after
-PASS | R4e | re-submitting the changed month opens a new request; the month stays Approved (processing keeps the signed-off shifts) and is read-only again | expected=200 + new request; status Approved, openRequestId = new request; edit 409 | actual=200 rid=1744; status Approved, openRequestId 1744; edit 409
-PASS | L2a | E5 raises a 3-day annual leave (17-19 Aug) | expected=200 + requestInstanceId, daysRequested 3 | actual=200 {"requestInstanceId":1745,"status":"Pending","currentStepNo":1,"workflowVersion":4,"daysRequested":3,"noticeShorterThanPreferred":true,"noticePreferredDays":14}
+PASS | R4e | re-submitting the changed month opens a new request; the month stays Approved (processing keeps the signed-off shifts) and is read-only again | expected=200 + new request; status Approved, openRequestId = new request; edit 409 | actual=200 rid=1835; status Approved, openRequestId 1835; edit 409
+PASS | L2a | E5 raises a 3-day annual leave (17-19 Aug) | expected=200 + requestInstanceId, daysRequested 3 | actual=200 {"requestInstanceId":1836,"status":"Pending","currentStepNo":1,"workflowVersion":4,"daysRequested":3,"noticeShorterThanPreferred":true,"noticePreferredDays":14}
 PASS | L4a | submit response carries the short-notice warning (14 days preferred, dates in the past) | expected=noticeShorterThanPreferred=true, noticePreferredDays=14 | actual=noticeShorterThanPreferred=true noticePreferredDays=14
 PASS | L4b | the approver's payload shows the warning fields (noticeGivenDays, noticePreferredDays, noticeShorterThanPreferred) | expected=noticeShorterThanPreferred=true with noticeGivenDays < 14 | actual=status 200 noticeGivenDays=-33 noticePreferredDays=14 noticeShorterThanPreferred=true
-PASS | L2b | step 1 (branch manager) approves the annual leave | expected=200 | actual=200 {"requestInstanceId":1745,"status":"Pending","currentStepNo":2,"closedReason":null,"decision":"Approved","signedAsDeputy":false,"signedWithPassword":true,"daysApproved":3,"balanceAfter":15,"balanceIsNegative":false,"discretionaryGranted":false}
+PASS | L2b | step 1 (branch manager) approves the annual leave | expected=200 | actual=200 {"requestInstanceId":1836,"status":"Pending","currentStepNo":2,"closedReason":null,"decision":"Approved","signedAsDeputy":false,"signedWithPassword":true,"daysApproved":3,"balanceAfter":15,"balanceIsNegative":false,"discretionaryGranted":false}
 PASS | L2c | step 2 (Owner) approves; ledger Usage -3 posted, balance 12 (15 - 3) | expected=status Approved, daysApproved 3, balanceAfter 12 | actual=200 status=Approved daysApproved=3 balanceAfter=12
 PASS | L5a | sick leave cannot be approved without a certificate attachment | expected=400 "...requires a certificate..." | actual=400 This leave type requires a certificate. Attach it to the request before approving.
-PASS | L5b | the requester attaches the certificate | expected=200/201 | actual=200 {"attachmentId":1031}
+PASS | L5b | the requester attaches the certificate | expected=200/201 | actual=200 {"attachmentId":1033}
 PASS | L5c | with the attachment the sick leave is approved at both steps | expected=200 then 200 Approved | actual=200 then 200 Approved
 PASS | L6a | HR raises a 2-day unpaid leave for E6 (10-11 Aug); manager and owner approve | expected=Approved | actual=200/200 Approved
 PASS | L3a | discretionary approval WITHOUT a note is refused | expected=400 "A note is required..." | actual=400 A note is required when granting as discretionary — say why the days are not deducted.
 PASS | L3b | discretionary approval with a note: Usage -3 and Adjustment +3 (balance unchanged at 21) | expected=Approved, discretionaryGranted true, balanceAfter 21 | actual=200 status=Approved discretionaryGranted=true balanceAfter=21
 PASS | L2d | taking back the final approval of an approved leave through the API (withdraw-decision) | expected=documented rule: refused - an approved request is closed and must be corrected elsewhere | actual=400 This request is closed. A rejected or cancelled request can be reopened by HR; an approved one must be corrected through attendance.
 PASS | L2e | the requester cancels a pending leave request | expected=200 status Cancelled | actual=200 Cancelled
-PASS | A11a | E1 raises an exit permission 14:05-15:05 on 13 Aug (60 min) | expected=200, requestedMinutes 60 | actual=200 {"exitPermissionId":1149,"requestInstanceId":1750,"employeeId":2080,"exitDate":"2026-08-13T00:00:00","fromTime":"14:05:00","toTime":"15:05:00","requestedMinutes":60,"approvedMinutes":60,"convertToLeav
+PASS | A11a | E1 raises an exit permission 14:05-15:05 on 13 Aug (60 min) | expected=200, requestedMinutes 60 | actual=200 {"exitPermissionId":1166,"requestInstanceId":1841,"employeeId":2164,"exitDate":"2026-08-13T00:00:00","fromTime":"14:05:00","toTime":"15:05:00","requestedMinutes":60,"approvedMinutes":60,"convertToLeav
 PASS | A11b | HR then Owner approve the exit permission | expected=Approved | actual=200/200 Approved
 PASS | L7a | deputy (OperationsManager) is refused while the main approver is available and nothing is delegated | expected=403 "You are not the approver for this step." | actual=403 You are not the approver for this step. | fn_CanUserActOnStep=0
-PASS | L7b | main approver delegates the step to the deputy role -> deputy may act | expected=200, fn_CanUserActOnStep=1 | actual=200 {"stepNo":1,"delegatedToDeputyAt":"2026-09-19T05:49:48.5939759","deputyDelegated | fn_CanUserActOnStep=1
+PASS | L7b | main approver delegates the step to the deputy role -> deputy may act | expected=200, fn_CanUserActOnStep=1 | actual=200 {"stepNo":1,"delegatedToDeputyAt":"2026-09-19T07:42:19.8657643","deputyDelegated | fn_CanUserActOnStep=1
 PASS | L7c | main approver reclaims the step -> deputy refused again | expected=200/204, fn_CanUserActOnStep=0 | actual=200 | fn_CanUserActOnStep=0
 PASS | L7d | requester never counts as available: manager's own request keeps step 1 Pending and the deputy signs it (signedAsDeputy) | expected=step1 Pending; deputy decide 200 signedAsDeputy=true | actual=step1=Pending; 200 signedAsDeputy=true
 PASS | L7e | owner approves the manager's leave (manager is now on approved leave today) | expected=Approved | actual=200 Approved
 PASS | L7f | main approver on approved leave today -> deputy can act on E5's request without delegation | expected=fn_ApproverIsAbsent=1, decide 200 signedAsDeputy=true | actual=fn_ApproverIsAbsent=1; 200 signedAsDeputy=true 
 PASS | X1-phase1 | every error body returned during phase1 is plain text (no SQL constraint text / stack trace) | expected=0 leaking responses | actual=0 of 11 error responses leak
-API phase1 done, 1 failure(s)
+API phase1 done, 0 failure(s)
 
-=============== 4. attendance processing and checks (SQL) (2026-09-19 08:49:49) ===============
+=============== 4. attendance processing and checks (SQL) (2026-09-19 10:42:20) ===============
 NOTE | Rules read from the DB: break is per SHIFT (Morning break 30, standard 510 min), the tolerance is the AttendanceToleranceMinutes setting unless the shift sets its own GraceMinutes (Morning: NULL = setting); PunchDirectionMode=Alternate; PunchDebounceMinutes=1; OvernightAttributionHours=4; FullDayThreshold=1.00; ExitLeaveBasis=Actual; AttendanceToleranceMinutes=10 (script 77: SHIFT.GraceMinutes NULL = use the setting; a late arrival / early departure AT OR BEYOND the tolerance is an ATTENDANCE_ANOMALY row for HR to decide, covered in pay until decided; one day rule in attendance.fn_AttendanceDayRule / usp_Attendance_ComputeDay; DayFraction = (Worked + Covered) / Standard where Covered = approved exit minutes + on-time/undecided/excused late and early minutes + mid-day variance minutes HR dispositioned Ignore/Overtime).
 PASS | A0 | QA Branch roster month is Approved before processing (the processor ignores an unapproved roster) | expected=Approved | actual=Approved
 PASS | A7a | usp_RawLog_Insert with an already-known DedupHash is ignored (WasDuplicate=1), one row remains | expected=WasDuplicate=1, rows=1 | actual=WasDuplicate=1, rows with that hash=1
@@ -245,7 +250,7 @@ PASS | A9b | worked minutes start at shift start (early-in not counted as work) 
 PASS | A11 | exit permission 60 min approved, employee left 55 min early -> no variance to queue (script 77: the early departure is an anomaly, not a variance; ExitActual 0, variance = 0 - 60 = -60, never > 0) | expected=exitApproved=60 exitVar=-60 (not positive) | actual=exitActual=0 exitApproved=60 exitVar=-60 worked=455 fraction=1.00
 PASS | A11b | applying the approved 60 min does not reduce the day twice (worked stays at the punched 455 = 485 gross - 30 break) | expected=worked=455 | actual=exitActual=0 exitApproved=60 exitVar=-60 worked=455 fraction=1.00
 PASS | A11c | the approved permission protects pay: the 55 early minutes are covered, DayFraction 1.00 (it is converted to leave at period close) | expected=fraction=1.00 | actual=exitActual=0 exitApproved=60 exitVar=-60 worked=455 fraction=1.00
-PASS | A11d | the 55-minute early departure is fully covered by the approved 60-minute exit permission: nothing is left for HR to decide | expected=no EarlyDeparture anomaly; early 0, nothing deducted, full day; the record names the permission | actual=early=0 earlyDeduct=0 fraction=1.00 exitPermissionId=1149 exitLeave=55 anomalies=none
+PASS | A11d | the 55-minute early departure is fully covered by the approved 60-minute exit permission: nothing is left for HR to decide | expected=no EarlyDeparture anomaly; early 0, nothing deducted, full day; the record names the permission | actual=early=0 earlyDeduct=0 fraction=1.00 exitPermissionId=1166 exitLeave=55 anomalies=none
 PASS | A8a | E3 Evening: in 16:05, out 01:10 next day -> both on the roster date 3 Aug, gross 545 (worked 515 after the 30-min break), late 0 (5 min inside grace) | expected=lastOut=2026-08-04 01:10 gross=545 late=0 fraction=1.00 | actual=firstIn=2026-08-03 16:05:00 lastOut=2026-08-04 01:10:00 gross=545 worked=505 late=0 fraction=1.00 ot=10
 PASS | A8b | nothing of the 3 Aug shift is attributed to 4 Aug (E3's 4 Aug record starts with the 16:00 In) | expected=firstIn=2026-08-04 16:00 | actual=firstIn=2026-08-04 16:00:00 status=Present
 PASS | A8c | a Morning-shift colleague's (E1) 07:12 punch on 4 Aug is not stolen by the overnight rule | expected=firstIn=2026-08-04 07:12 | actual=firstIn=2026-08-04 07:12:00
@@ -459,7 +464,7 @@ PASS | A12 | reprocessing every day of the month twice gives identical records a
 NOTE | A12 side check: E5 leave-day statuses after two full reprocesses (the day rule reads the approved LEAVE_REQUEST itself, so a reprocess keeps them Leave): 2026-08-17=Leave, 2026-08-18=Leave, 2026-08-19=Leave
 PASS | A12b | after reprocessing every day, no QA punch is left flagged unprocessed (usp_Attendance_ReprocessDay must not strand overnight out-punches, or payroll readiness blocks) | expected=0 unprocessed | actual=0 unprocessed QA punch(es)
 
-=============== 5. API phase 2 (exit variance decisions, manual correction, payroll API rules, bookings) (2026-09-19 08:49:50) ===============
+=============== 5. API phase 2 (exit variance decisions, manual correction, payroll API rules, bookings) (2026-09-19 10:42:22) ===============
 PASS | A4a | E1 left 75 min early on 6 Aug -> an EarlyDeparture anomaly of 75 min (undecided, day covered) in GET /api/attendance/anomalies, and NOT a row in the exit-variance queue (script 77: only mid-day gaps stay there) | expected=anomaly EarlyDeparture 75 undecided, dayFraction 1, no exit-variance row for 6 Aug | actual=200 EarlyDeparture 75 min decision=undecided shift=07:00-16:00 punch=07:00-14:45 fraction=1; exit-variance row for 6 Aug=false (anomalies listed: 5)
 PASS | A4b | E1 75-minute mid-day exit on 8 Aug (out 10:00, in 11:15) -> variance row in the queue | expected=row present, ExitActualMinutes 45 (75 gap - 30 break absorbed), variance 45 | actual=actual=45 approved=0 variance=45
 PASS | A4c | HR approves 60 minutes on the 8 Aug variance -> record updated, remaining variance = actual - approved | expected=exitApprovedMinutes 60, exitVarianceMinutes -15 (45-60) | actual=200 approved=60 variance=-15 leave=45
@@ -480,44 +485,44 @@ PASS | P9a | creating a second primary run for 2026-08 (an approved one already 
 PASS | P9a2 | POST /api/payroll/runs WITHOUT runType is treated as a primary run (the documented default) | expected=400 "A primary run for 2026-08 already exists..." (primary path) | actual=400 A primary run for 2026-08 already exists. Cancel it first if it must be redone.
 PASS | P7a | bulk gift to all active QA-branch employees in 2026-08: once per employee, second run adds nothing | expected=first=11 employees, second=0, duplicates=0 | actual=first=11 (status 200), second=0, rows=11, employees with >1 row=0
 PASS | P11a | a second Official USD->LBP rate is refused | expected=400 "...already exists..." | actual=400 A Official rate for USD → LBP already exists — edit that row instead of adding another.
-PASS | P11b | the non-official rate type exists and can be stored (then deleted again) | expected=create 200/201 then delete 204 | actual=create 201 id=1026, delete 204
+PASS | P11b | the non-official rate type exists and can be stored (then deleted again) | expected=create 200/201 then delete 204 | actual=create 201 id=1028, delete 204
 PASS | P10a | dashboard salary status for E1 before any QA run | expected=no payslip / "not prepared" (204 or null) | actual=204 (empty)
-PASS | B0a | GET /api/public/booking/catalog (Origin allowed) -> rooms with hours in minutes, rules, timeZone Asia/Beirut | expected=qa-room present with openMin 540 / closeMin 1500 x7, rules.localNow ISO with offset | actual=200 timeZone=Asia/Beirut qa-room hours={"dayOfWeek":1,"openMin":540,"closeMin":1500,"isClosed":false} n=7 localNow=2026-09-19T08:49:53+03:00 addons=[{"id":1036,"name":"QA Platter","priceType":"Fixed","price":15}] discounts=[{"minHours":3,"percent":10,"discountPercent":10}]
-PASS | B1a | public create on a free slot -> 201 Pending, times echoed in minutes with Beirut moments | expected=201 status Pending startMin 600 endMin 720 startAt ...T10:00:00+03:00 | actual=201 {"timeZone":"Asia/Beirut","ref":"MC-9AF3119E","status":"Pending","date":"2026-09-29","startMin":600,"endMin":720,"startAt":"2026-09-29T10:00:00+03:00","endAt":"2026-09-29T12:00:00+03:00","total":40,"deposit":8,"depositPe
-PASS | B1d | the public create response carries the booking reference (MC-...) the guest is told to keep | expected=ref MC-XXXXXXXX equal to the DB row | actual=ref=MC-9AF3119E; DB ref=MC-9AF3119E; keys=timeZone,ref,status,date,startMin,endMin,startAt,endAt,total,deposit,depositPercent,discountPercent,discountAmount,currency,hours,roomName,depositRequired,holdExpiresUtc,expiresAt
+PASS | B0a | GET /api/public/booking/catalog (Origin allowed) -> rooms with hours in minutes, rules, timeZone Asia/Beirut | expected=qa-room present with openMin 540 / closeMin 1500 x7, rules.localNow ISO with offset | actual=200 timeZone=Asia/Beirut qa-room hours={"dayOfWeek":1,"openMin":540,"closeMin":1500,"isClosed":false} n=7 localNow=2026-09-19T10:42:24+03:00 addons=[{"id":1038,"name":"QA Platter","priceType":"Fixed","price":15}] discounts=[{"minHours":3,"percent":10,"discountPercent":10}]
+PASS | B1a | public create on a free slot -> 201 Pending, times echoed in minutes with Beirut moments | expected=201 status Pending startMin 600 endMin 720 startAt ...T10:00:00+03:00 | actual=201 {"timeZone":"Asia/Beirut","ref":"MC-0914855F","status":"Pending","date":"2026-09-29","startMin":600,"endMin":720,"startAt":"2026-09-29T10:00:00+03:00","endAt":"2026-09-29T12:00:00+03:00","total":40,"deposit":8,"depositPe
+PASS | B1d | the public create response carries the booking reference (MC-...) the guest is told to keep | expected=ref MC-XXXXXXXX equal to the DB row | actual=ref=MC-0914855F; DB ref=MC-0914855F; keys=timeZone,ref,status,date,startMin,endMin,startAt,endAt,total,deposit,depositPercent,discountPercent,discountAmount,currency,hours,roomName,depositRequired,holdExpiresUtc,expiresAt
 PASS | B3a | creation queues Request + StaffAlert e-mails only (no Confirmation) - written by the DB trigger, not the API | expected=Request/Email,StaffAlert/Email | actual=Request/Email,StaffAlert/Email
 PASS | B1b | identical second create -> 409 slot_taken with the procedure's sentence | expected=409 {"code":"slot_taken"} | actual=409 {"error":"That time was just taken — pick another slot.","code":"slot_taken"}
-PASS | B2a | public create 22:00-01:00 (startMin 1320, endMin 1500) succeeds | expected=201, hours 3, endAt next day 01:00 with offset | actual=201 {"timeZone":"Asia/Beirut","ref":"MC-9F4B44C1","status":"Pending","date":"2026-09-30","startMin":1320,"endMin":1500,"startAt":"2026-09-30T22:00:00+03:00","endAt":"2026-10-01T01:00:00+03:00","total":54,
+PASS | B2a | public create 22:00-01:00 (startMin 1320, endMin 1500) succeeds | expected=201, hours 3, endAt next day 01:00 with offset | actual=201 {"timeZone":"Asia/Beirut","ref":"MC-6AF30EB7","status":"Pending","date":"2026-09-30","startMin":1320,"endMin":1500,"startAt":"2026-09-30T22:00:00+03:00","endAt":"2026-10-01T01:00:00+03:00","total":54,
 PASS | B2b | GET availability?room&date shows the 22:00-01:00 slot as taken, in minutes | expected=taken contains {startMin 1320, endMin 1500} | actual=200 taken=[{"startMin":1320,"endMin":1500}] free=[{"startMin":540,"endMin":1320}]
 PASS | B2e | day availability reports the room's opening hours in minutes (QA room 09:00-01:00) and the free time up to the taken slot | expected=openMin 540, closeMin 1500, isClosed false, a free range ending at 1320, earliestStartMin 540 | actual=openMin=540 closeMin=1500 isClosed=false earliest=540 free=[{"startMin":540,"endMin":1320}] turnaround=5
 PASS | B2f | GET availability/month?room&month paints the day with the 22:00-01:00 booking as partial and a past day as past | expected=2026-09-30 partial; yesterday past | actual=200 month=2026-09 2026-09-30=partial first=past n=30
 PASS | B5d | POST quote for 3 h + the 15 add-on prices the room with the 10 % discount and the add-on undiscounted | expected=roomGross 60, discountAmount 6, roomTotal 54, addonTotal 15, total 69, depositPercent 20, deposit 13.80 | actual=200 {"timeZone":"Asia/Beirut","roomCode":"qa-room","roomName":"QA Room","hours":3,"pricePerHour":20,"roomGross":60,"discountPercent":10,"discountFromHours":3,"discountAmount":6,"roomTotal":54,"addonTotal":15,"total":69,"depositPercent":20,"deposit":13.8,"currency":"USD","depositRequired":false}
 PASS | B8a | POST /hubs/booking/negotiate is anonymous and answers CORS from BookingCorsOrigins WITH credentials (no wildcard); an unlisted origin gets no CORS grant | expected=200, Access-Control-Allow-Origin http://localhost:4321, Allow-Credentials true; evil origin: no Allow-Origin | actual=200 acao=http://localhost:4321 acac=true; evil acao=null
 PASS | B8b | an anonymous connection joins "booking:{ref}" only with a real MC- reference (WatchBooking, the website's call); an unknown reference or a group name is refused | expected=real ref: completed without error; MC-ZZZZZZZZ and "staff": error not_found | actual=real=ok; unknown=An unexpected error occurred invoking 'WatchBooking' on the server. HubException: not_found; "staff"=An unexpected error occurred invoking 'WatchBooking' on the server. HubException: not_found
-PASS | B8c | the public create is announced to group "staff": BookingChanged { bookingId, ref, status, roomCode, date, startMin, endMin, guestName, source } | expected=BookingChanged ref MC-9AF3119E Pending Website qa-room 2026-09-29 600-720 with bookingId 1156 | actual={"bookingId":1156,"ref":"MC-9AF3119E","status":"Pending","roomCode":"qa-room","date":"2026-09-29","startMin":600,"endMin":720,"guestName":"QA Guest B1","source":"Website"}
-PASS | B8d | staff confirm -> the guest's page hears BookingStatus { ref, status, refundStatus, paid, balance } and staff hear BookingChanged Confirmed | expected=guest: ref MC-9AF3119E Confirmed with paid and balance; staff: Confirmed | actual=guest={"ref":"MC-9AF3119E","status":"Confirmed","refundStatus":"None","paid":0,"balance":40,"changedAt":"2026-09-19T05:49:54.3962417+00:00"} staff=Confirmed
+PASS | B8c | the public create is announced to group "staff": BookingChanged { bookingId, ref, status, roomCode, date, startMin, endMin, guestName, source } | expected=BookingChanged ref MC-0914855F Pending Website qa-room 2026-09-29 600-720 with bookingId 1173 | actual={"bookingId":1173,"ref":"MC-0914855F","status":"Pending","roomCode":"qa-room","date":"2026-09-29","startMin":600,"endMin":720,"guestName":"QA Guest B1","source":"Website"}
+PASS | B8d | staff confirm -> the guest's page hears BookingStatus { ref, status, refundStatus, paid, balance } and staff hear BookingChanged Confirmed | expected=guest: ref MC-0914855F Confirmed with paid and balance; staff: Confirmed | actual=guest={"ref":"MC-0914855F","status":"Confirmed","refundStatus":"None","paid":0,"balance":40,"changedAt":"2026-09-19T07:42:25.569659+00:00"} staff=Confirmed
 PASS | B8e | nobody else hears it: an authenticated user without BOOKING_VIEW/MANAGE (qa.e1) and an anonymous connection that watches nothing receive no booking message | expected=0 messages each | actual=no-permission user=0 (connected=true); anonymous stranger=0
 PASS | B3b | staff confirm in HRMS -> Confirmed and a Confirmation e-mail is queued only now (by the trigger) | expected=status Confirmed; outbox gains Confirmation/Email | actual=200 Confirmed; outbox=Confirmation/Email,Confirmation/WhatsApp,Request/Email,StaffAlert/Email
-PASS | B4m | POST /api/bookings/manual still takes roomId + times and now surfaces the reference, hours, discount and deposit percent | expected=200 bookingId, bookingRef MC-..., status Confirmed, hours 2 | actual=200 {"bookingId":1158,"bookingRef":"MC-8A5DF54E","roomId":1035,"roomName":"QA Room","hours":2,"totalAmount":40,"discountPercent":0,"discountAmount":0,"depositDue":8,"depositPercent":20,"currencyCode":"USD","status":"Confirme
+PASS | B4m | POST /api/bookings/manual still takes roomId + times and now surfaces the reference, hours, discount and deposit percent | expected=200 bookingId, bookingRef MC-..., status Confirmed, hours 2 | actual=200 {"bookingId":1175,"bookingRef":"MC-066B27D0","roomId":1037,"roomName":"QA Room","hours":2,"totalAmount":40,"discountPercent":0,"discountAmount":0,"depositDue":8,"depositPercent":20,"currencyCode":"USD","status":"Confirme
 PASS | B4a | staff cancel {status, cancelledBy Staff, note} of a booking with 30 paid (total 40) -> refund due = everything paid (30); the response is the booking row | expected=cancelledBy Staff, refundAmount 30.00, refundStatus Due (response and DB) | actual=manual 200 pay 200/200/200; cancel 200 response cancelledBy=Staff refundAmount=30 refundStatus=Due; DB cancelledBy=Staff refundAmount=30.00 refundStatus=Due (deposit 8.00)
 PASS | B4e | staff cancel as cancelledBy Guest (the guest rang; `reason` still accepted as the note) -> refund = paid - deposit | expected=cancelledBy Guest, refundAmount 22.00 (30 paid - 8.00 deposit), refundStatus Due | actual=200 cancelledBy=Guest refundAmount=22 refundStatus=Due depositDue=8 
-PASS | B4c | POST /api/bookings/{id}/refunds (method by name "Cash", then by id 1) on the staff-cancelled booking flips RefundStatus Due -> Partial (10) -> Refunded (30) and lists the negative lines with isRefund | expected=after 10: Partial; after 30: Refunded, refundedUtc set, payments -10/Cash,-20/Cash | actual=200 Partial (name) lines=-10/Cash; 200 Refunded (id) refundedUtc=2026-09-19T05:49:55.5104892 lines=-10/Cash,-20/Cash  
+PASS | B4c | POST /api/bookings/{id}/refunds (method by name "Cash", then by id 1) on the staff-cancelled booking flips RefundStatus Due -> Partial (10) -> Refunded (30) and lists the negative lines with isRefund | expected=after 10: Partial; after 30: Refunded, refundedUtc set, payments -10/Cash,-20/Cash | actual=200 Partial (name) lines=-10/Cash; 200 Refunded (id) refundedUtc=2026-09-19T07:42:26.6413496 lines=-10/Cash,-20/Cash  
 PASS | B4f | a refund past what was paid is refused with the procedure's sentence | expected=400 "Refund exceeds what was paid" | actual=400 {"error":"Refund exceeds what was paid — 0.00 remains refundable."}
-PASS | B4g | GET /api/bookings/{id} carries refundAmount, refundStatus, refundedUtc, cancelledBy and the payment lines with isRefund | expected=status Cancelled, cancelledBy Staff, refundAmount 30, refundStatus Refunded, 3 payments (1 paid + 2 refunds) | actual=200 status=Cancelled cancelledBy=Staff refundAmount=30 refundStatus=Refunded refundedUtc=2026-09-19T05:49:55.5104892 payments=[[30,false],[-10,true],[-20,true]]
+PASS | B4g | GET /api/bookings/{id} carries refundAmount, refundStatus, refundedUtc, cancelledBy and the payment lines with isRefund | expected=status Cancelled, cancelledBy Staff, refundAmount 30, refundStatus Refunded, 3 payments (1 paid + 2 refunds) | actual=200 status=Cancelled cancelledBy=Staff refundAmount=30 refundStatus=Refunded refundedUtc=2026-09-19T07:42:26.6413496 payments=[[30,false],[-10,true],[-20,true]]
 PASS | B5a | 3-hour booking at 20/h with a 15 fixed add-on and a 10 % discount from 3 h: discount 6 on the room only, total 69 - in the response and in the row | expected=discountAmount 6.00, total 69.00 | actual=201 response total=69 discountPercent=10 discountAmount=6; DB discount%=10.00 discount=6.00 total=69.00 
 PASS | B5b | deposit computed on the discounted total with the lead-time tier (>=168 h -> 20 %) - response carries deposit and depositPercent | expected=depositPercent 20, deposit 13.80 | actual=response deposit=13.8 depositPercent=20; DB depositPercent=20.00 depositDue=13.80
 NOTE | B6/B7: waiting 61 s for the public write rate-limit window (5/min) and the settings cache (60 s) to roll over.
 PASS | B7b | BookingWebsiteEnabled=0 -> POST quote and POST create answer 503 paused; GET catalog stays up and says websiteEnabled false | expected=503 {"code":"paused"} x2; catalog 200 websiteEnabled=false | actual=quote 503 {"error":"Online booking is paused. Book over WhatsApp.","code":"paused"}; create 503 paused; catalog 200 websiteEnabled=false
 PASS | B6b | POST {ref}/cancel with a phone whose last 8 digits do not match -> 400 invalid_input, booking untouched | expected=400 {"code":"invalid_input"}; status still Pending | actual=400 {"error":"The phone number does not match this booking.","code":"invalid_input"}; DB status=Pending
-PASS | B6a | POST {ref}/cancel {phone} inside the window (the phone spelled without the country code) -> the recap with the refund figures | expected=ref, status Cancelled, cancelledBy Guest, refundAmount 0 (nothing paid), refundStatus None | actual=200 ref=MC-D8484FD7 status=Cancelled cancelledBy=Guest refundAmount=0 refundStatus=None 
-PASS | B6c | GET {ref} recap after the cancellation: status, minutes, "First L." name, money - and never the phone or e-mail | expected=status Cancelled, canCancelOnline false, guestName "QA B.", no guestPhone/guestEmail/email/phone keys, addons [] | actual=200 {"timeZone":"Asia/Beirut","ref":"MC-D8484FD7","status":"Cancelled","roomCode":"qa-room","roomName":"QA Room","date":"2026-10-06","startMin":600,"endMin":720,"vacateByMin":715,"turnaroundMinutes":5,"startAt":"2026-10-06T10:00:00+03:00","endAt":"2026-10-06T12:00
+PASS | B6a | POST {ref}/cancel {phone} inside the window (the phone spelled without the country code) -> the recap with the refund figures | expected=ref, status Cancelled, cancelledBy Guest, refundAmount 0 (nothing paid), refundStatus None | actual=200 ref=MC-B860E8B9 status=Cancelled cancelledBy=Guest refundAmount=0 refundStatus=None 
+PASS | B6c | GET {ref} recap after the cancellation: status, minutes, "First L." name, money - and never the phone or e-mail | expected=status Cancelled, canCancelOnline false, guestName "QA B.", no guestPhone/guestEmail/email/phone keys, addons [] | actual=200 {"timeZone":"Asia/Beirut","ref":"MC-B860E8B9","status":"Cancelled","roomCode":"qa-room","roomName":"QA Room","date":"2026-10-06","startMin":600,"endMin":720,"vacateByMin":715,"turnaroundMinutes":5,"startAt":"2026-10-06T10:00:00+03:00","endAt":"2026-10-06T12:00
 PASS | B7a | an origin not in BookingCorsOrigins, no origin at all, or a key while BookingApiKey is empty -> 401 unauthorized | expected=401 {"code":"unauthorized"} x3 | actual=401 unauthorized; 401 unauthorized; 401 unauthorized
 PASS | B7c | CORS preflight from the site origin is answered from BookingCorsOrigins (DB setting), GET/POST only | expected=204 Access-Control-Allow-Origin http://localhost:4321 | actual=204 acao=http://localhost:4321 methods=GET,POST
 PASS | B7d | GET verify?ref= answers 501 not_implemented (step 2) | expected=501 {"code":"not_implemented"} | actual=501 not_implemented
 PASS | X1-phase2 | every error body returned during phase2 is plain text (no SQL constraint text / stack trace) | expected=0 leaking responses | actual=0 of 13 error responses leak
 API phase2 done, 0 failure(s)
 
-=============== 6. leaves (SQL) (2026-09-19 08:50:58) ===============
+=============== 6. leaves (SQL) (2026-09-19 10:43:29) ===============
 NOTE | L1 rules read from hr.usp_LeaveYear_Open: full tier days when hired before 1 Jan (tier by whole service years at 1 Jan); hired this year -> ROUND(tier x (13 - hire month) / 12 x 2, 0) / 2 i.e. months from the hire month to December, rounded to 0.5; only the current year can be opened; skips employees who already have the year's "Annual entitlement" accrual row.
 NOTE | usp_LeaveYear_Open 2026 re-run in this file (the first run is part of seed.sql): no rows
 PASS | L1-real | opening the year adds nothing for real employees (they already have their 2026 accrual) | expected=34 | actual=34
@@ -536,7 +541,7 @@ NOTE | L5 ledger for E5 sick: Usage -1.00 (Sick has no LEAVE_ACCRUAL_TIER row, s
 PASS | L6b | E6 unpaid leave: Usage -2 on the Unpaid type; annual balance still 15 | expected=unpaid usage rows=1, annual remaining=15.00 | actual=unpaid usage rows=1, annual remaining=15.00
 PASS | L-ledger | every approved QA leave request has exactly one Usage row (and one Adjustment only when discretionary) | expected=0 requests off | actual=0
 
-=============== 7. payroll (SQL, rolled-back transaction) (2026-09-19 08:50:58) ===============
+=============== 7. payroll (SQL, rolled-back transaction) (2026-09-19 10:43:29) ===============
 AbsenteesMarked
 ---------------
 13
@@ -632,23 +637,23 @@ AbsenteesMarked
 13
 PayrollRunId|PeriodYearMonth|Status|PrimaryCurrency|RunType
 ------------|---------------|------|---------------|-------
-1282|2026-08|Draft|USD|Supplemental
+1314|2026-08|Draft|USD|Supplemental
 PayrollRunId|PeriodYearMonth|Status|PrimaryCurrency|RunType
 ------------|---------------|------|---------------|-------
-1283|2026-08|Draft|USD|Primary
+1315|2026-08|Draft|USD|Primary
 PayrollRunId|PeriodYearMonth|Status|PrimaryCurrency|RunType
 ------------|---------------|------|---------------|-------
-1284|2026-08|Draft|USD|Primary
+1316|2026-08|Draft|USD|Primary
 Warning: Null value is eliminated by an aggregate or other SET operation.
 PayrollRunId|PeriodYearMonth|Status|PrimaryCurrency|RunType
 ------------|---------------|------|---------------|-------
-1285|2026-08|Draft|USD|Supplemental
+1317|2026-08|Draft|USD|Supplemental
 PayrollRunId|PeriodYearMonth|Status|PrimaryCurrency|RunType
 ------------|---------------|------|---------------|-------
-1286|2026-08|Draft|USD|Primary
+1318|2026-08|Draft|USD|Primary
 PayrollRunId|PeriodYearMonth|Status|PrimaryCurrency|RunType
 ------------|---------------|------|---------------|-------
-1287|2026-08|Draft|USD|Supplemental
+1319|2026-08|Draft|USD|Supplemental
 NOTE | Formulas read from payroll.usp_PayrollRun_Generate: Coverage = employed calendar days in the month / days in month; Basic and every standing component = ROUND(amount x Coverage, 2); DayRate = Basic / StandardWorkingDaysPerMonth (26.00); HourRate = DayRate / StandardHoursPerDay; Unpaid Leave Deduction = unpaid days in period x DayRate; "Late Deduction" line = SUM(1 - DayFraction) over ALL attendance records with DayFraction < 1 that are not inside an approved leave x DayRate (no separate late-minutes or early-exit rule, no grace); Sick = year-to-date tiers (unpaid portion as "Absence Deduction"); NSSF base = Salary/Overtime/Leave/Attendance Earning-Deduction lines in primary currency; employee NSSF = SUM over rate rows of min(base, ceiling 2500.00) x EmployeeRate; employer = same with EmployerRate (uncapped schemes on the full base); tax = progressive brackets on (base - employee NSSF) x 12 - TaxFamilyDeductionAnnualUsd (setting absent -> 0), / 12. R
 NOTE | P0: real undecided exit variances set aside (Ignore, rolled back) so readiness measures the QA data: none
 NOTE | P0: real undecided anomalies set aside (Excused, rolled back) so readiness measures the QA data: Hadi Rammal 2026-08-19 EarlyDeparture 466 min, Hadi Rammal 2026-08-19 LateArrival 68 min
@@ -659,10 +664,10 @@ NOTE | P6 with the run's OWN (stored) rate the wage base is 3566.67 USD: the LBP
 NOTE | Payroll transaction rolled back: no run, payslip, lock or stamp persisted.
 PASS | P9k | readiness counts only the days up to today: run on 10 Aug it counts 1-10 Aug, after the month it counts the whole month; PeriodEnd stays 31 Aug (undecided anomalies + undecided variances + open anomalies) | expected=10 Aug: 0; whole month: 2; PeriodEnd 2026-08-31 | actual=10 Aug: 0; whole month: 2; PeriodEnd 2026-08-31
 PASS | P0 | attendance readiness for 2026-08 (QA anomalies/variances decided; real roster days filled and real undecided variances set aside inside the transaction) | expected=ready=1 | actual=unprocessed=0 unresolved=0 anomalies=0 corrections=0 missingDays=0 variances=0 undecidedAnomalies=0 ready=1
-PASS | P9g | a supplemental is created while the period has NO approved primary (old refusal "A supplemental follows an approved primary" is gone) | expected=created (Draft) | actual=run 1282 created
+PASS | P9g | a supplemental is created while the period has NO approved primary (old refusal "A supplemental follows an approved primary" is gone) | expected=created (Draft) | actual=run 1314 created
 PASS | P9h | while a supplemental is OPEN, the primary generated for the same period leaves the supplemental's adjustments out | expected=11 gift lines on the supplemental, 0 on the primary | actual=11 on the supplemental, 0 on the primary
 PASS | P9i | approving the supplemental consumes its adjustments (AppliedToPayslipId), and a LATER primary regenerate never pays them again | expected=11 consumed by the supplemental, 0 gift lines on the regenerated primary | actual=11 consumed, 0 on the primary
-PASS | P1-rate | the run snapshots the exchange rate of the configured PayrollRateType (setting = NonOfficial; the brief says "official rate of M") | expected=one LBP->USD rate row of type NonOfficial | actual=run=1284 stored LBP->USD rate=0.000011 (NonOfficial from 2026-08-16); source USD->LBP=90000.0000 so LBP->USD should be 0.0000111111
+PASS | P1-rate | the run snapshots the exchange rate of the configured PayrollRateType (setting = NonOfficial; the brief says "official rate of M") | expected=one LBP->USD rate row of type NonOfficial | actual=run=1316 stored LBP->USD rate=0.000011 (NonOfficial from 2026-08-16); source USD->LBP=90000.0000 so LBP->USD should be 0.0000111111
 PASS | P1-rate2 | the snapshotted LBP->USD rate keeps its precision (PAYROLL_RUN_RATE.Rate is DECIMAL(18,4): 1/90000 = 0.0000111 rounds to 0) | expected=about 0.0000111111 (non-zero) | actual=stored 0.000011; 6,000,000 LBP converts to 66.67 USD; in the REAL approved run 17 fn_ToPrimary(17, 6000000, 'LBP') = 0.00
 PASS | P1a | E9 full month: Basic line = component amount (3500 USD) and Transport line = 6,000,000 LBP | expected=basic=3500.00 transport=6000000.00 | actual=basic=3500.00 transport=6000000.00
 PASS | P1b | E9 payslip carries both USD and LBP columns (gross/net in each currency) | expected=GrossUsd>0 and GrossLbp=6000000 | actual=GrossUsd=3550.00 GrossLbp=6000000.00 DeductionsUsd=311.58 DeductionsLbp=0.00 NetUsd=3238.42 NetLbp=6000000.00 NetPrimary=3305.09
@@ -682,7 +687,7 @@ PASS | P6c | E9 income tax = progressive brackets on annualised (base - employee
 PASS | P6d | the family/personal tax deduction is configurable (setting TaxFamilyDeductionAnnualUsd read by the proc exists in core.SETTING) | expected=setting row exists | actual=exists
 PASS | P7b | the bulk gift (created twice through the API) lands exactly once per QA employee on the payslips, including E7 (active part of the month) | expected=11 lines on 11 payslips | actual=11 lines on 11 payslips
 PASS | P10b | after generation E1's dashboard status is "Prepared" | expected=Prepared | actual=Prepared (2026-08 Draft)
-PASS | P9b | HR sends the run to review and the Owner approves/locks it | expected=Approved with LockedAt | actual=Approved locked=2026-09-19 05:50:59
+PASS | P9b | HR sends the run to review and the Owner approves/locks it | expected=Approved with LockedAt | actual=Approved locked=2026-09-19 07:43:30
 PASS | P10c | after approval E1's status is "Ready" (salary prepared, not yet received) | expected=Ready | actual=Ready
 PASS | P10d | after marking E1's payslip paid the status flips to "Paid" (received) | expected=Paid via Bank | actual=Paid via Bank
 PASS | P7c | locking the run consumes the gift adjustments (AppliedToPayslipId set), so they cannot be paid twice | expected=11 consumed | actual=11 consumed
@@ -694,7 +699,7 @@ PASS | P9e | a salary change starting inside a locked month is refused (closed p
 PASS | P9f | re-running the primary for a month that has a live primary: REFUSES (never replaces) | expected=refused with "A primary run for 2026-08 already exists..." | actual=A primary run for 2026-08 already exists. Cancel it first if it must be redone.
 PASS | P9l | a primary for next month (2026-10) is refused: its period has not started | expected=refused with "The period ... has not started yet..." | actual=The period 2026-10 has not started yet. Its primary run can be created from 2026-10-01.
 
-=============== 8. bookings (SQL) (2026-09-19 08:50:59) ===============
+=============== 8. bookings (SQL) (2026-09-19 10:43:30) ===============
 PASS | B0 | the public booking routes the website calls (GET catalog, GET availability?room&date, POST quote, GET {ref}) all answer on /api/public/booking | expected=catalog=200, availability=200, quote=200, byref=200 | actual=catalog=200,availability=200,quote=200,byref=200,create=201,cancel=200
 PASS | B1c | after the duplicate create attempt the slot still holds exactly one live booking | expected=1 | actual=1
 PASS | B2c | usp_Booking_Create 22:00-01:00 (end after midnight) -> row with StartMin 1320 / EndMin 1500 | expected=startMin=1320 endMin=1500, hours 3 | actual=status=Confirmed hours=3.00 total=54.00 startMin=1320 endMin=1500
@@ -704,7 +709,7 @@ PASS | B3d | website bookings that are still Pending have no Confirmation mail q
 PASS | B4h | usp_Booking_CancelByGuest with a phone whose last 8 digits differ -> RAISERROR, booking untouched | expected=refused: The phone number does not match this booking.; status=Confirmed | actual=refused: The phone number does not match this booking.; status=Confirmed
 BookingId|BookingRef|BookDate|StartTime|EndTime|StartMin|EndMin|Hours|VacateByMin|TurnaroundMinutes|Persons|GuestName|GuestPhone|GuestEmail|Note|TotalAmount|DepositDue|DepositPercent|DiscountPercent|DiscountAmount|CurrencyCode|Status|Source|CancelReason|CancelledBy|RefundAmount|RefundStatus|RefundedUtc|HoldExpiresUtc|GatewayOrderId|GatewaySessionId|PaidConfirmedUtc|CreatedUtc|RoomCode|RoomName|PolicyText|PricePerHour|PaidAmount|RefundedAmount|BalanceDue|CanCancelOnline|CancelHours
 ---------|----------|--------|---------|-------|--------|------|-----|-----------|-----------------|-------|---------|----------|----------|----|-----------|----------|--------------|---------------|--------------|------------|------|------|------------|-----------|------------|------------|-----------|--------------|--------------|----------------|----------------|----------|--------|--------|----------|------------|----------|--------------|----------|---------------|-----------
-1159|MC-EBFEE09B|2026-10-02|14:00:00|16:00:00|840|960|2.00|955|5|2|QA Guest B4b|+96170000005|NULL|NULL|40.00|8.00|20.00|.00|.00|USD|Cancelled|Manual|Cancelled by the guest online.|Guest|22.00|Due|NULL|NULL|NULL|NULL|NULL|2026-09-19 05:49:54.7239327|qa-room|QA Room|NULL|20.00|30.00|.00|10.00|0|24
+1176|MC-BC5078DF|2026-10-02|14:00:00|16:00:00|840|960|2.00|955|5|2|QA Guest B4b|+96170000005|NULL|NULL|40.00|8.00|20.00|.00|.00|USD|Cancelled|Manual|Cancelled by the guest online.|Guest|22.00|Due|NULL|NULL|NULL|NULL|NULL|2026-09-19 07:42:25.9086412|qa-room|QA Room|NULL|20.00|30.00|.00|10.00|0|24
 Name|Amount
 ----|------
 PASS | B4d | guest cancel (usp_Booking_CancelByGuest @Ref, @Phone; deposit not refundable): refund = paid - deposit | expected=status=Cancelled cancelledBy=Guest refundAmount=22.00 (paid 30.00 - deposit 8.00) refundStatus=Due | actual=status=Cancelled cancelledBy=Guest refundAmount=22.00 refundStatus=Due
@@ -713,14 +718,14 @@ PASS | B4j | the staff-cancelled booking refunded through the API (B4c) is store
 PASS | B5c | B5 stored: 10 % discount on the room only (6.00), total 69.00 incl. the 15.00 add-on, deposit 20 % of the discounted total (13.80) | expected=discount=6.00 total=69.00 deposit=13.80 addons=15.00 | actual=discountPct=10.00 discount=6.00 total=69.00 depositPct=20.00 deposit=13.80 addons=15.00
 NOTE | Bookings: the HTTP checks (B0a, B1a/b/d, B2a/b/e/f, B3a/b, B4a/c/e/f/g/m, B5a/b/d, B6a/b/c, B7a/b/c/d) are in api-tests.mjs phase2 against /api/public/booking (Origin http://localhost:4321) and /api/bookings; this file holds the row-level checks and the procedure-level guest cancel (@Phone) and refund recording.
 
-=============== 9. cross-cutting (SQL) (2026-09-19 08:50:59) ===============
+=============== 9. cross-cutting (SQL) (2026-09-19 10:43:30) ===============
 PASS | X2a | no module with uses_quoted_identifier = 0 does DML on a table with a filtered index (hr.EMPLOYEE, booking.BOOKING, core.EMAIL_OUTBOX, ...) | expected=none | actual=none
 NOTE | X2: modules compiled with QUOTED_IDENTIFIER OFF (all of them): attendance.usp_Device_GetAll
 NOTE | X2: filtered indexes present: hr.EMPLOYEE.UQ_Employee_UserId, hr.LEAVE_LEDGER.IX_LeaveLedger_Request, core.EMAIL_OUTBOX.UX_EMAIL_OUTBOX_RequestChannel, core.EMAIL_OUTBOX.UX_EMAIL_OUTBOX_Booking, payroll.PAYROLL_RUN.UX_Run_LivePrimary, payroll.PAYROLL_RUN.UX_Run_OpenSupplemental, workflow.WORKFLOW_DEFINITION.UQ_ActiveDefinition_PerTier, core.HOLIDAY.UX_HOLIDAY_Date_All, core.HOLIDAY.UX_HOLIDAY_Date_Branch, payroll.SALARY_ADVANCE.IX_Advance_Open, workflow.REQUEST_STEP_INSTANCE.IX_StepInst_Delegated, attendance.ATTENDANCE_ANOMALY.IX_AttAnomaly_Undecided
 PASS | R3h | real data: every APPROVED roster-approval request has had its effect applied (AppliedAt set, month Approved) | expected=0 approved-but-unapplied | actual=0 approved-but-unapplied: none
 
-=============== 10. browser checks (R6, X4, X5) (2026-09-19 08:50:59) ===============
-PASS | X5-calendar | /bookings/calendar at 390 px has no horizontal page scroll | expected=scrollWidth <= innerWidth (390) | actual=documentElement.scrollWidth=390 body.scrollWidth=390 innerWidth=390 (screenshot tests/qa/screenshots/calendar-390.png)
+=============== 10. browser checks (R6, X4, X5) (2026-09-19 10:43:30) ===============
+PASS | X5-calendar | /bookings/calendar at 390 px has no horizontal page scroll | expected=scrollWidth <= innerWidth (390) | actual=documentElement.scrollWidth=390 body.scrollWidth=374 innerWidth=390 (screenshot tests/qa/screenshots/calendar-390.png)
 PASS | X5-roster | /attendance/roster at 390 px has no horizontal page scroll | expected=scrollWidth <= innerWidth (390) | actual=documentElement.scrollWidth=390 body.scrollWidth=390 innerWidth=390 (screenshot tests/qa/screenshots/roster-390.png)
 PASS | X5-payroll-runs | /payroll/runs at 390 px has no horizontal page scroll | expected=scrollWidth <= innerWidth (390) | actual=documentElement.scrollWidth=390 body.scrollWidth=390 innerWidth=390 (screenshot tests/qa/screenshots/payroll-runs-390.png)
 PASS | X5-daily-attendance | /attendance/daily at 390 px has no horizontal page scroll | expected=scrollWidth <= innerWidth (390) | actual=documentElement.scrollWidth=390 body.scrollWidth=390 innerWidth=390 (screenshot tests/qa/screenshots/daily-attendance-390.png)
@@ -730,7 +735,7 @@ PASS | X4e | Operations Manager opening /settings sees an access-denied view for
 PASS | X4f | Operations Manager opens /attendance/daily (ATTENDANCE_VIEW granted) normally | expected=page shown, still logged in | actual=path=/attendance/daily text="Dashboard Requests Attendance Overview Daily Attendance Roster Anomalies Exit Va"
 PASS | X4g | a 403 from the API inside a page is shown as a message and does not log the user out | expected=status 403, message "You don't have permission for this action", still on the page with a token | actual={"thrown":true,"status":403,"message":"You don't have permission for this action","path":"/attendance/daily","token":true}
 
-=============== 11. cultures and machine pull (second API instance, en-GB) (2026-09-19 08:51:48) ===============
+=============== 11. cultures and machine pull (second API instance, en-GB) (2026-09-19 10:44:34) ===============
 PASS | A13 | machine pull worker (MachinePullEnabled=1, dummy device on 127.0.0.1:43700): cycle runs without exceptions and logs the 'pulled N' line | expected=log line 'Machine pull — QA Device (127.0.0.1): pulled 1 new punch(es) of 1 read ...', 0 exceptions, 1 Pull row | actual=line='Machine pull — QA Device (127.0.0.1): pulled 1 new punch(es) of 1 read (0 already known, 1 on unmapped PIN(s)).'; cycle='Machine pull cycle: 2 machine(s) tried, 1 new punch(es) landed, 0 already known, 1 on unmapped PIN(s), 1 machine(s) failed.'; exceptions=0; Pull rows=1
 PASS | A13b | MachinePullAutoProcess=1: after a pull that landed punches the worker runs usp_Attendance_ProcessRawLogs and logs the counts (the old 'ON but not processed' warning is gone) | expected=log line 'Machine pull auto-process: 1 new punch(es) landed, N employee-day(s) processed ...' and no 'ON but not processed' warning | actual=line='Machine pull auto-process: 1 new punch(es) landed, 0 employee-day(s) processed into attendance (each rebuilt from all of its punches, by attributed date).'; old warning lines=0
 PASS | X3a | ISO dates (what the web app sends: yyyy-MM-dd) are read the same under en-US and en-GB | expected=3 records on both instances | actual=en-US=3 en-GB=3
@@ -738,7 +743,7 @@ PASS | X3b | slash dates in query strings (dd/MM vs MM/dd) are interpreted the s
 PASS | X3c | a JSON body date (2026-09-10) posted to the en-GB instance lands on the right day | expected=row on 2026-09-10 | actual=PUT status 200; stored=2026-09-10
 NOTE | X3/A13: second API instance stopped; its log is tests/qa/api-engb.log
 
-=============== 12. summary (2026-09-19 08:52:11) ===============
+=============== 12. summary (2026-09-19 10:44:57) ===============
 Result|Id|Case|Expected|Actual
 ------|--|----|--------|------
 PASS|R1|roster for M covers every day of every QA employee's active span with a shift or a rest day|missing/empty days = 0|employee-days=223 missing/empty=0
@@ -755,40 +760,45 @@ PASS|X0|login qa.ops|200 + accessToken|200 + token
 PASS|X0|login qa.e1|200 + accessToken|200 + token
 PASS|X0|login qa.e5|200 + accessToken|200 + token
 PASS|X1a|wrong password: 401 with a plain-words JSON error|401 {"error":"Invalid username or password."}|401 {"error":"Invalid username or password."}
-FAIL|X4a|a Manager (branch manager of QA Branch) sees only own-branch employees on GET /api/employees|no employees of other branches in the list|status 200, 32 employees returned, 21 from other branches (e.g. Ali Sleiman/Beirut-Verdun, Bilal/Beirut-Verdun)
+PASS|X4a|a Manager (branch manager of QA Branch) sees only own-branch employees on GET /api/employees|no employees of other branches in the list|status 200, 11 employees returned, 0 from other branches (e.g. )
+PASS|X4h|HR (EMP_VIEW_ALL) still sees the employees of every branch on GET /api/employees|employees of other branches present|status 200, 32 employees, 21 from other branches
+PASS|X4i|an Operations Manager (ATTENDANCE_VIEW, no EMP_VIEW_ALL) gets only own rows and managed branches in the attendance list; HR gets everything|0 rows outside the scope, and fewer rows than HR|ops: status 200, 0 rows, 0 outside (manages []); hr: 4 rows
+PASS|X4j|an Operations Manager (ATTENDANCE_VIEW, no EMP_VIEW_ALL) gets only own rows and managed branches in the roster; HR gets everything|0 rows outside the scope, and fewer rows than HR|ops: status 200, 0 rows, 0 outside (manages []); hr: 874 rows
+PASS|X4k|the roster procedure called for the QA Branch manager returns that branch only; with no caller (the system) it returns everything|rows > 0, 0 of another branch, fewer than the unscoped call|manager rows=223 otherBranch=0 unscoped=874
+PASS|X4l|role hygiene: the Employee role holds none of REQUEST_RAISE_OTHERS / REQUEST_VIEW_ALL / WORKFLOW_CONFIGURE, and AllowSystemReset is 0|0|0|0|0
 PASS|X4b|an Operations Manager gets 403 on GET /api/payroll/runs (no PAYROLL_* permission)|403|403 body=(empty)
 PASS|X4c|an Operations Manager gets 403 on GET /api/settings|403|403
-PASS|R3a|HR submits the QA Branch August roster for approval|200 + requestInstanceId, status Pending|200 {"requestInstanceId":1742,"status":"Pending","currentStepNo":1}
+PASS|R3a|HR submits the QA Branch August roster for approval|200 + requestInstanceId, status Pending|200 {"requestInstanceId":1833,"status":"Pending","currentStepNo":1}
 PASS|R3b|roster month status after submit|PendingApproval|PendingApproval
-PASS|R3c|step 1 (BranchManager = qa.manager) approves with password|200, currentStepNo 2|200 {"requestInstanceId":1742,"status":"Pending","currentStepNo":2}
-PASS|R3d|step 2 (HR role; the submitter may sign an organisational request) approves|200, currentStepNo 3|200 {"requestInstanceId":1742,"status":"Pending","currentStepNo":3}
-PASS|R3e|step 3 (Owner) approves; request closes Approved|200, status Approved|200 {"requestInstanceId":1742,"status":"Approved","currentStepNo":null}
-PASS|R3f|after the final approval the roster month becomes Approved (approval effect applied)|Approved|Approved (request 1742 status Approved)
+PASS|R3c|step 1 (BranchManager = qa.manager) approves with password|200, currentStepNo 2|200 {"requestInstanceId":1833,"status":"Pending","currentStepNo":2}
+PASS|R3d|step 2 (HR role; the submitter may sign an organisational request) approves|200, currentStepNo 3|200 {"requestInstanceId":1833,"status":"Pending","currentStepNo":3}
+PASS|R3e|step 3 (Owner) approves; request closes Approved|200, status Approved|200 {"requestInstanceId":1833,"status":"Approved","currentStepNo":null}
+PASS|R3f|after the final approval the roster month becomes Approved (approval effect applied)|Approved|Approved (request 1833 status Approved)
 PASS|R3g|editing a PAST day of an APPROVED month is refused: 409 with the lock sentence (no SQL text)|409 + {error:"This day is already in an approved roster..."}|409 {"error":"This day is already in an approved roster and attendance was recorded — correct the attendance record instead."}
 PASS|R4a|the changed day is visible in the roster calendar read|n/a: edit was refused|edit refused with 409
 PASS|R4b|changing an approved day requires re-approval|n/a: edit was refused|edit refused with 409
 PASS|X1b|PUT /api/roster/day for a non-existent employee: clean JSON error, no SQL constraint text or stack trace|4xx {error:"..."}|400 {"error":"Employee not found."}
-PASS|X1c|PUT /api/roster/day with a non-existent shift (unmapped FK violation): the global handler answers 400 {error, traceId}, no constraint text|400 {error:"The referenced record does not exist or the value is not allowed.", traceId}|400 {"error":"The referenced record does not exist or the value is not allowed.","traceId":"ee522f97eef521a1731bdb67a6ee50e5"}
-PASS|R4c|a month waiting for approval is read-only: PUT /api/roster/day on 2026-10-15 while request 1743 is pending|409 {error:"Waiting for approval — request #N. Withdraw or wait..."}|generate 200, submit 200, edit 409 Waiting for approval — request #1743. Withdraw or wait for the decision before editing.
+PASS|X1c|PUT /api/roster/day with a non-existent shift (unmapped FK violation): the global handler answers 400 {error, traceId}, no constraint text|400 {error:"The referenced record does not exist or the value is not allowed.", traceId}|400 {"error":"The referenced record does not exist or the value is not allowed.","traceId":"7438d86def667fd8c0d86bcc30f0cd0f"}
+PASS|R4c|a month waiting for approval is read-only: PUT /api/roster/day on 2026-10-15 while request 1834 is pending|409 {error:"Waiting for approval — request #N. Withdraw or wait..."}|generate 200, submit 200, edit 409 Waiting for approval — request #1834. Withdraw or wait for the decision before editing.
 PASS|R4d|a FUTURE day (2026-10-15) of an APPROVED month may be changed by HR: 200; the month stays Approved and reports changedSinceApproval|Approved before; 200; Approved + changedSinceApproval=true after|Approved before; 200; Approved + changedSinceApproval=true after
-PASS|R4e|re-submitting the changed month opens a new request; the month stays Approved (processing keeps the signed-off shifts) and is read-only again|200 + new request; status Approved, openRequestId = new request; edit 409|200 rid=1744; status Approved, openRequestId 1744; edit 409
-PASS|L2a|E5 raises a 3-day annual leave (17-19 Aug)|200 + requestInstanceId, daysRequested 3|200 {"requestInstanceId":1745,"status":"Pending","currentStepNo":1,"workflowVersion":4,"daysRequested":3,"noticeShorterThanPreferred":true,"noticePreferredDays":14}
+PASS|R4e|re-submitting the changed month opens a new request; the month stays Approved (processing keeps the signed-off shifts) and is read-only again|200 + new request; status Approved, openRequestId = new request; edit 409|200 rid=1835; status Approved, openRequestId 1835; edit 409
+PASS|L2a|E5 raises a 3-day annual leave (17-19 Aug)|200 + requestInstanceId, daysRequested 3|200 {"requestInstanceId":1836,"status":"Pending","currentStepNo":1,"workflowVersion":4,"daysRequested":3,"noticeShorterThanPreferred":true,"noticePreferredDays":14}
 PASS|L4a|submit response carries the short-notice warning (14 days preferred, dates in the past)|noticeShorterThanPreferred=true, noticePreferredDays=14|noticeShorterThanPreferred=true noticePreferredDays=14
 PASS|L4b|the approver's payload shows the warning fields (noticeGivenDays, noticePreferredDays, noticeShorterThanPreferred)|noticeShorterThanPreferred=true with noticeGivenDays < 14|status 200 noticeGivenDays=-33 noticePreferredDays=14 noticeShorterThanPreferred=true
-PASS|L2b|step 1 (branch manager) approves the annual leave|200|200 {"requestInstanceId":1745,"status":"Pending","currentStepNo":2,"closedReason":null,"decision":"Approved","signedAsDeputy":false,"signedWithPassword":true,"daysApproved":3,"balanceAfter":15,"balanceIsNegative":false,"discretionaryGranted":false}
+PASS|L2b|step 1 (branch manager) approves the annual leave|200|200 {"requestInstanceId":1836,"status":"Pending","currentStepNo":2,"closedReason":null,"decision":"Approved","signedAsDeputy":false,"signedWithPassword":true,"daysApproved":3,"balanceAfter":15,"balanceIsNegative":false,"discretionaryGranted":false}
 PASS|L2c|step 2 (Owner) approves; ledger Usage -3 posted, balance 12 (15 - 3)|status Approved, daysApproved 3, balanceAfter 12|200 status=Approved daysApproved=3 balanceAfter=12
 PASS|L5a|sick leave cannot be approved without a certificate attachment|400 "...requires a certificate..."|400 This leave type requires a certificate. Attach it to the request before approving.
-PASS|L5b|the requester attaches the certificate|200/201|200 {"attachmentId":1031}
+PASS|L5b|the requester attaches the certificate|200/201|200 {"attachmentId":1033}
 PASS|L5c|with the attachment the sick leave is approved at both steps|200 then 200 Approved|200 then 200 Approved
 PASS|L6a|HR raises a 2-day unpaid leave for E6 (10-11 Aug); manager and owner approve|Approved|200/200 Approved
 PASS|L3a|discretionary approval WITHOUT a note is refused|400 "A note is required..."|400 A note is required when granting as discretionary — say why the days are not deducted.
 PASS|L3b|discretionary approval with a note: Usage -3 and Adjustment +3 (balance unchanged at 21)|Approved, discretionaryGranted true, balanceAfter 21|200 status=Approved discretionaryGranted=true balanceAfter=21
 PASS|L2d|taking back the final approval of an approved leave through the API (withdraw-decision)|documented rule: refused - an approved request is closed and must be corrected elsewhere|400 This request is closed. A rejected or cancelled request can be reopened by HR; an approved one must be corrected through attendance.
 PASS|L2e|the requester cancels a pending leave request|200 status Cancelled|200 Cancelled
-PASS|A11a|E1 raises an exit permission 14:05-15:05 on 13 Aug (60 min)|200, requestedMinutes 60|200 {"exitPermissionId":1149,"requestInstanceId":1750,"employeeId":2080,"exitDate":"2026-08-13T00:00:00","fromTime":"14:05:00","toTime":"15:05:00","requestedMinutes":60,"approvedMinutes":60,"convertToLeav
+PASS|A11a|E1 raises an exit permission 14:05-15:05 on 13 Aug (60 min)|200, requestedMinutes 60|200 {"exitPermissionId":1166,"requestInstanceId":1841,"employeeId":2164,"exitDate":"2026-08-13T00:00:00","fromTime":"14:05:00","toTime":"15:05:00","requestedMinutes":60,"approvedMinutes":60,"convertToLeav
 PASS|A11b|HR then Owner approve the exit permission|Approved|200/200 Approved
 PASS|L7a|deputy (OperationsManager) is refused while the main approver is available and nothing is delegated|403 "You are not the approver for this step."|403 You are not the approver for this step. | fn_CanUserActOnStep=0
-PASS|L7b|main approver delegates the step to the deputy role -> deputy may act|200, fn_CanUserActOnStep=1|200 {"stepNo":1,"delegatedToDeputyAt":"2026-09-19T05:49:48.5939759","deputyDelegated | fn_CanUserActOnStep=1
+PASS|L7b|main approver delegates the step to the deputy role -> deputy may act|200, fn_CanUserActOnStep=1|200 {"stepNo":1,"delegatedToDeputyAt":"2026-09-19T07:42:19.8657643","deputyDelegated | fn_CanUserActOnStep=1
 PASS|L7c|main approver reclaims the step -> deputy refused again|200/204, fn_CanUserActOnStep=0|200 | fn_CanUserActOnStep=0
 PASS|L7d|requester never counts as available: manager's own request keeps step 1 Pending and the deputy signs it (signedAsDeputy)|step1 Pending; deputy decide 200 signedAsDeputy=true|step1=Pending; 200 signedAsDeputy=true
 PASS|L7e|owner approves the manager's leave (manager is now on approved leave today)|Approved|200 Approved
@@ -813,7 +823,7 @@ PASS|A9b|worked minutes start at shift start (early-in not counted as work)|work
 PASS|A11|exit permission 60 min approved, employee left 55 min early -> no variance to queue (script 77: the early departure is an anomaly, not a variance; ExitActual 0, variance = 0 - 60 = -60, never > 0)|exitApproved=60 exitVar=-60 (not positive)|exitActual=0 exitApproved=60 exitVar=-60 worked=455 fraction=1.00
 PASS|A11b|applying the approved 60 min does not reduce the day twice (worked stays at the punched 455 = 485 gross - 30 break)|worked=455|exitActual=0 exitApproved=60 exitVar=-60 worked=455 fraction=1.00
 PASS|A11c|the approved permission protects pay: the 55 early minutes are covered, DayFraction 1.00 (it is converted to leave at period close)|fraction=1.00|exitActual=0 exitApproved=60 exitVar=-60 worked=455 fraction=1.00
-PASS|A11d|the 55-minute early departure is fully covered by the approved 60-minute exit permission: nothing is left for HR to decide|no EarlyDeparture anomaly; early 0, nothing deducted, full day; the record names the permission|early=0 earlyDeduct=0 fraction=1.00 exitPermissionId=1149 exitLeave=55 anomalies=none
+PASS|A11d|the 55-minute early departure is fully covered by the approved 60-minute exit permission: nothing is left for HR to decide|no EarlyDeparture anomaly; early 0, nothing deducted, full day; the record names the permission|early=0 earlyDeduct=0 fraction=1.00 exitPermissionId=1166 exitLeave=55 anomalies=none
 PASS|A8a|E3 Evening: in 16:05, out 01:10 next day -> both on the roster date 3 Aug, gross 545 (worked 515 after the 30-min break), late 0 (5 min inside grace)|lastOut=2026-08-04 01:10 gross=545 late=0 fraction=1.00|firstIn=2026-08-03 16:05:00 lastOut=2026-08-04 01:10:00 gross=545 worked=505 late=0 fraction=1.00 ot=10
 PASS|A8b|nothing of the 3 Aug shift is attributed to 4 Aug (E3's 4 Aug record starts with the 16:00 In)|firstIn=2026-08-04 16:00|firstIn=2026-08-04 16:00:00 status=Present
 PASS|A8c|a Morning-shift colleague's (E1) 07:12 punch on 4 Aug is not stolen by the overnight rule|firstIn=2026-08-04 07:12|firstIn=2026-08-04 07:12:00
@@ -847,36 +857,36 @@ PASS|P9a|creating a second primary run for 2026-08 (an approved one already exis
 PASS|P9a2|POST /api/payroll/runs WITHOUT runType is treated as a primary run (the documented default)|400 "A primary run for 2026-08 already exists..." (primary path)|400 A primary run for 2026-08 already exists. Cancel it first if it must be redone.
 PASS|P7a|bulk gift to all active QA-branch employees in 2026-08: once per employee, second run adds nothing|first=11 employees, second=0, duplicates=0|first=11 (status 200), second=0, rows=11, employees with >1 row=0
 PASS|P11a|a second Official USD->LBP rate is refused|400 "...already exists..."|400 A Official rate for USD → LBP already exists — edit that row instead of adding another.
-PASS|P11b|the non-official rate type exists and can be stored (then deleted again)|create 200/201 then delete 204|create 201 id=1026, delete 204
+PASS|P11b|the non-official rate type exists and can be stored (then deleted again)|create 200/201 then delete 204|create 201 id=1028, delete 204
 PASS|P10a|dashboard salary status for E1 before any QA run|no payslip / "not prepared" (204 or null)|204 (empty)
-PASS|B0a|GET /api/public/booking/catalog (Origin allowed) -> rooms with hours in minutes, rules, timeZone Asia/Beirut|qa-room present with openMin 540 / closeMin 1500 x7, rules.localNow ISO with offset|200 timeZone=Asia/Beirut qa-room hours={"dayOfWeek":1,"openMin":540,"closeMin":1500,"isClosed":false} n=7 localNow=2026-09-19T08:49:53+03:00 addons=[{"id":1036,"name":"QA Platter","priceType":"Fixed","price":15}] discounts=[{"minHours":3,"percent":10,"discountPercent":10}]
-PASS|B1a|public create on a free slot -> 201 Pending, times echoed in minutes with Beirut moments|201 status Pending startMin 600 endMin 720 startAt ...T10:00:00+03:00|201 {"timeZone":"Asia/Beirut","ref":"MC-9AF3119E","status":"Pending","date":"2026-09-29","startMin":600,"endMin":720,"startAt":"2026-09-29T10:00:00+03:00","endAt":"2026-09-29T12:00:00+03:00","total":40,"deposit":8,"depositPe
-PASS|B1d|the public create response carries the booking reference (MC-...) the guest is told to keep|ref MC-XXXXXXXX equal to the DB row|ref=MC-9AF3119E; DB ref=MC-9AF3119E; keys=timeZone,ref,status,date,startMin,endMin,startAt,endAt,total,deposit,depositPercent,discountPercent,discountAmount,currency,hours,roomName,depositRequired,holdExpiresUtc,expiresAt
+PASS|B0a|GET /api/public/booking/catalog (Origin allowed) -> rooms with hours in minutes, rules, timeZone Asia/Beirut|qa-room present with openMin 540 / closeMin 1500 x7, rules.localNow ISO with offset|200 timeZone=Asia/Beirut qa-room hours={"dayOfWeek":1,"openMin":540,"closeMin":1500,"isClosed":false} n=7 localNow=2026-09-19T10:42:24+03:00 addons=[{"id":1038,"name":"QA Platter","priceType":"Fixed","price":15}] discounts=[{"minHours":3,"percent":10,"discountPercent":10}]
+PASS|B1a|public create on a free slot -> 201 Pending, times echoed in minutes with Beirut moments|201 status Pending startMin 600 endMin 720 startAt ...T10:00:00+03:00|201 {"timeZone":"Asia/Beirut","ref":"MC-0914855F","status":"Pending","date":"2026-09-29","startMin":600,"endMin":720,"startAt":"2026-09-29T10:00:00+03:00","endAt":"2026-09-29T12:00:00+03:00","total":40,"deposit":8,"depositPe
+PASS|B1d|the public create response carries the booking reference (MC-...) the guest is told to keep|ref MC-XXXXXXXX equal to the DB row|ref=MC-0914855F; DB ref=MC-0914855F; keys=timeZone,ref,status,date,startMin,endMin,startAt,endAt,total,deposit,depositPercent,discountPercent,discountAmount,currency,hours,roomName,depositRequired,holdExpiresUtc,expiresAt
 PASS|B3a|creation queues Request + StaffAlert e-mails only (no Confirmation) - written by the DB trigger, not the API|Request/Email,StaffAlert/Email|Request/Email,StaffAlert/Email
 PASS|B1b|identical second create -> 409 slot_taken with the procedure's sentence|409 {"code":"slot_taken"}|409 {"error":"That time was just taken — pick another slot.","code":"slot_taken"}
-PASS|B2a|public create 22:00-01:00 (startMin 1320, endMin 1500) succeeds|201, hours 3, endAt next day 01:00 with offset|201 {"timeZone":"Asia/Beirut","ref":"MC-9F4B44C1","status":"Pending","date":"2026-09-30","startMin":1320,"endMin":1500,"startAt":"2026-09-30T22:00:00+03:00","endAt":"2026-10-01T01:00:00+03:00","total":54,
+PASS|B2a|public create 22:00-01:00 (startMin 1320, endMin 1500) succeeds|201, hours 3, endAt next day 01:00 with offset|201 {"timeZone":"Asia/Beirut","ref":"MC-6AF30EB7","status":"Pending","date":"2026-09-30","startMin":1320,"endMin":1500,"startAt":"2026-09-30T22:00:00+03:00","endAt":"2026-10-01T01:00:00+03:00","total":54,
 PASS|B2b|GET availability?room&date shows the 22:00-01:00 slot as taken, in minutes|taken contains {startMin 1320, endMin 1500}|200 taken=[{"startMin":1320,"endMin":1500}] free=[{"startMin":540,"endMin":1320}]
 PASS|B2e|day availability reports the room's opening hours in minutes (QA room 09:00-01:00) and the free time up to the taken slot|openMin 540, closeMin 1500, isClosed false, a free range ending at 1320, earliestStartMin 540|openMin=540 closeMin=1500 isClosed=false earliest=540 free=[{"startMin":540,"endMin":1320}] turnaround=5
 PASS|B2f|GET availability/month?room&month paints the day with the 22:00-01:00 booking as partial and a past day as past|2026-09-30 partial; yesterday past|200 month=2026-09 2026-09-30=partial first=past n=30
 PASS|B5d|POST quote for 3 h + the 15 add-on prices the room with the 10 % discount and the add-on undiscounted|roomGross 60, discountAmount 6, roomTotal 54, addonTotal 15, total 69, depositPercent 20, deposit 13.80|200 {"timeZone":"Asia/Beirut","roomCode":"qa-room","roomName":"QA Room","hours":3,"pricePerHour":20,"roomGross":60,"discountPercent":10,"discountFromHours":3,"discountAmount":6,"roomTotal":54,"addonTotal":15,"total":69,"depositPercent":20,"deposit":13.8,"currency":"USD","depositRequired":false}
 PASS|B8a|POST /hubs/booking/negotiate is anonymous and answers CORS from BookingCorsOrigins WITH credentials (no wildcard); an unlisted origin gets no CORS grant|200, Access-Control-Allow-Origin http://localhost:4321, Allow-Credentials true; evil origin: no Allow-Origin|200 acao=http://localhost:4321 acac=true; evil acao=null
 PASS|B8b|an anonymous connection joins "booking:{ref}" only with a real MC- reference (WatchBooking, the website's call); an unknown reference or a group name is refused|real ref: completed without error; MC-ZZZZZZZZ and "staff": error not_found|real=ok; unknown=An unexpected error occurred invoking 'WatchBooking' on the server. HubException: not_found; "staff"=An unexpected error occurred invoking 'WatchBooking' on the server. HubException: not_found
-PASS|B8c|the public create is announced to group "staff": BookingChanged { bookingId, ref, status, roomCode, date, startMin, endMin, guestName, source }|BookingChanged ref MC-9AF3119E Pending Website qa-room 2026-09-29 600-720 with bookingId 1156|{"bookingId":1156,"ref":"MC-9AF3119E","status":"Pending","roomCode":"qa-room","date":"2026-09-29","startMin":600,"endMin":720,"guestName":"QA Guest B1","source":"Website"}
-PASS|B8d|staff confirm -> the guest's page hears BookingStatus { ref, status, refundStatus, paid, balance } and staff hear BookingChanged Confirmed|guest: ref MC-9AF3119E Confirmed with paid and balance; staff: Confirmed|guest={"ref":"MC-9AF3119E","status":"Confirmed","refundStatus":"None","paid":0,"balance":40,"changedAt":"2026-09-19T05:49:54.3962417+00:00"} staff=Confirmed
+PASS|B8c|the public create is announced to group "staff": BookingChanged { bookingId, ref, status, roomCode, date, startMin, endMin, guestName, source }|BookingChanged ref MC-0914855F Pending Website qa-room 2026-09-29 600-720 with bookingId 1173|{"bookingId":1173,"ref":"MC-0914855F","status":"Pending","roomCode":"qa-room","date":"2026-09-29","startMin":600,"endMin":720,"guestName":"QA Guest B1","source":"Website"}
+PASS|B8d|staff confirm -> the guest's page hears BookingStatus { ref, status, refundStatus, paid, balance } and staff hear BookingChanged Confirmed|guest: ref MC-0914855F Confirmed with paid and balance; staff: Confirmed|guest={"ref":"MC-0914855F","status":"Confirmed","refundStatus":"None","paid":0,"balance":40,"changedAt":"2026-09-19T07:42:25.569659+00:00"} staff=Confirmed
 PASS|B8e|nobody else hears it: an authenticated user without BOOKING_VIEW/MANAGE (qa.e1) and an anonymous connection that watches nothing receive no booking message|0 messages each|no-permission user=0 (connected=true); anonymous stranger=0
 PASS|B3b|staff confirm in HRMS -> Confirmed and a Confirmation e-mail is queued only now (by the trigger)|status Confirmed; outbox gains Confirmation/Email|200 Confirmed; outbox=Confirmation/Email,Confirmation/WhatsApp,Request/Email,StaffAlert/Email
-PASS|B4m|POST /api/bookings/manual still takes roomId + times and now surfaces the reference, hours, discount and deposit percent|200 bookingId, bookingRef MC-..., status Confirmed, hours 2|200 {"bookingId":1158,"bookingRef":"MC-8A5DF54E","roomId":1035,"roomName":"QA Room","hours":2,"totalAmount":40,"discountPercent":0,"discountAmount":0,"depositDue":8,"depositPercent":20,"currencyCode":"USD","status":"Confirme
+PASS|B4m|POST /api/bookings/manual still takes roomId + times and now surfaces the reference, hours, discount and deposit percent|200 bookingId, bookingRef MC-..., status Confirmed, hours 2|200 {"bookingId":1175,"bookingRef":"MC-066B27D0","roomId":1037,"roomName":"QA Room","hours":2,"totalAmount":40,"discountPercent":0,"discountAmount":0,"depositDue":8,"depositPercent":20,"currencyCode":"USD","status":"Confirme
 PASS|B4a|staff cancel {status, cancelledBy Staff, note} of a booking with 30 paid (total 40) -> refund due = everything paid (30); the response is the booking row|cancelledBy Staff, refundAmount 30.00, refundStatus Due (response and DB)|manual 200 pay 200/200/200; cancel 200 response cancelledBy=Staff refundAmount=30 refundStatus=Due; DB cancelledBy=Staff refundAmount=30.00 refundStatus=Due (deposit 8.00)
 PASS|B4e|staff cancel as cancelledBy Guest (the guest rang; `reason` still accepted as the note) -> refund = paid - deposit|cancelledBy Guest, refundAmount 22.00 (30 paid - 8.00 deposit), refundStatus Due|200 cancelledBy=Guest refundAmount=22 refundStatus=Due depositDue=8 
-PASS|B4c|POST /api/bookings/{id}/refunds (method by name "Cash", then by id 1) on the staff-cancelled booking flips RefundStatus Due -> Partial (10) -> Refunded (30) and lists the negative lines with isRefund|after 10: Partial; after 30: Refunded, refundedUtc set, payments -10/Cash,-20/Cash|200 Partial (name) lines=-10/Cash; 200 Refunded (id) refundedUtc=2026-09-19T05:49:55.5104892 lines=-10/Cash,-20/Cash  
+PASS|B4c|POST /api/bookings/{id}/refunds (method by name "Cash", then by id 1) on the staff-cancelled booking flips RefundStatus Due -> Partial (10) -> Refunded (30) and lists the negative lines with isRefund|after 10: Partial; after 30: Refunded, refundedUtc set, payments -10/Cash,-20/Cash|200 Partial (name) lines=-10/Cash; 200 Refunded (id) refundedUtc=2026-09-19T07:42:26.6413496 lines=-10/Cash,-20/Cash  
 PASS|B4f|a refund past what was paid is refused with the procedure's sentence|400 "Refund exceeds what was paid"|400 {"error":"Refund exceeds what was paid — 0.00 remains refundable."}
-PASS|B4g|GET /api/bookings/{id} carries refundAmount, refundStatus, refundedUtc, cancelledBy and the payment lines with isRefund|status Cancelled, cancelledBy Staff, refundAmount 30, refundStatus Refunded, 3 payments (1 paid + 2 refunds)|200 status=Cancelled cancelledBy=Staff refundAmount=30 refundStatus=Refunded refundedUtc=2026-09-19T05:49:55.5104892 payments=[[30,false],[-10,true],[-20,true]]
+PASS|B4g|GET /api/bookings/{id} carries refundAmount, refundStatus, refundedUtc, cancelledBy and the payment lines with isRefund|status Cancelled, cancelledBy Staff, refundAmount 30, refundStatus Refunded, 3 payments (1 paid + 2 refunds)|200 status=Cancelled cancelledBy=Staff refundAmount=30 refundStatus=Refunded refundedUtc=2026-09-19T07:42:26.6413496 payments=[[30,false],[-10,true],[-20,true]]
 PASS|B5a|3-hour booking at 20/h with a 15 fixed add-on and a 10 % discount from 3 h: discount 6 on the room only, total 69 - in the response and in the row|discountAmount 6.00, total 69.00|201 response total=69 discountPercent=10 discountAmount=6; DB discount%=10.00 discount=6.00 total=69.00 
 PASS|B5b|deposit computed on the discounted total with the lead-time tier (>=168 h -> 20 %) - response carries deposit and depositPercent|depositPercent 20, deposit 13.80|response deposit=13.8 depositPercent=20; DB depositPercent=20.00 depositDue=13.80
 PASS|B7b|BookingWebsiteEnabled=0 -> POST quote and POST create answer 503 paused; GET catalog stays up and says websiteEnabled false|503 {"code":"paused"} x2; catalog 200 websiteEnabled=false|quote 503 {"error":"Online booking is paused. Book over WhatsApp.","code":"paused"}; create 503 paused; catalog 200 websiteEnabled=false
 PASS|B6b|POST {ref}/cancel with a phone whose last 8 digits do not match -> 400 invalid_input, booking untouched|400 {"code":"invalid_input"}; status still Pending|400 {"error":"The phone number does not match this booking.","code":"invalid_input"}; DB status=Pending
-PASS|B6a|POST {ref}/cancel {phone} inside the window (the phone spelled without the country code) -> the recap with the refund figures|ref, status Cancelled, cancelledBy Guest, refundAmount 0 (nothing paid), refundStatus None|200 ref=MC-D8484FD7 status=Cancelled cancelledBy=Guest refundAmount=0 refundStatus=None 
-PASS|B6c|GET {ref} recap after the cancellation: status, minutes, "First L." name, money - and never the phone or e-mail|status Cancelled, canCancelOnline false, guestName "QA B.", no guestPhone/guestEmail/email/phone keys, addons []|200 {"timeZone":"Asia/Beirut","ref":"MC-D8484FD7","status":"Cancelled","roomCode":"qa-room","roomName":"QA Room","date":"2026-10-06","startMin":600,"endMin":720,"vacateByMin":715,"turnaroundMinutes":5,"startAt":"2026-10-06T10:00:00+03:00","endAt":"2026-10-06T12:00
+PASS|B6a|POST {ref}/cancel {phone} inside the window (the phone spelled without the country code) -> the recap with the refund figures|ref, status Cancelled, cancelledBy Guest, refundAmount 0 (nothing paid), refundStatus None|200 ref=MC-B860E8B9 status=Cancelled cancelledBy=Guest refundAmount=0 refundStatus=None 
+PASS|B6c|GET {ref} recap after the cancellation: status, minutes, "First L." name, money - and never the phone or e-mail|status Cancelled, canCancelOnline false, guestName "QA B.", no guestPhone/guestEmail/email/phone keys, addons []|200 {"timeZone":"Asia/Beirut","ref":"MC-B860E8B9","status":"Cancelled","roomCode":"qa-room","roomName":"QA Room","date":"2026-10-06","startMin":600,"endMin":720,"vacateByMin":715,"turnaroundMinutes":5,"startAt":"2026-10-06T10:00:00+03:00","endAt":"2026-10-06T12:00
 PASS|B7a|an origin not in BookingCorsOrigins, no origin at all, or a key while BookingApiKey is empty -> 401 unauthorized|401 {"code":"unauthorized"} x3|401 unauthorized; 401 unauthorized; 401 unauthorized
 PASS|B7c|CORS preflight from the site origin is answered from BookingCorsOrigins (DB setting), GET/POST only|204 Access-Control-Allow-Origin http://localhost:4321|204 acao=http://localhost:4321 methods=GET,POST
 PASS|B7d|GET verify?ref= answers 501 not_implemented (step 2)|501 {"code":"not_implemented"}|501 not_implemented
@@ -896,10 +906,10 @@ PASS|L6b|E6 unpaid leave: Usage -2 on the Unpaid type; annual balance still 15|u
 PASS|L-ledger|every approved QA leave request has exactly one Usage row (and one Adjustment only when discretionary)|0 requests off|0
 PASS|P9k|readiness counts only the days up to today: run on 10 Aug it counts 1-10 Aug, after the month it counts the whole month; PeriodEnd stays 31 Aug (undecided anomalies + undecided variances + open anomalies)|10 Aug: 0; whole month: 2; PeriodEnd 2026-08-31|10 Aug: 0; whole month: 2; PeriodEnd 2026-08-31
 PASS|P0|attendance readiness for 2026-08 (QA anomalies/variances decided; real roster days filled and real undecided variances set aside inside the transaction)|ready=1|unprocessed=0 unresolved=0 anomalies=0 corrections=0 missingDays=0 variances=0 undecidedAnomalies=0 ready=1
-PASS|P9g|a supplemental is created while the period has NO approved primary (old refusal "A supplemental follows an approved primary" is gone)|created (Draft)|run 1282 created
+PASS|P9g|a supplemental is created while the period has NO approved primary (old refusal "A supplemental follows an approved primary" is gone)|created (Draft)|run 1314 created
 PASS|P9h|while a supplemental is OPEN, the primary generated for the same period leaves the supplemental's adjustments out|11 gift lines on the supplemental, 0 on the primary|11 on the supplemental, 0 on the primary
 PASS|P9i|approving the supplemental consumes its adjustments (AppliedToPayslipId), and a LATER primary regenerate never pays them again|11 consumed by the supplemental, 0 gift lines on the regenerated primary|11 consumed, 0 on the primary
-PASS|P1-rate|the run snapshots the exchange rate of the configured PayrollRateType (setting = NonOfficial; the brief says "official rate of M")|one LBP->USD rate row of type NonOfficial|run=1284 stored LBP->USD rate=0.000011 (NonOfficial from 2026-08-16); source USD->LBP=90000.0000 so LBP->USD should be 0.0000111111
+PASS|P1-rate|the run snapshots the exchange rate of the configured PayrollRateType (setting = NonOfficial; the brief says "official rate of M")|one LBP->USD rate row of type NonOfficial|run=1316 stored LBP->USD rate=0.000011 (NonOfficial from 2026-08-16); source USD->LBP=90000.0000 so LBP->USD should be 0.0000111111
 PASS|P1-rate2|the snapshotted LBP->USD rate keeps its precision (PAYROLL_RUN_RATE.Rate is DECIMAL(18,4): 1/90000 = 0.0000111 rounds to 0)|about 0.0000111111 (non-zero)|stored 0.000011; 6,000,000 LBP converts to 66.67 USD; in the REAL approved run 17 fn_ToPrimary(17, 6000000, 'LBP') = 0.00
 PASS|P1a|E9 full month: Basic line = component amount (3500 USD) and Transport line = 6,000,000 LBP|basic=3500.00 transport=6000000.00|basic=3500.00 transport=6000000.00
 PASS|P1b|E9 payslip carries both USD and LBP columns (gross/net in each currency)|GrossUsd>0 and GrossLbp=6000000|GrossUsd=3550.00 GrossLbp=6000000.00 DeductionsUsd=311.58 DeductionsLbp=0.00 NetUsd=3238.42 NetLbp=6000000.00 NetPrimary=3305.09
@@ -919,7 +929,7 @@ PASS|P6c|E9 income tax = progressive brackets on annualised (base - employee NSS
 PASS|P6d|the family/personal tax deduction is configurable (setting TaxFamilyDeductionAnnualUsd read by the proc exists in core.SETTING)|setting row exists|exists
 PASS|P7b|the bulk gift (created twice through the API) lands exactly once per QA employee on the payslips, including E7 (active part of the month)|11 lines on 11 payslips|11 lines on 11 payslips
 PASS|P10b|after generation E1's dashboard status is "Prepared"|Prepared|Prepared (2026-08 Draft)
-PASS|P9b|HR sends the run to review and the Owner approves/locks it|Approved with LockedAt|Approved locked=2026-09-19 05:50:59
+PASS|P9b|HR sends the run to review and the Owner approves/locks it|Approved with LockedAt|Approved locked=2026-09-19 07:43:30
 PASS|P10c|after approval E1's status is "Ready" (salary prepared, not yet received)|Ready|Ready
 PASS|P10d|after marking E1's payslip paid the status flips to "Paid" (received)|Paid via Bank|Paid via Bank
 PASS|P7c|locking the run consumes the gift adjustments (AppliedToPayslipId set), so they cannot be paid twice|11 consumed|11 consumed
@@ -943,7 +953,7 @@ PASS|B4j|the staff-cancelled booking refunded through the API (B4c) is stored Re
 PASS|B5c|B5 stored: 10 % discount on the room only (6.00), total 69.00 incl. the 15.00 add-on, deposit 20 % of the discounted total (13.80)|discount=6.00 total=69.00 deposit=13.80 addons=15.00|discountPct=10.00 discount=6.00 total=69.00 depositPct=20.00 deposit=13.80 addons=15.00
 PASS|X2a|no module with uses_quoted_identifier = 0 does DML on a table with a filtered index (hr.EMPLOYEE, booking.BOOKING, core.EMAIL_OUTBOX, ...)|none|none
 PASS|R3h|real data: every APPROVED roster-approval request has had its effect applied (AppliedAt set, month Approved)|0 approved-but-unapplied|0 approved-but-unapplied: none
-PASS|X5-calendar|/bookings/calendar at 390 px has no horizontal page scroll|scrollWidth <= innerWidth (390)|documentElement.scrollWidth=390 body.scrollWidth=390 innerWidth=390 (screenshot tests/qa/screenshots/calendar-390.png)
+PASS|X5-calendar|/bookings/calendar at 390 px has no horizontal page scroll|scrollWidth <= innerWidth (390)|documentElement.scrollWidth=390 body.scrollWidth=374 innerWidth=390 (screenshot tests/qa/screenshots/calendar-390.png)
 PASS|X5-roster|/attendance/roster at 390 px has no horizontal page scroll|scrollWidth <= innerWidth (390)|documentElement.scrollWidth=390 body.scrollWidth=390 innerWidth=390 (screenshot tests/qa/screenshots/roster-390.png)
 PASS|X5-payroll-runs|/payroll/runs at 390 px has no horizontal page scroll|scrollWidth <= innerWidth (390)|documentElement.scrollWidth=390 body.scrollWidth=390 innerWidth=390 (screenshot tests/qa/screenshots/payroll-runs-390.png)
 PASS|X5-daily-attendance|/attendance/daily at 390 px has no horizontal page scroll|scrollWidth <= innerWidth (390)|documentElement.scrollWidth=390 body.scrollWidth=390 innerWidth=390 (screenshot tests/qa/screenshots/daily-attendance-390.png)
@@ -957,10 +967,9 @@ PASS|A13b|MachinePullAutoProcess=1: after a pull that landed punches the worker 
 PASS|X3a|ISO dates (what the web app sends: yyyy-MM-dd) are read the same under en-US and en-GB|3 records on both instances|en-US=3 en-GB=3
 PASS|X3b|slash dates in query strings (dd/MM vs MM/dd) are interpreted the same under both cultures|same count on both instances for 03/08/2026 and for 08/03/2026|dd/MM: en-US=0 en-GB=0; MM/dd: en-US=3 en-GB=3
 PASS|X3c|a JSON body date (2026-09-10) posted to the en-GB instance lands on the right day|row on 2026-09-10|PUT status 200; stored=2026-09-10
-TOTAL checks=216 passed=215 failed=1
-FAILED: X4a | a Manager (branch manager of QA Branch) sees only own-branch employees on GET /api/employees
+TOTAL checks=221 passed=221 failed=0
 
-=============== 13. cleanup and real-data count comparison (2026-09-19 08:52:11) ===============
+=============== 13. cleanup and real-data count comparison (2026-09-19 10:44:58) ===============
 PASS | CLEANUP | real-data row counts unchanged after cleanup | expected=all tables equal baseline | actual=all equal
 PASS | CLEANUP | non-QA roster rows unchanged (checksum) | expected=-83074 | actual=-83074
 CLEANUP DONE

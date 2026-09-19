@@ -4,7 +4,8 @@ namespace MokaCo.HRMS.Repository.HR;
 
 public interface IEmployeeRepository
 {
-    Task<IEnumerable<EmployeeListItem>> GetAllAsync();
+    /// <summary>BUG-04: <paramref name="callerUserId"/> is the signed-in user — without EMP_VIEW_ALL the procedure returns only their own rows and the branches they manage. Null = the system itself, unscoped.</summary>
+    Task<IEnumerable<EmployeeListItem>> GetAllAsync(int? callerUserId = null);
     Task<EmployeeProfile?> GetProfileAsync(int employeeId);
     Task<int> CreateAsync(
         int? userId, int branchId, int departmentId, int positionId, string fullName,

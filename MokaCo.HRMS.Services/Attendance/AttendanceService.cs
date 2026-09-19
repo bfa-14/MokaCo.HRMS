@@ -47,8 +47,8 @@ public class AttendanceService : IAttendanceService
 
     public Task<MarkLeaveDaysResult> MarkLeaveDaysAsync(string periodYearMonth) => _repo.MarkLeaveDaysAsync(periodYearMonth);
 
-    public Task<IEnumerable<AttendanceRecord>> GetAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId)
-        => _repo.GetByDateRangeAsync(fromDate, toDate, employeeId, branchId);
+    public Task<IEnumerable<AttendanceRecord>> GetAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId, int? callerUserId = null)
+        => _repo.GetByDateRangeAsync(fromDate, toDate, employeeId, branchId, callerUserId);
 
     public Task<AttendanceDetail?> GetByIdAsync(long attendanceId) => _repo.GetByIdAsync(attendanceId);
 
@@ -57,8 +57,8 @@ public class AttendanceService : IAttendanceService
     /// departure at or beyond the tolerance, and every missing punch, one row each. Undecided
     /// minutes are covered in pay until somebody rules; payroll is blocked while any remain.
     /// </summary>
-    public Task<IEnumerable<AttendanceAnomaly>> GetAnomaliesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided, int? branchId)
-        => _repo.GetAnomaliesAsync(fromDate, toDate, onlyUndecided, branchId);
+    public Task<IEnumerable<AttendanceAnomaly>> GetAnomaliesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided, int? branchId, int? callerUserId = null)
+        => _repo.GetAnomaliesAsync(fromDate, toDate, onlyUndecided, branchId, callerUserId);
 
     /// <summary>
     /// Excuse keeps the minutes covered, Deduct takes them off the day, Correct stores the punch as
@@ -75,8 +75,8 @@ public class AttendanceService : IAttendanceService
     public Task<IEnumerable<RawLog>> GetRawAsync(int employeeId, DateTime workDate)
         => _ingestion.GetByEmployeeDayAsync(employeeId, workDate);
 
-    public Task<IEnumerable<ExitVariance>> GetExitVariancesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided)
-        => _repo.GetExitVariancesAsync(fromDate, toDate, onlyUndecided);
+    public Task<IEnumerable<ExitVariance>> GetExitVariancesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided, int? callerUserId = null)
+        => _repo.GetExitVariancesAsync(fromDate, toDate, onlyUndecided, callerUserId);
 
     /// <summary>
     /// HR enters a day by hand — the machine was down, or a punch never happened. The day is still
@@ -126,8 +126,8 @@ public class AttendanceService : IAttendanceService
     public Task<RosterMonthStatus?> GetRosterMonthAsync(int branchId, DateTime monthDate)
         => _repo.GetRosterMonthAsync(branchId, monthDate);
 
-    public Task<IEnumerable<WorkedWithoutRoster>> GetWorkedWithoutRosterAsync(DateTime fromDate, DateTime toDate, int? branchId)
-        => _repo.GetWorkedWithoutRosterAsync(fromDate, toDate, branchId);
+    public Task<IEnumerable<WorkedWithoutRoster>> GetWorkedWithoutRosterAsync(DateTime fromDate, DateTime toDate, int? branchId, int? callerUserId = null)
+        => _repo.GetWorkedWithoutRosterAsync(fromDate, toDate, branchId, callerUserId);
 
     public Task<IEnumerable<QuarantinedDeviceUser>> GetDeviceQuarantineAsync(int? branchId)
         => _repo.GetDeviceQuarantineAsync(branchId);

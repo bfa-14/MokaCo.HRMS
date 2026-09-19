@@ -10,7 +10,7 @@ public class EmployeeService : IEmployeeService
     private readonly IEmployeeRepository _repo;
     public EmployeeService(IEmployeeRepository repo) => _repo = repo;
 
-    public Task<IEnumerable<EmployeeListItem>> GetAllAsync() => _repo.GetAllAsync();
+    public Task<IEnumerable<EmployeeListItem>> GetAllAsync(int? callerUserId = null) => _repo.GetAllAsync(callerUserId);
 
     public Task<EmployeeProfile?> GetProfileAsync(int employeeId) => _repo.GetProfileAsync(employeeId);
 

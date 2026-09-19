@@ -15,12 +15,12 @@ public class RosterRepository : IRosterRepository
     private readonly IDbConnectionFactory _factory;
     public RosterRepository(IDbConnectionFactory factory) => _factory = factory;
 
-    public async Task<IEnumerable<ShiftAssignment>> GetByDateRangeAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId = null)
+    public async Task<IEnumerable<ShiftAssignment>> GetByDateRangeAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId = null, int? callerUserId = null)
     {
         using var db = _factory.Create();
         return await db.QueryAsync<ShiftAssignment>(
             "attendance.usp_ShiftAssignment_GetByDateRange",
-            new { FromDate = fromDate, ToDate = toDate, EmployeeId = employeeId, BranchId = branchId },
+            new { FromDate = fromDate, ToDate = toDate, EmployeeId = employeeId, BranchId = branchId, CallerUserId = callerUserId },
             commandType: CommandType.StoredProcedure);
     }
 
@@ -103,12 +103,12 @@ public class RosterRepository : IRosterRepository
     }
 
     /// <summary>Employee-days with NO roster row. The processor cannot judge these, so they block payroll.</summary>
-    public async Task<IEnumerable<RosterGap>> GetGapsAsync(DateTime fromDate, DateTime toDate)
+    public async Task<IEnumerable<RosterGap>> GetGapsAsync(DateTime fromDate, DateTime toDate, int? callerUserId = null)
     {
         using var db = _factory.Create();
         return await db.QueryAsync<RosterGap>(
             "attendance.usp_ShiftAssignment_GetGaps",
-            new { FromDate = fromDate, ToDate = toDate },
+            new { FromDate = fromDate, ToDate = toDate, CallerUserId = callerUserId },
             commandType: CommandType.StoredProcedure);
     }
 

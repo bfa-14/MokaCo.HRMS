@@ -11,11 +11,12 @@ public class EmployeeRepository : IEmployeeRepository
     private readonly IDbConnectionFactory _factory;
     public EmployeeRepository(IDbConnectionFactory factory) => _factory = factory;
 
-    public async Task<IEnumerable<EmployeeListItem>> GetAllAsync()
+    public async Task<IEnumerable<EmployeeListItem>> GetAllAsync(int? callerUserId = null)
     {
         using var db = _factory.Create();
         return await db.QueryAsync<EmployeeListItem>(
             "hr.usp_Employee_GetAll",
+            new { CallerUserId = callerUserId },
             commandType: CommandType.StoredProcedure);
     }
 

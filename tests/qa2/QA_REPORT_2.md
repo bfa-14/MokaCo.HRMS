@@ -125,3 +125,16 @@ API stage and the branch-transfer cancel: `cb25c32`. Web part E: `mokaco-web-man
 6. **Settings → Leave / Payroll** are cards under the Advanced tab, not tabs of their own — the page's tab list is fixed; promoting them is a small change if wanted.
 7. **The SQL login's old password is still in the git history** of this repository (it is in no tracked file any more). Rotate it.
 8. The dashboard reports "System reset is ARMED" (`AllowSystemReset`). Not touched.
+
+## Follow-up (2026-09-19, `docs/87_branch_scoping_role_hygiene.sql`)
+
+The owner's answers to the list above:
+
+1. **BUG-04 — implemented.** Permission `EMP_VIEW_ALL` (Owner, General Manager, HR, Admin); everybody else sees their own rows and the branches they manage, decided inside the procedures through `@CallerUserId`. Details in `QA_REPORT.md`. X4a passes. A role NOT on that list — Operations Manager, Manager, Employee — is scoped from now on: an Operations Manager who manages no branch sees only their own attendance and roster rows until the permission is granted to the role on the Role Permissions page.
+2. **Unrostered day — confirmed as decided** (rule 3 above): it applies inside an APPROVED roster month only. No change.
+3. **Role hygiene — done.** The Employee role lost `REQUEST_RAISE_OTHERS`, `REQUEST_VIEW_ALL`, `WORKFLOW_CONFIGURE` (API-L1 now gets the 403 it expects for somebody else's leave preview, without the NOTE).
+8. **System reset — disarmed** (`AllowSystemReset = 0`).
+5. **Roster branch filter — done** (web): a Branch select on the roster page sends `branchId` to `GET /api/roster` (rows by the branch of the work date), narrows the grid, the gaps and the dialogs' pickers, moves the approval banner to the same branch, and is remembered per user in the browser. Check UI-E7.
+6. **Settings — done** (web): "Leave" and "Payroll" are tabs of their own, fed by the `Section` column like Workflow and Notifications. Check UI-E6 (re-stated: the six keys are on their tabs and no longer under Advanced).
+
+Runs after it: `tests/qa` 221 / 221, `tests/qa2` 68 / 68 (+ the 4 integrity checks), `dotnet test` 332 / 332.

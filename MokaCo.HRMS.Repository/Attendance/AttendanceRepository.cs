@@ -82,12 +82,12 @@ public class AttendanceRepository : IAttendanceRepository
             commandType: CommandType.StoredProcedure);
     }
 
-    public async Task<IEnumerable<AttendanceRecord>> GetByDateRangeAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId)
+    public async Task<IEnumerable<AttendanceRecord>> GetByDateRangeAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId, int? callerUserId = null)
     {
         using var db = _factory.Create();
         return await db.QueryAsync<AttendanceRecord>(
             "attendance.usp_Attendance_GetByDateRange",
-            new { FromDate = fromDate, ToDate = toDate, EmployeeId = employeeId, BranchId = branchId },
+            new { FromDate = fromDate, ToDate = toDate, EmployeeId = employeeId, BranchId = branchId, CallerUserId = callerUserId },
             commandType: CommandType.StoredProcedure);
     }
 
@@ -111,12 +111,12 @@ public class AttendanceRepository : IAttendanceRepository
         return detail;
     }
 
-    public async Task<IEnumerable<AttendanceAnomaly>> GetAnomaliesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided, int? branchId)
+    public async Task<IEnumerable<AttendanceAnomaly>> GetAnomaliesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided, int? branchId, int? callerUserId = null)
     {
         using var db = _factory.Create();
         return await db.QueryAsync<AttendanceAnomaly>(
             "attendance.usp_Attendance_GetAnomalies",
-            new { FromDate = fromDate, ToDate = toDate, OnlyUndecided = onlyUndecided, BranchId = branchId },
+            new { FromDate = fromDate, ToDate = toDate, OnlyUndecided = onlyUndecided, BranchId = branchId, CallerUserId = callerUserId },
             commandType: CommandType.StoredProcedure);
     }
 
@@ -157,12 +157,12 @@ public class AttendanceRepository : IAttendanceRepository
             commandType: CommandType.StoredProcedure);
     }
 
-    public async Task<IEnumerable<ExitVariance>> GetExitVariancesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided)
+    public async Task<IEnumerable<ExitVariance>> GetExitVariancesAsync(DateTime fromDate, DateTime toDate, bool onlyUndecided, int? callerUserId = null)
     {
         using var db = _factory.Create();
         return await db.QueryAsync<ExitVariance>(
             "attendance.usp_Attendance_GetExitVariances",
-            new { FromDate = fromDate, ToDate = toDate, OnlyUndecided = onlyUndecided },
+            new { FromDate = fromDate, ToDate = toDate, OnlyUndecided = onlyUndecided, CallerUserId = callerUserId },
             commandType: CommandType.StoredProcedure);
     }
 
@@ -288,12 +288,12 @@ public class AttendanceRepository : IAttendanceRepository
             commandType: CommandType.StoredProcedure);
     }
 
-    public async Task<IEnumerable<WorkedWithoutRoster>> GetWorkedWithoutRosterAsync(DateTime fromDate, DateTime toDate, int? branchId)
+    public async Task<IEnumerable<WorkedWithoutRoster>> GetWorkedWithoutRosterAsync(DateTime fromDate, DateTime toDate, int? branchId, int? callerUserId = null)
     {
         using var db = _factory.Create();
         return await db.QueryAsync<WorkedWithoutRoster>(
             "attendance.usp_Attendance_GetWorkedWithoutRoster",
-            new { FromDate = fromDate.Date, ToDate = toDate.Date, BranchId = branchId },
+            new { FromDate = fromDate.Date, ToDate = toDate.Date, BranchId = branchId, CallerUserId = callerUserId },
             commandType: CommandType.StoredProcedure);
     }
 

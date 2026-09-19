@@ -30,7 +30,7 @@ public class CorrectionService : ICorrectionService
     public Task RejectAsync(int correctionId, int approvedBy) => _repo.RejectAsync(correctionId, approvedBy);
 
     /// <summary>The queue. While anything sits here, the month's figures are about to change — so payroll is blocked.</summary>
-    public Task<IEnumerable<Correction>> GetPendingAsync() => _repo.GetPendingAsync();
+    public Task<IEnumerable<Correction>> GetPendingAsync(int? callerUserId = null) => _repo.GetPendingAsync(callerUserId);
 
     public Task<IEnumerable<Correction>> GetByRecordAsync(long attendanceId) => _repo.GetByRecordAsync(attendanceId);
 }

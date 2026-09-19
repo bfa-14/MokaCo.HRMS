@@ -158,12 +158,49 @@ async function main() {
     await cdp.navigate(`${WEB}/requests/new`, 3500);
     await cdp.screenshot('new-request');
 
-    /* ---- E6: Settings → Advanced carries the Leave and Payroll cards with the new keys ---- */
-    await cdp.navigate(`${WEB}/settings?tab=advanced`, 4000);
+    /* ---- E6: Settings — Leave and Payroll are tabs of their own, each carrying its new keys ---- */
+    const tabsWanted = { leave: ['Leave counts rest days and holidays', 'Allow a negative leave balance', 'Carry-over cap', 'Carried-over days expire on'], payroll: ['Holiday work rate', 'Pay the leave balance on termination'] };
+    const missing = [];
+    for (const [tab, titles] of Object.entries(tabsWanted)) {
+      await cdp.navigate(`${WEB}/settings?tab=${tab}`, 4000);
+      p = await page();
+      await cdp.screenshot(`settings-${tab}`);
+      const selected = await cdp.evaluate(`[...document.querySelectorAll('[role="tab"][aria-selected="true"]')].map((t) => t.textContent.trim()).join(',')`);
+      if (!new RegExp(`^${tab}$`, 'i').test(selected)) missing.push(`tab ${tab} not selected (selected: ${selected})`);
+      for (const w of titles) if (!p.text.includes(w)) missing.push(`${tab}: ${w}`);
+    }
+    await cdp.navigate(`${WEB}/settings?tab=advanced`, 3500);
     p = await page();
-    await cdp.screenshot('settings-advanced');
-    const wanted = ['Holiday work rate', 'Pay the leave balance on termination', 'Leave counts rest days and holidays', 'Allow a negative leave balance', 'Carry-over cap', 'Carried-over days expire on'];
-    check('UI-E6', 'Settings shows the six new keys under their Leave and Payroll cards', wanted.join(' | '), `missing=[${wanted.filter((w) => !p.text.includes(w)).join(' | ')}]`, wanted.every((w) => p.text.includes(w)));
+    const stillUnderAdvanced = Object.values(tabsWanted).flat().filter((w) => p.text.includes(w));
+    check('UI-E6', 'Settings has a Leave tab and a Payroll tab carrying the six new keys; none of them is left under Advanced', 'nothing missing, nothing still under Advanced',
+      `missing=[${missing.join(' | ')}] stillUnderAdvanced=[${stillUnderAdvanced.join(' | ')}]`, missing.length === 0 && stillUnderAdvanced.length === 0);
+
+    /* ---- E7: the roster page's branch filter — narrows the grid, sends branchId, is remembered ---- */
+    await cdp.navigate(`${WEB}/attendance/roster?period=${M}`, 5000);
+    const gridRows = () => cdp.evaluate(`document.querySelectorAll('tbody tr').length`);
+    const allRows = await gridRows();
+    /* the dev server loads hundreds of modules, so the resource-timing buffer is full long before this: record the page's own fetches instead */
+    await cdp.evaluate(`(() => { window.__qaUrls = []; const f = window.fetch; window.fetch = (...a) => { window.__qaUrls.push(String(a[0]?.url ?? a[0])); return f(...a); }; return 'ok'; })()`);
+    await cdp.evaluate(`document.querySelector('input[aria-label="Branch filter"]').click(); 'ok'`);
+    await sleep(800);
+    const pickedBranch = await cdp.evaluate(`(() => { const i = document.querySelector('input[aria-label="Branch filter"]'); const box = document.getElementById(i.getAttribute('aria-controls') ?? '') ?? document;
+      const o = [...box.querySelectorAll('[role="option"]')].find((e) => e.textContent.trim() === 'QA2 Branch 2'); if (!o) return 'no option'; o.click(); return 'picked'; })()`);
+    await sleep(4000);
+    const b2Rows = await gridRows();
+    const b2 = +sql(`SELECT BranchId FROM hr.BRANCH WHERE Name = N'QA2 Branch 2'`);
+    const sent = await cdp.evaluate(`(window.__qaUrls ?? []).filter((n) => n.includes('/api/roster?') && n.includes('branchId=${b2}')).length`);
+    const names = await cdp.evaluate(`document.body.innerText`);
+    const apiB2 = (await apiGet(owner.accessToken, `/api/roster?from=${from}&to=${to}&branchId=${b2}`)) ?? [];
+    const expectedPeople = [...new Set(apiB2.map((r) => r.fullName))];
+    await cdp.screenshot('roster-branch-filter');
+    await cdp.navigate(`${WEB}/attendance/roster?period=${M}`, 5000);
+    const remembered = await cdp.evaluate(`document.querySelector('input[aria-label="Branch filter"]')?.value`);
+    const rememberedRows = await gridRows();
+    await cdp.evaluate(`Object.keys(localStorage).filter((k) => k.startsWith('mokaco.roster.branch.')).forEach((k) => localStorage.removeItem(k)); 'ok'`);
+    check('UI-E7', 'roster page: choosing "QA2 Branch 2" in the branch filter narrows the grid to that branch (as of the work dates), sends branchId to GET /api/roster, and is remembered after a reload',
+      `fewer rows than "All branches"; everybody the API returns for branchId=${b2} (${expectedPeople.length}) on the grid and no QA2 Branch 1 only employee; filter still "QA2 Branch 2" after reload`,
+      `pick=${pickedBranch} rows all=${allRows} branch2=${b2Rows} requestsWithBranchId=${sent} missingPeople=[${expectedPeople.filter((n) => !names.includes(n)).join(', ')}] E1shown=${/QA2 E1\b/.test(names)} afterReload="${remembered}" rows=${rememberedRows}`,
+      pickedBranch === 'picked' && b2Rows > 0 && b2Rows < allRows && sent > 0 && expectedPeople.every((n) => names.includes(n)) && !/QA2 E1\b/.test(names) && remembered === 'QA2 Branch 2' && rememberedRows === b2Rows);
     ws.close();
   } finally {
     chrome.kill('SIGKILL');

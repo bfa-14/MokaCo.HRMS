@@ -49,7 +49,7 @@ public class RosterController : ControllerBase
         if (from > to)
             return BadRequest(new { error = "'from' must be on or before 'to'." });
 
-        return Ok(await _roster.GetAsync(from, to, employeeId, branchId));
+        return Ok(await _roster.GetAsync(from, to, employeeId, branchId, User.UserId()));
     }
 
     /// <summary>Sets ONE employee-day — what clicking a single calendar cell calls.</summary>
@@ -183,7 +183,7 @@ public class RosterController : ControllerBase
         if (from > to)
             return BadRequest(new { error = "'from' must be on or before 'to'." });
 
-        return Ok(await _roster.GetGapsAsync(from, to));
+        return Ok(await _roster.GetGapsAsync(from, to, User.UserId()));
     }
 
     [HttpGet("patterns/{employeeId:int}")]

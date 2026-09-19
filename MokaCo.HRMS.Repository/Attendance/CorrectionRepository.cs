@@ -56,11 +56,12 @@ public class CorrectionRepository : ICorrectionRepository
     }
 
     /// <summary>The approval queue. A pending correction means the day's figures are about to change, so it blocks payroll.</summary>
-    public async Task<IEnumerable<Correction>> GetPendingAsync()
+    public async Task<IEnumerable<Correction>> GetPendingAsync(int? callerUserId = null)
     {
         using var db = _factory.Create();
         return await db.QueryAsync<Correction>(
             "attendance.usp_Correction_GetPending",
+            new { CallerUserId = callerUserId },
             commandType: CommandType.StoredProcedure);
     }
 
