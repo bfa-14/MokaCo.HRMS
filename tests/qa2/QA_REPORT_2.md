@@ -67,6 +67,8 @@ Where the prompt was ambiguous, the rule written there was applied and the readi
 
 ## Features added
 
+Web = `mokaco-web-mantine` commit `e532604b`; the browser checks UI-E1…E6 are `tests/qa2/ui-tests.mjs` (screenshots in `tests/qa2/screenshots/`).
+
 | | Feature | SQL | API | Tests |
 |---|---|---|---|---|
 | D1 | Public holidays | `core.HOLIDAY`, `core.fn_IsHoliday`, `core.usp_Holiday_GetAll / _Upsert / _Delete` (a write re-derives the days it touches; refused where the day is paid for somebody it applies to) — 82. Status `Holiday` in the day rule; roster copy keeps holidays — 83, 85. "Holiday Work" premium and unpaid holidays — 86. Leave requests skip holidays — 84. Setting `HolidayWorkRate` (2.0). | `GET/POST/PUT/DELETE /api/holidays` (read: signed in; write: `CORE_MANAGE`) | A1h, A3c, A4c, A4d, A5k |
@@ -88,4 +90,38 @@ Where the prompt was ambiguous, the rule written there was applied and the readi
 | QA2-01 … QA2-09 | fixed in `docs/82_qa2_foundation.sql` + `docs/83_qa2_attendance.sql`; A1 and A2 all pass | `8e92913` |
 | QA2-10 … QA2-17 | fixed in `docs/84_qa2_leaves.sql` (+ the nightly job and the leave API); A3a–A3h and A3g2 all pass | `b84e50b` |
 | QA2-18, QA2-19 | fixed in `docs/85_qa2_rosters.sql` (+ the employee and roster API); A4a–A4d all pass | `d696288` |
-| QA2-20 … QA2-26 | fixed in `docs/86_qa2_payroll.sql`; A5a–A5l, A3i, A3j and A1l all pass. Suite 1's P2 and P4c were re-stated for the more precise proration note and the exact-minutes deduction. | payroll commit |
+| QA2-20 … QA2-26 | fixed in `docs/86_qa2_payroll.sql`; A5a–A5l, A3i, A3j and A1l all pass. Suite 1's P2 and P4c were re-stated for the more precise proration note and the exact-minutes deduction. | `640e5d9` |
+
+API stage and the branch-transfer cancel: `cb25c32`. Web part E: `mokaco-web-mantine` `e532604b`. Browser stage of this suite: the commit that carries this line.
+
+## Web (part E)
+
+| Screen | What was added | Check |
+|---|---|---|
+| Core → Holidays (`/core/holidays`, `CORE_MANAGE`) | grid by year, branch and text filters, add / edit / delete, "Every branch" or one, paid switch | UI-E1 |
+| Leave request form | Whole day / AM / PM for a one-day request (`halfDay`); the cost as the server counts it — "N of the balance", with the rest days and holidays that cost nothing; a range with no working day is refused before it is sent | UI-E2, API-L* |
+| Employee form / profile | a branch change is a transfer: "Transfer effective from" appears while the branch differs; "Branch history" tab with "Cancel transfer" for one not started | UI-E3, API-T* |
+| Attendance → Anomalies | three views: Anomalies, Worked without roster, Unknown device punches (map-to-employee dialog, says how many days were already paid); `HalfDayAbsence` type | UI-E4a, UI-E4b |
+| Payslip | the new lines (Holiday Work, Leave Balance Payout / Deduction, the exit-permission and unpaid-leave deductions) render through the category tables; a line with no source record no longer prints a bare `#` | A5* (lines), by reading |
+| Settings | the six new keys, titled and bounded, in the cards "Leave" and "Payroll" (the page files a key by its `Section`; those two sections sit under the Advanced tab) | UI-E6 |
+
+`npx tsc --noEmit -p tsconfig.app.json`, `npm test` and `npm run build` are clean.
+
+## Final run (2026-09-19)
+
+| Suite | Checks | Passed | Failed |
+|---|---|---|---|
+| `tests/qa2` (SQL 51 + API 10 + WEB 6) | 67 | 67 | 0 — and the 4 clean-up integrity checks pass: real row counts, roster, attendance and leave-ledger checksums equal the baseline |
+| `tests/qa` | 216 | 215 | 1 — X4a, left red on purpose (BUG-04, branch scoping, waits for the owner's decision) |
+| `dotnet test` | 332 | 332 | 0 |
+
+## Not resolved / for the owner
+
+1. **BUG-04 / X4a** — a branch manager still sees every branch's employees. Implemented only if the owner confirms the scoping rule.
+2. **"Unrostered day"** (rule 12) only applies inside an APPROVED roster month. In a month with no approved roster the day is derived from the employee's default pattern as before. The owner may want it stricter.
+3. **Role configuration** — the `Employee` role holds `REQUEST_RAISE_OTHERS`, `REQUEST_VIEW_ALL` and `WORKFLOW_CONFIGURE` in this database (NOTE API-L1). Not changed: it is data, and somebody may rely on it.
+4. **Leave payout** (D5) pays the ledger balance as it stands on the termination date; there is no earned-to-date accrual for a year opened in full on 1 January.
+5. **The roster page** has no branch filter of its own; the API takes `branchId` (as-of the work date) but the page does not send it yet.
+6. **Settings → Leave / Payroll** are cards under the Advanced tab, not tabs of their own — the page's tab list is fixed; promoting them is a small change if wanted.
+7. **The SQL login's old password is still in the git history** of this repository (it is in no tracked file any more). Rotate it.
+8. The dashboard reports "System reset is ARMED" (`AllowSystemReset`). Not touched.
