@@ -22,7 +22,7 @@ public class LeaveRequestRepository : ILeaveRequestRepository
     public async Task<LeaveRequestCreated?> CreateAsync(
         int employeeId, int raisedByUserId, int leaveTypeId,
         DateTime fromDate, DateTime toDate, string? reason, string? title,
-        string? relationToEmployee)
+        string? relationToEmployee, string? halfDay)
     {
         using var db = _factory.Create();
         return await db.QuerySingleOrDefaultAsync<LeaveRequestCreated>(
@@ -40,7 +40,18 @@ public class LeaveRequestRepository : ILeaveRequestRepository
                 // Passed through untouched: the procedure decides whether this type needs one, and
                 // refuses an unknown relation. Nothing here validates it against a list.
                 RelationToEmployee = relationToEmployee,
+                // 'AM' | 'PM' | null. The procedure refuses anything else, and a half day on more than one date.
+                HalfDay = halfDay,
             },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<LeaveWorkingDays?> CountWorkingDaysAsync(int employeeId, int? leaveTypeId, DateTime fromDate, DateTime toDate, string? halfDay)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<LeaveWorkingDays>(
+            "hr.usp_Leave_CountWorkingDays",
+            new { EmployeeId = employeeId, LeaveTypeId = leaveTypeId, FromDate = fromDate.Date, ToDate = toDate.Date, HalfDay = halfDay },
             commandType: CommandType.StoredProcedure);
     }
 

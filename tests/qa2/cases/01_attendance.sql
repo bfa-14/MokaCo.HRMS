@@ -49,10 +49,16 @@ SET @rid = dbo.QA2_LastRequest(@E1); EXEC dbo.QA2_Approve @rid, 'Leave';
 /* A1g1: called in on a rest day WITH approved overtime (240 min); A1g2 has none */
 SET @d = dbo.QA2_Date('A1g1');
 EXEC dbo.QA2_ApprovedOvertime @E1, @d, 240;
-/* A1h: a public holiday on E1's 13th working day (D1: core.HOLIDAY, BranchId NULL = every branch) */
+/* A1h: a public holiday of QA2 Branch 1 on E1's 13th working day, through the real procedure (D1). A holiday of EVERY
+   branch would be refused here, rightly: the real employees are already paid for M. */
 SET @d = dbo.QA2_Date('A1h');
-IF OBJECT_ID('core.HOLIDAY') IS NOT NULL
-    EXEC sp_executesql N'INSERT INTO core.HOLIDAY (HolidayDate, Name, NameAr, IsPaid, BranchId) VALUES (@d, N''QA2 Holiday'', N''عطلة QA2'', 1, NULL)', N'@d DATE', @d = @d;
+IF OBJECT_ID('core.usp_Holiday_Upsert') IS NOT NULL
+BEGIN
+    DECLARE @B1 INT = (SELECT BranchId FROM hr.BRANCH WHERE Name = N'QA2 Branch 1');
+    BEGIN TRY
+        EXEC core.usp_Holiday_Upsert @HolidayId = NULL, @HolidayDate = @d, @Name = N'QA2 Holiday', @NameAr = N'عطلة QA2', @IsPaid = 1, @BranchId = @B1, @ActedByUserId = @Hr;
+    END TRY BEGIN CATCH IF @@TRANCOUNT > 0 ROLLBACK TRAN; DECLARE @m2 NVARCHAR(600) = CONCAT('A1h: the holiday could not be recorded: ', ERROR_MESSAGE()); EXEC dbo.QA2_Note @m2; END CATCH;
+END
 DECLARE @st NVARCHAR(400) = (SELECT STRING_AGG(CONCAT(ri.RequestInstanceId, ':', ri.[Status]), ', ') FROM workflow.REQUEST_INSTANCE ri WHERE ri.EmployeeId = @E1);
 SET @st = CONCAT('A1 requests raised for E1 (id:status): ', @st); EXEC dbo.QA2_Note @st;
 GO

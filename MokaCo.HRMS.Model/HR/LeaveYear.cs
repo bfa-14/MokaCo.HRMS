@@ -36,3 +36,10 @@ public class LeaveYearOpenSummary
     /// <summary>Last year's unused days written off — types WITHOUT carry-over.</summary>
     public decimal DaysExpired { get; set; }
 }
+
+/// <summary>What one run of the carry-over expiry did (hr.usp_LeaveCarryOver_Expire). Both are 0 on an ordinary night.</summary>
+public class LeaveCarryOverExpired
+{
+    public int EmployeesExpired { get; set; }
+    public decimal DaysExpired { get; set; }
+}

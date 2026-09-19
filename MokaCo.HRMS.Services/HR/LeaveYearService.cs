@@ -18,4 +18,8 @@ public class LeaveYearService : ILeaveYearService
 
     public Task<IEnumerable<LeaveYearOpenSummary>> OpenAsync(int year, int actedByUserId)
         => _repo.OpenAsync(year, actedByUserId);
+
+    public Task<LeaveCarryOverExpired> ExpireCarryOverAsync() => _repo.ExpireCarryOverAsync();
+
+    public Task<int> ApplyDueBranchTransfersAsync() => _repo.ApplyDueBranchTransfersAsync();
 }

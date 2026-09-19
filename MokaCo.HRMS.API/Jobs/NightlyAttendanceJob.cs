@@ -1,5 +1,7 @@
 using MokaCo.HRMS.Services.Attendance;
 using MokaCo.HRMS.Services.Workflow;
+using MokaCo.HRMS.Services.Booking;
+using MokaCo.HRMS.Services.HR;
 using Quartz;
 
 namespace MokaCo.HRMS.Api.Jobs;
@@ -28,6 +30,7 @@ public class NightlyAttendanceJob : IJob
     private readonly IExitPermissionService _exitPermissions;
     private readonly IOvertimeService _overtime;
     private readonly IRequestService _requests;
+    private readonly ILeaveYearService _leaveYear;
     private readonly ILogger<NightlyAttendanceJob> _logger;
 
     public NightlyAttendanceJob(
@@ -35,8 +38,10 @@ public class NightlyAttendanceJob : IJob
         IExitPermissionService exitPermissions,
         IOvertimeService overtime,
         IRequestService requests,
+        ILeaveYearService leaveYear,
         ILogger<NightlyAttendanceJob> logger)
     {
+        _leaveYear = leaveYear;
         _attendance = attendance;
         _exitPermissions = exitPermissions;
         _overtime = overtime;
@@ -50,10 +55,12 @@ public class NightlyAttendanceJob : IJob
         // two days, a date-scoped run would silently leave the older punches behind forever.
         var processed = await _attendance.ProcessAsync(null);
 
-        var yesterday = DateTime.Today.AddDays(-1);
+        // Beirut's calendar, not the server's: a server on UTC is still on "yesterday" until 02:00 or 03:00 Beirut time.
+        var today = BeirutTime.Now.Date;
+        var yesterday = today.AddDays(-1);
         var absentees = await _attendance.MarkAbsenteesAsync(yesterday);
 
-        var period = DateTime.Today.ToString("yyyy-MM");
+        var period = today.ToString("yyyy-MM");
         var leave = await _attendance.MarkLeaveDaysAsync(period);
 
         // Immediately after the processor: push every approved exit permission whose attendance day
@@ -72,6 +79,16 @@ public class NightlyAttendanceJob : IJob
         // while the money or the leave silently does not exist, and nothing else would ever notice.
         // Idempotent, so the ordinary result is an empty sweep and one quiet log line.
         var reconciled = await _requests.ReconcileApprovalEffectsAsync();
+
+        // Two small housekeeping steps that belong to "a new day has started" (SQL 82 / 84). Both are idempotent and do
+        // nothing on an ordinary night: a branch transfer recorded ahead of its date takes effect on that date, and
+        // carried-over leave still unused after LeaveCarryOverExpiresOn expires — one 'Expiry' ledger line, once.
+        var moved = await _leaveYear.ApplyDueBranchTransfersAsync();
+        var expired = await _leaveYear.ExpireCarryOverAsync();
+        if (moved > 0 || expired.EmployeesExpired > 0)
+            _logger.LogInformation(
+                "Nightly housekeeping: {Moved} employee(s) moved to the branch of a transfer that took effect today; carried-over leave expired for {Employees} employee(s) ({Days} day(s)).",
+                moved, expired.EmployeesExpired, expired.DaysExpired);
 
         _logger.LogInformation(
             "Nightly attendance: processed {Days} employee-day(s), marked {Absentees} absentee(s) for {Yesterday:yyyy-MM-dd}, reclassified {Leave} day(s) as approved leave in {Period}, applied {Applied} exit permission(s) and stamped {Overtime} overtime request(s) to attendance.",

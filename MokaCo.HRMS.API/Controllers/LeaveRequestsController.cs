@@ -40,6 +40,34 @@ public class LeaveRequestsController : ControllerBase
     /// clashing dates and their status. It is the whole value of the refusal — never replace it with
     /// a generic failure.
     /// </summary>
+    /// <summary>
+    /// "N working days" BEFORE the request is raised (D2): the same count the procedure will store — the employee's
+    /// rostered working days in the range, less the public holidays of their branch; 0.5 for a half day. A user may
+    /// ask about themselves; asking about somebody else needs REQUEST_RAISE_OTHERS, as raising for them does.
+    /// </summary>
+    [HttpGet("working-days")]
+    [HasPermission("REQUEST_RAISE_SELF")]
+    public async Task<IActionResult> GetWorkingDays(
+        [FromQuery] int employeeId, [FromQuery] DateTime from, [FromQuery] DateTime to,
+        [FromQuery] int? leaveTypeId = null, [FromQuery] string? halfDay = null)
+    {
+        if (from > to)
+            return BadRequest(new { error = "The end date is before the start date." });
+
+        var me = await _support.GetEmployeeByUserIdAsync(User.UserId());
+        if (me?.EmployeeId != employeeId && !User.HasPermission("REQUEST_RAISE_OTHERS"))
+            return Forbid();
+
+        try
+        {
+            return Ok(await _leave.CountWorkingDaysAsync(employeeId, leaveTypeId, from, to, halfDay));
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
     [HttpPost]
     [HasPermission("REQUEST_RAISE_SELF")]
     public async Task<IActionResult> Create([FromBody] LeaveRequestCreateRequest request)

@@ -13,7 +13,10 @@ public interface ILeaveRequestRepository
     Task<LeaveRequestCreated?> CreateAsync(
         int employeeId, int raisedByUserId, int leaveTypeId,
         DateTime fromDate, DateTime toDate, string? reason, string? title,
-        string? relationToEmployee);
+        string? relationToEmployee, string? halfDay);
+
+    /// <summary>hr.usp_Leave_CountWorkingDays: what a range would cost, for the form's preview.</summary>
+    Task<LeaveWorkingDays?> CountWorkingDaysAsync(int employeeId, int? leaveTypeId, DateTime fromDate, DateTime toDate, string? halfDay);
 
     /// <summary>
     /// Approves, optionally granting fewer days than requested. Posts the ledger movement ONCE, when

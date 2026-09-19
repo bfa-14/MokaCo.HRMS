@@ -18,6 +18,9 @@ public interface ILeaveRequestService
     /// </summary>
     Task<LeaveRequestCreated?> CreateAsync(LeaveRequestCreateRequest request, LeaveRequestCaller caller);
 
+    /// <summary>The form's preview (D2): the working days a range would cost, with the rest days and holidays beside it.</summary>
+    Task<LeaveWorkingDays?> CountWorkingDaysAsync(int employeeId, int? leaveTypeId, DateTime fromDate, DateTime toDate, string? halfDay);
+
     /// <summary>
     /// Approves, optionally granting fewer days. The signature is verified FIRST, so a wrong password
     /// changes nothing at all — and who may approve stays the database's decision, surfaced verbatim.

@@ -137,6 +137,16 @@ BEGIN
 END;
 GO
 
+/* derives every day of a range for ONE QA2 employee (what the nightly job does for everybody: absentees, leave days) */
+CREATE OR ALTER PROCEDURE dbo.QA2_ComputeRange @EmployeeId INT, @From DATE, @To DATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @d DATE = @From;
+    WHILE @d <= @To BEGIN EXEC attendance.usp_Attendance_ComputeDay @EmployeeId = @EmployeeId, @WorkDate = @d; SET @d = DATEADD(DAY, 1, @d); END
+END;
+GO
+
 /* An APPROVED overtime request for a date of the month under test. Overtime is pre-approval by rule ("must be approved
    before it is worked" — usp_Overtime_Create refuses a past date), and M is in the past, so the request is raised and
    approved through the real procedures for a FUTURE date and its WorkDate is then moved to the case date: the state a
@@ -212,12 +222,12 @@ GO
 /* ---- 2. users (password for every QA2 user: QaPass!2026, the same Argon2 hash as suite 1) ---- */
 DECLARE @Hash NVARCHAR(300) = N'argon2id$v=19$m=19456,t=2,p=1$gPUm+x9SuWEj/PO/NW85BQ==$DFe+U8/hoFEcLRGN3iaELEtCnDIujaW/xU5GSSDOd5E=';
 INSERT INTO security.[USER] (Username, PasswordHash, IsActive)
-VALUES (N'qa2.owner', @Hash, 1), (N'qa2.hr', @Hash, 1), (N'qa2.manager', @Hash, 1), (N'qa2.e1', @Hash, 1), (N'qa2.e11', @Hash, 1);
+VALUES (N'qa2.owner', @Hash, 1), (N'qa2.hr', @Hash, 1), (N'qa2.manager', @Hash, 1), (N'qa2.gm', @Hash, 1), (N'qa2.e1', @Hash, 1), (N'qa2.e11', @Hash, 1);
 INSERT INTO security.USER_ROLE (UserId, RoleId, AssignedAt)
 SELECT u.UserId, r.RoleId, SYSUTCDATETIME()
 FROM security.[USER] u
 JOIN security.[ROLE] r ON r.Name = CASE u.Username WHEN N'qa2.owner' THEN N'Owner' WHEN N'qa2.hr' THEN N'HR'
-                                                   WHEN N'qa2.manager' THEN N'Manager' ELSE N'Employee' END
+                                                   WHEN N'qa2.manager' THEN N'Manager' WHEN N'qa2.gm' THEN N'General Manager' ELSE N'Employee' END
 WHERE u.Username LIKE N'qa2.%';
 GO
 
@@ -252,7 +262,7 @@ VALUES ((SELECT UserId FROM @U WHERE Username = N'qa2.manager'), @B1, @Dep, @Pos
        (NULL, @B1, @Dep, @PosB, N'QA2 E8',  '2024-01-01', NULL, 5, NULL, 'en'),
        (NULL, @B1, @Dep, @PosB, N'QA2 E9',  '2024-01-01', NULL, 5, NULL, 'en'),
        (NULL, @B1, @Dep, @PosB, N'QA2 E10', @LastYear,    NULL, 5, NULL, 'en'),                           -- hired last year
-       ((SELECT UserId FROM @U WHERE Username = N'qa2.e11'),     @B1, @Dep, @PosB, N'QA2 E11', '2024-01-01', NULL, 5, NULL, 'en'),
+       ((SELECT UserId FROM @U WHERE Username = N'qa2.e11'),     @B2, @Dep, @PosB, N'QA2 E11', '2024-01-01', NULL, 5, NULL, 'en'),   -- branch 2: its own holiday (A3c)
        (NULL, @B1, @Dep, @PosB, N'QA2 E12', '2024-01-01', NULL, 5, NULL, 'en');                           -- transferred to branch 2 on the 16th (case A4c)
 DECLARE @Mgr INT = (SELECT EmployeeId FROM hr.EMPLOYEE WHERE FullName = N'QA2 Manager');
 UPDATE hr.EMPLOYEE SET ReportsToEmployeeId = @Mgr WHERE FullName LIKE N'QA2 E%';
@@ -299,7 +309,7 @@ DECLARE @emp TABLE (Name NVARCHAR(50), Id INT, ShiftId INT, Mask CHAR(7), FromD 
 INSERT INTO @emp
 SELECT e.FullName, e.EmployeeId,
        CASE e.FullName WHEN N'QA2 E2' THEN @Evening WHEN N'QA2 E3' THEN @Night WHEN N'QA2 E4' THEN @Part ELSE @Morning END,
-       CASE e.FullName WHEN N'QA2 E4' THEN '1111100' WHEN N'QA2 E3' THEN '1111111' ELSE '1111110' END,   -- E3 works every night: month end and the DST nights must not depend on a weekday
+       CASE e.FullName WHEN N'QA2 E4' THEN '1111100' WHEN N'QA2 E11' THEN '1111100' WHEN N'QA2 E3' THEN '1111111' WHEN N'QA2 E10' THEN '1111111' ELSE '1111110' END,   -- E3 works every night: month end and the DST nights must not depend on a weekday
        CASE WHEN e.HireDate > @M THEN e.HireDate ELSE @M END,
        CASE WHEN e.TerminationDate IS NOT NULL THEN e.TerminationDate ELSE @NEnd END
 FROM hr.EMPLOYEE e WHERE e.FullName LIKE N'QA2 E%';
@@ -354,6 +364,11 @@ INSERT INTO dbo.QA2_DAY VALUES ('A1i', @E4, @sat);
 INSERT INTO dbo.QA2_DAY
 SELECT 'A1o', @E4, x.WorkDate FROM (SELECT sa.WorkDate, ROW_NUMBER() OVER (ORDER BY sa.WorkDate) n FROM attendance.SHIFT_ASSIGNMENT sa
                                     WHERE sa.EmployeeId = @E4 AND sa.IsRestDay = 0 AND sa.WorkDate BETWEEN @M AND EOMONTH(@M)) x WHERE x.n = 2;
+/* E11 (branch 2, Mon-Fri): the two half-day-leave days are the 2nd Wednesday and Thursday of M — the cases write their punches */
+DECLARE @E11 INT = (SELECT EmployeeId FROM hr.EMPLOYEE WHERE FullName = N'QA2 E11');
+DECLARE @wed1 DATE = DATEADD(DAY, 2, @M); WHILE DATEDIFF(DAY, '19000103', @wed1) % 7 <> 0 SET @wed1 = DATEADD(DAY, 1, @wed1);   -- first Wednesday on/after the 3rd
+INSERT INTO dbo.QA2_DAY VALUES ('A3a', @E11, @wed1), ('A3d1', @E11, DATEADD(DAY, 7, @wed1)), ('A3d2', @E11, DATEADD(DAY, 8, @wed1)),
+                               ('A3e', @E11, DATEADD(DAY, 9, @wed1)), ('A3f', @E11, DATEADD(DAY, 12, @wed1)), ('A3c', @E11, DATEADD(DAY, 14, @wed1));
 /* E3 (overnight): early-in / early-out on the 5th night, the month-end night, and the two DST nights (the Saturday before each change) */
 DECLARE @E3 INT = (SELECT EmployeeId FROM hr.EMPLOYEE WHERE FullName = N'QA2 E3');
 INSERT INTO dbo.QA2_DAY VALUES
@@ -376,14 +391,14 @@ FROM attendance.SHIFT_ASSIGNMENT sa
 JOIN attendance.SHIFT s ON s.ShiftId = sa.ShiftId
 JOIN hr.EMPLOYEE e ON e.EmployeeId = sa.EmployeeId AND e.FullName LIKE N'QA2 E%'
 WHERE sa.IsRestDay = 0 AND sa.WorkDate >= @M AND sa.WorkDate < @Today
-  AND NOT EXISTS (SELECT 1 FROM dbo.QA2_DAY d WHERE d.EmployeeId = sa.EmployeeId AND d.WorkDate = sa.WorkDate)
+  AND NOT EXISTS (SELECT 1 FROM dbo.QA2_DAY d WHERE d.EmployeeId = sa.EmployeeId AND d.WorkDate = sa.WorkDate AND d.CaseId NOT IN ('A3a','A3e','A3f','A3c'))
 UNION ALL
 SELECT sa.EmployeeId, DATEADD(MINUTE, DATEDIFF(MINUTE, 0, s.EndTime) + CASE WHEN s.CrossesMidnight = 1 THEN 1440 ELSE 0 END, CAST(sa.WorkDate AS DATETIME2(0))), 1
 FROM attendance.SHIFT_ASSIGNMENT sa
 JOIN attendance.SHIFT s ON s.ShiftId = sa.ShiftId
 JOIN hr.EMPLOYEE e ON e.EmployeeId = sa.EmployeeId AND e.FullName LIKE N'QA2 E%'
 WHERE sa.IsRestDay = 0 AND sa.WorkDate >= @M AND sa.WorkDate < @Today
-  AND NOT EXISTS (SELECT 1 FROM dbo.QA2_DAY d WHERE d.EmployeeId = sa.EmployeeId AND d.WorkDate = sa.WorkDate);
+  AND NOT EXISTS (SELECT 1 FROM dbo.QA2_DAY d WHERE d.EmployeeId = sa.EmployeeId AND d.WorkDate = sa.WorkDate AND d.CaseId NOT IN ('A3a','A3e','A3f','A3c'));
 INSERT INTO attendance.RAW_DEVICE_LOG (DeviceId, EnrollPin, EmployeeId, PunchTimeUtc, PunchType, [Source], DedupHash)
 SELECT @D, ed.EnrollPin, p.EmployeeId, p.PunchTime, p.PunchType, 'QA2',
        CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', CONVERT(VARCHAR(200),
@@ -396,8 +411,31 @@ GO
 /* ---- 8. leave year of M for the QA2 employees (the real ones already have theirs; the procedure skips them) ---- */
 DECLARE @M DATE = CAST((SELECT [Value] FROM dbo.QA2_STATE WHERE [Key] = 'month') + '-01' AS DATE);
 DECLARE @hr INT = (SELECT UserId FROM security.[USER] WHERE Username = N'qa2.hr'), @yr INT = YEAR(@M);
+/* E10 (hired last year) ends last year with 7 unused annual days: the fixture of the carry-over case (A3h) */
+INSERT INTO hr.LEAVE_LEDGER (EmployeeId, LeaveTypeId, PeriodYearMonth, MovementType, Days, EffectiveDate, Note, CreatedBy)
+SELECT EmployeeId, 1, CONCAT(@yr - 1, '-03'), 'Accrual', 7, DATEFROMPARTS(@yr - 1, 3, 1), N'QA2 fixture: last year''s entitlement, 7 days left unused.', @hr
+FROM hr.EMPLOYEE WHERE FullName = N'QA2 E10';
 DECLARE @o TABLE (LeaveTypeName NVARCHAR(60), EmployeesOpened INT, DaysGranted DECIMAL(9,2), ProratedEmployees INT, DaysCarriedOver DECIMAL(9,2), DaysExpired DECIMAL(9,2));
-INSERT INTO @o EXEC hr.usp_LeaveYear_Open @Year = @yr, @ActedByUserId = @hr;
+/* The year is opened for the QA2 employees ONLY (script 84 gives usp_LeaveYear_Open an @EmployeeId), E10 with a carry-over cap of 5.
+   Without script 84 the procedure has no such parameter and opens every employee still unopened — the real ones already are. */
+IF EXISTS (SELECT 1 FROM sys.parameters WHERE object_id = OBJECT_ID('hr.usp_LeaveYear_Open') AND name = '@EmployeeId')
+BEGIN
+    DECLARE @e INT, @cap DECIMAL(6,2);
+    DECLARE oc CURSOR LOCAL FAST_FORWARD FOR SELECT EmployeeId, CASE WHEN FullName = N'QA2 E10' THEN 5 END FROM hr.EMPLOYEE WHERE FullName LIKE N'QA2 %';
+    OPEN oc; FETCH NEXT FROM oc INTO @e, @cap;
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        INSERT INTO @o EXEC hr.usp_LeaveYear_Open @Year = @yr, @ActedByUserId = @hr, @EmployeeId = @e, @CarryOverMaxDays = @cap;
+        FETCH NEXT FROM oc INTO @e, @cap;
+    END
+    CLOSE oc; DEALLOCATE oc;
+END
+ELSE
+    INSERT INTO @o EXEC hr.usp_LeaveYear_Open @Year = @yr, @ActedByUserId = @hr;
+/* E6 leaves on the 20th with 6.5 unused annual days (A3i): 15 granted, 8.5 taken earlier in the year */
+INSERT INTO hr.LEAVE_LEDGER (EmployeeId, LeaveTypeId, PeriodYearMonth, MovementType, Days, EffectiveDate, Note, CreatedBy)
+SELECT EmployeeId, 1, CONCAT(@yr, '-02'), 'Usage', -8.5, DATEFROMPARTS(@yr, 2, 10), N'QA2 fixture: leave taken earlier in the year.', @hr
+FROM hr.EMPLOYEE WHERE FullName = N'QA2 E6';
 GO
 PRINT 'QA2 SEED DONE';
 SELECT 'QA2 employees' AS what, COUNT(*) AS n FROM hr.EMPLOYEE WHERE FullName LIKE N'QA2 %'

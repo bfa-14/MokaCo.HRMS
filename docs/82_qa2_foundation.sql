@@ -164,6 +164,21 @@ BEGIN
                              WHERE h.HolidayDate = @OnDate AND (h.BranchId IS NULL OR h.BranchId = @BranchId)) THEN 1 ELSE 0 END;
 END;
 GO
+/* D10 for holidays, per employee like every other paid-period check: is the date already paid for ANYBODY the holiday
+   would apply to — an employee of that branch on that day (every branch when @BranchId is NULL)? */
+CREATE OR ALTER FUNCTION core.fn_HolidayTouchesPaidDay (@OnDate DATE, @BranchId INT)
+RETURNS BIT
+AS
+BEGIN
+    RETURN CASE WHEN EXISTS (
+        SELECT 1
+        FROM payroll.PAYROLL_RUN r
+        JOIN payroll.PAYSLIP ps ON ps.PayrollRunId = r.PayrollRunId
+        WHERE r.RunType = 'Primary' AND r.[Status] = 'Approved'
+          AND r.PeriodYearMonth = CONVERT(CHAR(7), @OnDate, 23)
+          AND (@BranchId IS NULL OR hr.fn_EmployeeBranchOn(ps.EmployeeId, @OnDate) = @BranchId)) THEN 1 ELSE 0 END;
+END;
+GO
 CREATE OR ALTER PROCEDURE core.usp_Holiday_GetAll
     @Year INT = NULL, @BranchId INT = NULL          -- a branch filter keeps the all-branch holidays too: they apply to it
 AS
@@ -227,9 +242,9 @@ BEGIN
     IF EXISTS (SELECT 1 FROM core.HOLIDAY h WHERE h.HolidayDate = @HolidayDate
                  AND ISNULL(h.BranchId, -1) = ISNULL(@BranchId, -1) AND h.HolidayId <> ISNULL(@HolidayId, -1))
     BEGIN RAISERROR('A holiday is already recorded on that date for that branch.', 16, 1); RETURN; END
-    /* D10: a holiday re-prices the day; on a month that is already paid that is an adjustment, not an edit */
-    IF EXISTS (SELECT 1 FROM payroll.PAYROLL_RUN r WHERE r.RunType = 'Primary' AND r.[Status] = 'Approved'
-                 AND r.PeriodYearMonth IN (CONVERT(CHAR(7), @HolidayDate, 23), CONVERT(CHAR(7), ISNULL(@OldDate, @HolidayDate), 23)))
+    /* D10: a holiday re-prices the day; where that day is already PAID for somebody it touches, that is an adjustment, not an edit */
+    IF core.fn_HolidayTouchesPaidDay(@HolidayDate, @BranchId) = 1
+       OR (@OldDate IS NOT NULL AND core.fn_HolidayTouchesPaidDay(@OldDate, @OldBranch) = 1)
     BEGIN RAISERROR(N'This period is paid — raise a payroll adjustment instead.', 16, 1); RETURN; END
 
     BEGIN TRAN;
@@ -262,8 +277,7 @@ BEGIN
     DECLARE @Date DATE, @Branch INT;
     SELECT @Date = HolidayDate, @Branch = BranchId FROM core.HOLIDAY WHERE HolidayId = @HolidayId;
     IF @Date IS NULL BEGIN RAISERROR('That holiday does not exist.', 16, 1); RETURN; END
-    IF EXISTS (SELECT 1 FROM payroll.PAYROLL_RUN r WHERE r.RunType = 'Primary' AND r.[Status] = 'Approved'
-                 AND r.PeriodYearMonth = CONVERT(CHAR(7), @Date, 23))
+    IF core.fn_HolidayTouchesPaidDay(@Date, @Branch) = 1
     BEGIN RAISERROR(N'This period is paid — raise a payroll adjustment instead.', 16, 1); RETURN; END
     DELETE FROM core.HOLIDAY WHERE HolidayId = @HolidayId;
     EXEC core.usp_Holiday_RecomputeDays @Date1 = @Date, @Branch1 = @Branch;

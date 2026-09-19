@@ -20,7 +20,10 @@ public class LeaveRequestCreated
     public int? CurrentStepNo { get; set; }
     public int WorkflowVersion { get; set; }
 
-    /// <summary>Inclusive calendar days, counted by the procedure — never by the client.</summary>
+    /// <summary>
+    /// What the leave costs, counted by the procedure — never by the client: the employee's WORKING days in the range
+    /// (SQL 84; rest days and public holidays cost nothing), 0.5 for a half day, calendar days for a fixed-entitlement type.
+    /// </summary>
     public decimal DaysRequested { get; set; }
 
     /// <summary>
@@ -117,6 +120,9 @@ public class LeaveRequestPayload
     /// </summary>
     public bool IsDiscretionary { get; set; }
 
+    /// <summary>D3: "AM" | "PM" for a half-day request, else null.</summary>
+    public string? HalfDay { get; set; }
+
     /* ── THE NOTICE, as it stood when the request was raised ──
        The same three figures LeaveRequestCreated reports back to the REQUESTER, carried on the
        payload so the APPROVER sees them too. Advisory, exactly as they are at submit: short notice
@@ -147,6 +153,9 @@ public class MyLeaveRequest
     public DateTime FromDate { get; set; }
     public DateTime ToDate { get; set; }
     public decimal DaysRequested { get; set; }
+
+    /// <summary>D3: "AM" | "PM" for a half-day request, else null.</summary>
+    public string? HalfDay { get; set; }
     public decimal? DaysApproved { get; set; }
     public string? Reason { get; set; }
     public DateTime SubmittedAt { get; set; }
@@ -203,6 +212,32 @@ public class LeaveRequestCreateRequest
     /// Null on every other type, where the procedure ignores it.
     /// </summary>
     public string? RelationToEmployee { get; set; }
+
+    /// <summary>
+    /// D3: "AM" or "PM" makes a ONE-day request half a day (0.5 of the balance; attendance measures the other half).
+    /// Null = whole days. The procedure refuses it on a request longer than a day.
+    /// </summary>
+    public string? HalfDay { get; set; }
+}
+
+/// <summary>
+/// The leave form's preview (D2): what a range would cost BEFORE it is requested — the employee's working days in
+/// it, with the rest days and public holidays that cost nothing counted beside them.
+/// </summary>
+public class LeaveWorkingDays
+{
+    public int CalendarDays { get; set; }
+
+    /// <summary>What the request will use: working days, 0.5 for a half day, calendar days for a fixed-entitlement type.</summary>
+    public decimal WorkingDays { get; set; }
+    public int RestDays { get; set; }
+    public int Holidays { get; set; }
+
+    /// <summary>True for a type with a fixed entitlement (maternity): a span of the calendar, every day counts.</summary>
+    public bool CountsCalendarDays { get; set; }
+
+    /// <summary>The employee's balance for the type, so the form can say "5 of 12 left" before the procedure refuses.</summary>
+    public decimal Balance { get; set; }
 }
 
 /// <summary>

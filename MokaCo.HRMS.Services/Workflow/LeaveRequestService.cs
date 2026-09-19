@@ -64,8 +64,13 @@ public class LeaveRequestService : ILeaveRequestService
             request.FromDate, request.ToDate,
             string.IsNullOrWhiteSpace(request.Reason) ? null : request.Reason.Trim(),
             string.IsNullOrWhiteSpace(request.Title) ? null : request.Title.Trim(),
-            string.IsNullOrWhiteSpace(request.RelationToEmployee) ? null : request.RelationToEmployee.Trim()));
+            string.IsNullOrWhiteSpace(request.RelationToEmployee) ? null : request.RelationToEmployee.Trim(),
+            string.IsNullOrWhiteSpace(request.HalfDay) ? null : request.HalfDay.Trim().ToUpperInvariant()));
     }
+
+    public Task<LeaveWorkingDays?> CountWorkingDaysAsync(int employeeId, int? leaveTypeId, DateTime fromDate, DateTime toDate, string? halfDay)
+        => WorkflowSqlErrors.MapAsync(() => _repo.CountWorkingDaysAsync(
+            employeeId, leaveTypeId, fromDate, toDate, string.IsNullOrWhiteSpace(halfDay) ? null : halfDay.Trim().ToUpperInvariant()));
 
     public async Task<LeaveRequestDecideResult?> DecideAsync(int requestInstanceId, int actedByUserId, LeaveRequestDecideRequest request)
     {

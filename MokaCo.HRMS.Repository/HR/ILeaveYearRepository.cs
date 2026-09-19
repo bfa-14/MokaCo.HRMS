@@ -17,4 +17,14 @@ public interface ILeaveYearRepository
     /// 50000 — and are left intact for the API to turn into a 400 with the sentence unchanged.
     /// </summary>
     Task<IEnumerable<LeaveYearOpenSummary>> OpenAsync(int year, int actedByUserId);
+
+    /// <summary>
+    /// hr.usp_LeaveCarryOver_Expire (SQL 84, D4): posts ONE 'Expiry' ledger line per employee, type and year for the
+    /// carried-over days still unused once LeaveCarryOverExpiresOn has passed. Does nothing while the setting is
+    /// empty or the day has not come; safe to call every night.
+    /// </summary>
+    Task<LeaveCarryOverExpired> ExpireCarryOverAsync();
+
+    /// <summary>hr.usp_EmployeeBranch_ApplyDue (SQL 82, D7): a transfer recorded ahead of its date becomes the current branch on that date.</summary>
+    Task<int> ApplyDueBranchTransfersAsync();
 }

@@ -25,4 +25,18 @@ public class LeaveYearRepository : ILeaveYearRepository
             new { Year = year, ActedByUserId = actedByUserId },
             commandType: CommandType.StoredProcedure);
     }
+
+    public async Task<LeaveCarryOverExpired> ExpireCarryOverAsync()
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleAsync<LeaveCarryOverExpired>(
+            "hr.usp_LeaveCarryOver_Expire", commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<int> ApplyDueBranchTransfersAsync()
+    {
+        using var db = _factory.Create();
+        return await db.ExecuteScalarAsync<int>(
+            "hr.usp_EmployeeBranch_ApplyDue", commandType: CommandType.StoredProcedure);
+    }
 }

@@ -12,4 +12,10 @@ public interface ILeaveYearService
     /// message intact, on the same terms as every other procedure refusal in HR.
     /// </summary>
     Task<IEnumerable<LeaveYearOpenSummary>> OpenAsync(int year, int actedByUserId);
+
+    /// <summary>Nightly (D4): carried-over days still unused after the configured date expire — one ledger line each, once.</summary>
+    Task<LeaveCarryOverExpired> ExpireCarryOverAsync();
+
+    /// <summary>Nightly (D7): branch transfers whose effective date has arrived become the employee's current branch.</summary>
+    Task<int> ApplyDueBranchTransfersAsync();
 }
