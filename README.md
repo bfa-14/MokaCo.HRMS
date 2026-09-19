@@ -2,6 +2,11 @@
 
 
 
+## Local secrets (nothing secret is tracked)
+
+- **API connection string:** copy `MokaCo.HRMS.API/appsettings.Local.example.json` to `MokaCo.HRMS.API/appsettings.Local.json` (gitignored) and put the real SQL login there. `Program.cs` loads it after `appsettings.json` and `appsettings.{Environment}.json`; an environment variable `ConnectionStrings__MokaCo` still wins over it. The tracked `appsettings.json` keeps a string without a password.
+- **QA suite (`bash tests/qa/run.sh`):** copy `tests/qa/.env.example` to `tests/qa/.env` (gitignored) and fill in `SQLCMDSERVER`, `SQLCMDUSER`, `SQLCMDPASSWORD`, or export the three variables. The scripts have no fallback and stop with a message when one is missing.
+
 ## Getting started
 
 To make it easy for you to get started with GitLab, here's a list of recommended next steps.

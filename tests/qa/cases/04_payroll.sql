@@ -8,6 +8,7 @@
    transaction that is ROLLED BACK at the end: the real run is marked Cancelled
    only inside that transaction, the QA run is created/generated/approved, the
    checks are collected in a table variable, and nothing is persisted. The
+   P9g-P9k (script 81, run timing) run inside it too: P9g-P9i undone by a savepoint, P9j last of all. The
    P9 refusals (locked run, locked month) are exercised outside the transaction
    against the real locked run, because those procs refuse BEFORE writing.
    ============================================================================ */
@@ -35,6 +36,25 @@ INSERT INTO @notes VALUES (CONCAT('Formulas read from payroll.usp_PayrollRun_Gen
 
 BEGIN TRY
     BEGIN TRAN;
+
+    /* ---- P9k (script 81): the readiness gates look only at the days up to "today" — measured on the data as it stands,
+            real undecided anomalies included, with the procedure's clock set to 10 Aug and to the end of the month ---- */
+    DECLARE @rk TABLE (PeriodYearMonth CHAR(7), PeriodStart DATE, PeriodEnd DATE, UnprocessedPunches INT, UnresolvedPinPunches INT, OpenAnomalies INT,
+                       PendingCorrections INT, RosteredDaysWithNoRecord INT, UndecidedExitVariances INT, UndecidedAnomalies INT, IsReady BIT);
+    DECLARE @k10 INT, @k31 INT, @kEnd DATE;
+    INSERT INTO @rk EXEC attendance.usp_Attendance_PayrollReadiness '2026-08', '2026-08-10';
+    SELECT @k10 = UndecidedAnomalies + UndecidedExitVariances + OpenAnomalies, @kEnd = PeriodEnd FROM @rk; DELETE FROM @rk;
+    INSERT INTO @rk EXEC attendance.usp_Attendance_PayrollReadiness '2026-08', '2026-09-05';
+    SELECT @k31 = UndecidedAnomalies + UndecidedExitVariances + OpenAnomalies FROM @rk;
+    SELECT @n  = (SELECT COUNT(*) FROM attendance.ATTENDANCE_ANOMALY WHERE WorkDate BETWEEN '2026-08-01' AND '2026-08-10' AND Decision IS NULL)
+               + (SELECT COUNT(*) FROM attendance.ATTENDANCE_RECORD WHERE WorkDate BETWEEN '2026-08-01' AND '2026-08-10' AND ExitVarianceMinutes > 0 AND ExitVarianceDisposition IS NULL)
+               + (SELECT COUNT(*) FROM attendance.ATTENDANCE_RECORD WHERE WorkDate BETWEEN '2026-08-01' AND '2026-08-10' AND HasAnomaly = 1);
+    SELECT @n2 = (SELECT COUNT(*) FROM attendance.ATTENDANCE_ANOMALY WHERE WorkDate BETWEEN '2026-08-01' AND '2026-08-31' AND Decision IS NULL)
+               + (SELECT COUNT(*) FROM attendance.ATTENDANCE_RECORD WHERE WorkDate BETWEEN '2026-08-01' AND '2026-08-31' AND ExitVarianceMinutes > 0 AND ExitVarianceDisposition IS NULL)
+               + (SELECT COUNT(*) FROM attendance.ATTENDANCE_RECORD WHERE WorkDate BETWEEN '2026-08-01' AND '2026-08-31' AND HasAnomaly = 1);
+    INSERT INTO @res SELECT 'P9k', 'readiness counts only the days up to today: run on 10 Aug it counts 1-10 Aug, after the month it counts the whole month; PeriodEnd stays 31 Aug (undecided anomalies + undecided variances + open anomalies)',
+        CONCAT('10 Aug: ', @n, '; whole month: ', @n2, '; PeriodEnd 2026-08-31'), CONCAT('10 Aug: ', @k10, '; whole month: ', @k31, '; PeriodEnd ', CONVERT(VARCHAR(10), @kEnd, 23)),
+        CASE WHEN @k10 = @n AND @k31 = @n2 AND @kEnd = '2026-08-31' THEN 1 ELSE 0 END;
 
     /* neutralise the real August primary and complete the real attendance so readiness passes — all uncommitted */
     UPDATE payroll.PAYROLL_RUN SET [Status] = 'Cancelled' WHERE PeriodYearMonth = '2026-08' AND RunType = 'Primary' AND [Status] <> 'Cancelled';
@@ -64,6 +84,44 @@ BEGIN TRY
     INSERT INTO @ready EXEC attendance.usp_Attendance_PayrollReadiness '2026-08';
     SELECT @act = CONCAT('unprocessed=', UnprocessedPunches, ' unresolved=', UnresolvedPinPunches, ' anomalies=', OpenAnomalies, ' corrections=', PendingCorrections, ' missingDays=', RosteredDaysWithNoRecord, ' variances=', UndecidedExitVariances, ' undecidedAnomalies=', UndecidedAnomalies, ' ready=', IsReady) FROM @ready;
     INSERT INTO @res SELECT 'P0', 'attendance readiness for 2026-08 (QA anomalies/variances decided; real roster days filled and real undecided variances set aside inside the transaction)', 'ready=1', @act, (SELECT IsReady FROM @ready);
+
+    /* ---- P9g-P9i (script 81): runs at any time, and AN ADJUSTMENT IS PAID ONCE. A scenario on the committed
+            "QA gift August" adjustments, undone with a savepoint so the P1-P8 flow below starts from the same state.
+            At this point August has NO live primary (the real one is cancelled inside this transaction).
+            (P9j, the other order of events, ends in a REFUSAL — and a refusal caught inside a transaction whose
+            procedures SET XACT_ABORT ON leaves it uncommittable — so it is the last thing this transaction does.) ---- */
+    DECLARE @tg TABLE (PayrollRunId INT, PayslipCount INT, PayslipsWithWarnings INT);
+    DECLARE @trv TABLE (PayrollRunId INT, [Status] VARCHAR(12));
+    DECLARE @tap TABLE (PayrollRunId INT, [Status] VARCHAR(12), LockedAt DATETIME2);
+    DECLARE @tSup INT, @tPri INT, @gifts INT = (SELECT COUNT(*) FROM payroll.PAYROLL_ADJUSTMENT WHERE Reason = N'QA gift August' AND AppliedToPayslipId IS NULL);
+
+    SAVE TRAN qa_timing_1;
+    BEGIN TRY
+        EXEC payroll.usp_PayrollRun_Create @PeriodYearMonth = '2026-08', @CreatedByUserId = @HrUser, @Notes = N'QA timing supplemental', @RunType = 'Supplemental';
+        SET @tSup = (SELECT MAX(PayrollRunId) FROM payroll.PAYROLL_RUN WHERE Notes = N'QA timing supplemental');
+        INSERT INTO @res SELECT 'P9g', 'a supplemental is created while the period has NO approved primary (old refusal "A supplemental follows an approved primary" is gone)', 'created (Draft)', CONCAT('run ', @tSup, ' created'), CASE WHEN @tSup IS NOT NULL THEN 1 ELSE 0 END;
+    END TRY
+    BEGIN CATCH
+        INSERT INTO @res SELECT 'P9g', 'a supplemental is created while the period has NO approved primary (old refusal "A supplemental follows an approved primary" is gone)', 'created (Draft)', ERROR_MESSAGE(), 0;
+    END CATCH;
+    IF @tSup IS NOT NULL AND XACT_STATE() = 1
+    BEGIN
+        INSERT INTO @tg EXEC payroll.usp_PayrollRun_GenerateSupplemental @PayrollRunId = @tSup, @ActedByUserId = @HrUser;
+        EXEC payroll.usp_PayrollRun_Create @PeriodYearMonth = '2026-08', @CreatedByUserId = @HrUser, @Notes = N'QA timing primary', @RunType = 'Primary';
+        SET @tPri = (SELECT MAX(PayrollRunId) FROM payroll.PAYROLL_RUN WHERE Notes = N'QA timing primary');
+        INSERT INTO @tg EXEC payroll.usp_PayrollRun_Generate @PayrollRunId = @tPri, @ActedByUserId = @HrUser;
+        SELECT @n  = COUNT(*) FROM payroll.PAYSLIP_LINE l JOIN payroll.PAYSLIP ps ON ps.PayslipId = l.PayslipId WHERE ps.PayrollRunId = @tSup AND l.SourceType = 'Adjustment' AND l.Note = N'QA gift August';
+        SELECT @n2 = COUNT(*) FROM payroll.PAYSLIP_LINE l JOIN payroll.PAYSLIP ps ON ps.PayslipId = l.PayslipId WHERE ps.PayrollRunId = @tPri AND l.SourceType = 'Adjustment' AND l.Note = N'QA gift August';
+        INSERT INTO @res SELECT 'P9h', 'while a supplemental is OPEN, the primary generated for the same period leaves the supplemental''s adjustments out', CONCAT(@gifts, ' gift lines on the supplemental, 0 on the primary'), CONCAT(@n, ' on the supplemental, ', @n2, ' on the primary'), CASE WHEN @n = @gifts AND @gifts > 0 AND @n2 = 0 THEN 1 ELSE 0 END;
+
+        INSERT INTO @trv EXEC payroll.usp_PayrollRun_SendToReview @PayrollRunId = @tSup, @ActedByUserId = @HrUser;
+        INSERT INTO @tap EXEC payroll.usp_PayrollRun_Approve @PayrollRunId = @tSup, @ActedByUserId = @OwnerUser;
+        INSERT INTO @tg EXEC payroll.usp_PayrollRun_Generate @PayrollRunId = @tPri, @ActedByUserId = @HrUser;
+        SELECT @n  = COUNT(*) FROM payroll.PAYROLL_ADJUSTMENT a JOIN payroll.PAYSLIP ps ON ps.PayslipId = a.AppliedToPayslipId WHERE a.Reason = N'QA gift August' AND ps.PayrollRunId = @tSup;
+        SELECT @n2 = COUNT(*) FROM payroll.PAYSLIP_LINE l JOIN payroll.PAYSLIP ps ON ps.PayslipId = l.PayslipId WHERE ps.PayrollRunId = @tPri AND l.SourceType = 'Adjustment' AND l.Note = N'QA gift August';
+        INSERT INTO @res SELECT 'P9i', 'approving the supplemental consumes its adjustments (AppliedToPayslipId), and a LATER primary regenerate never pays them again', CONCAT(@gifts, ' consumed by the supplemental, 0 gift lines on the regenerated primary'), CONCAT(@n, ' consumed, ', @n2, ' on the primary'), CASE WHEN @n = @gifts AND @n2 = 0 THEN 1 ELSE 0 END;
+    END
+    IF XACT_STATE() = 1 ROLLBACK TRAN qa_timing_1;
 
     /* plain EXEC: the proc itself uses INSERT-EXEC for the readiness check, and INSERT-EXEC cannot be nested */
     EXEC payroll.usp_PayrollRun_Create @PeriodYearMonth = '2026-08', @CreatedByUserId = @HrUser, @Notes = N'QA August run', @RunType = 'Primary';
@@ -202,6 +260,28 @@ BEGIN TRY
     SELECT @n = COUNT(*) FROM (SELECT ps.EmployeeId FROM payroll.PAYSLIP ps JOIN payroll.PAYROLL_RUN r ON r.PayrollRunId = ps.PayrollRunId WHERE r.PeriodYearMonth = '2026-08' AND r.RunType = 'Primary' AND r.[Status] <> 'Cancelled' GROUP BY ps.EmployeeId HAVING COUNT(*) > 1) x;
     INSERT INTO @res SELECT 'P9c', 'no employee has two live primary payslips for the same month', '0', CAST(@n AS NVARCHAR(10)), CASE WHEN @n = 0 THEN 1 ELSE 0 END;
 
+    /* ---- P9j (script 81), LAST because its refusal dooms the transaction: a primary generated BEFORE a supplemental
+            still carries the supplemental's adjustments and cannot be locked until it is regenerated.
+            The approved QA primary and the open QA supplemental are cancelled first so the period is free again. ---- */
+    UPDATE payroll.PAYROLL_RUN SET [Status] = 'Cancelled' WHERE PayrollRunId IN (@RunId, @SupId);
+    UPDATE payroll.PAYROLL_ADJUSTMENT SET AppliedToPayslipId = NULL WHERE Reason = N'QA gift August';   -- the cancelled primary had consumed them
+    EXEC payroll.usp_PayrollRun_Create @PeriodYearMonth = '2026-08', @CreatedByUserId = @HrUser, @Notes = N'QA timing primary first', @RunType = 'Primary';
+    SET @tPri = (SELECT MAX(PayrollRunId) FROM payroll.PAYROLL_RUN WHERE Notes = N'QA timing primary first');
+    DELETE FROM @tg; INSERT INTO @tg EXEC payroll.usp_PayrollRun_Generate @PayrollRunId = @tPri, @ActedByUserId = @HrUser;
+    EXEC payroll.usp_PayrollRun_Create @PeriodYearMonth = '2026-08', @CreatedByUserId = @HrUser, @Notes = N'QA timing supplemental second', @RunType = 'Supplemental';
+    SET @tSup = (SELECT MAX(PayrollRunId) FROM payroll.PAYROLL_RUN WHERE Notes = N'QA timing supplemental second');
+    INSERT INTO @tg EXEC payroll.usp_PayrollRun_GenerateSupplemental @PayrollRunId = @tSup, @ActedByUserId = @HrUser;
+    DELETE FROM @trv; INSERT INTO @trv EXEC payroll.usp_PayrollRun_SendToReview @PayrollRunId = @tPri, @ActedByUserId = @HrUser;
+    SELECT @n = COUNT(*) FROM payroll.PAYSLIP_LINE l JOIN payroll.PAYSLIP ps ON ps.PayslipId = l.PayslipId WHERE ps.PayrollRunId = @tPri AND l.SourceType = 'Adjustment'
+      AND EXISTS (SELECT 1 FROM payroll.PAYSLIP_LINE l2 JOIN payroll.PAYSLIP ps2 ON ps2.PayslipId = l2.PayslipId WHERE ps2.PayrollRunId = @tSup AND l2.SourceType = 'Adjustment' AND l2.SourceId = l.SourceId);
+    BEGIN TRY
+        EXEC payroll.usp_PayrollRun_Approve @PayrollRunId = @tPri, @ActedByUserId = @OwnerUser;
+        INSERT INTO @res SELECT 'P9j', 'a primary generated BEFORE the supplemental still carries its adjustments: locking it is refused until it is regenerated', CONCAT('refused with "This run carries ', @n, ' adjustment(s) that a supplemental run pays..."'), 'approved (!)', 0;
+    END TRY
+    BEGIN CATCH
+        INSERT INTO @res SELECT 'P9j', 'a primary generated BEFORE the supplemental still carries its adjustments: locking it is refused until it is regenerated', CONCAT('refused with "This run carries ', @n, ' adjustment(s) that a supplemental run pays..."'), ERROR_MESSAGE(), CASE WHEN @n > 0 AND ERROR_MESSAGE() LIKE CONCAT('This run carries ', @n, ' adjustment(s) that a supplemental run pays%') THEN 1 ELSE 0 END;
+    END CATCH;
+
     ROLLBACK TRAN;
     INSERT INTO @notes VALUES ('Payroll transaction rolled back: no run, payslip, lock or stamp persisted.');
 END TRY
@@ -236,6 +316,20 @@ BEGIN TRY
 END TRY
 BEGIN CATCH
     INSERT INTO @res SELECT 'P9f', 're-running the primary for a month that has a live primary: REFUSES (never replaces)', 'refused with "A primary run for 2026-08 already exists..."', ERROR_MESSAGE(), CASE WHEN ERROR_MESSAGE() LIKE '%already exists%' THEN 1 ELSE 0 END;
+END CATCH;
+
+/* P9l (script 81): a primary is created on any day OF its period, not before it starts. Refused before anything is written;
+   should it ever be created, it is removed at once (and cleanup.sql removes runs whose Notes start with 'QA '). */
+DECLARE @nextPeriod CHAR(7) = CONVERT(CHAR(7), DATEADD(MONTH, 1, CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Middle East Standard Time' AS DATE)), 23);
+BEGIN TRY
+    EXEC payroll.usp_PayrollRun_Create @PeriodYearMonth = @nextPeriod, @CreatedByUserId = @HrUser, @Notes = N'QA primary too early', @RunType = 'Primary';
+    INSERT INTO @res SELECT 'P9l', CONCAT('a primary for next month (', @nextPeriod, ') is refused: its period has not started'), 'refused with "The period ... has not started yet..."', 'created (!) and removed', 0;
+    DELETE FROM payroll.PAYROLL_RUN_EVENT WHERE PayrollRunId IN (SELECT PayrollRunId FROM payroll.PAYROLL_RUN WHERE Notes = N'QA primary too early');
+    DELETE FROM payroll.PAYROLL_RUN_RATE  WHERE PayrollRunId IN (SELECT PayrollRunId FROM payroll.PAYROLL_RUN WHERE Notes = N'QA primary too early');
+    DELETE FROM payroll.PAYROLL_RUN WHERE Notes = N'QA primary too early';
+END TRY
+BEGIN CATCH
+    INSERT INTO @res SELECT 'P9l', CONCAT('a primary for next month (', @nextPeriod, ') is refused: its period has not started'), 'refused with "The period ... has not started yet..."', ERROR_MESSAGE(), CASE WHEN ERROR_MESSAGE() LIKE '%has not started yet%' THEN 1 ELSE 0 END;
 END CATCH;
 
 /* ---- report ---- */

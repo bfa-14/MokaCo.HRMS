@@ -45,6 +45,17 @@ QuestPDF.Settings.License = QuestPDF.Infrastructure.LicenseType.Community;
 var builder = WebApplication.CreateBuilder(args);
 
 // --- Configuration ---
+// SECRETS LIVE IN appsettings.Local.json, WHICH GIT NEVER SEES. The tracked appsettings.json carries a
+// connection string with no password in it (Windows authentication); the machine's real one — SQL
+// login and password — goes in appsettings.Local.json beside it (gitignored; copy
+// appsettings.Local.example.json). Added LAST among the files so it wins over appsettings.json and
+// appsettings.{Environment}.json, and BEFORE re-adding the environment variables and command line so
+// a deployment that sets ConnectionStrings__MokaCo in its environment still has the final word.
+builder.Configuration
+    .AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: false)
+    .AddEnvironmentVariables()
+    .AddCommandLine(args);
+
 var connectionString = builder.Configuration.GetConnectionString("MokaCo")
     ?? throw new InvalidOperationException("Missing connection string 'MokaCo'.");
 
@@ -269,7 +280,10 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             {
                 var accessToken = context.Request.Query["access_token"];
                 var path = context.HttpContext.Request.Path;
-                if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs/live"))
+                // /hubs/booking too: staff connect to it with their token. A guest sends none, and the
+                // hub is [AllowAnonymous], so an absent token there is not a failure.
+                if (!string.IsNullOrEmpty(accessToken)
+                    && (path.StartsWithSegments("/hubs/live") || path.StartsWithSegments("/hubs/booking")))
                     context.Token = accessToken;
 
                 return Task.CompletedTask;
@@ -381,7 +395,7 @@ builder.Services.AddRateLimiter(options =>
 });
 
 // --- CORS for the React front end (adjust origin) ---
-const string CorsPolicy = "MokaCoFront";
+const string CorsPolicy = PublicBookingCorsPolicyProvider.StaffFrontPolicy;   // "MokaCoFront"
 
 // The PUBLIC BOOKING ORIGINS come from core.SETTING BookingCorsOrigins, NOT from appsettings.json.
 // PublicBookingGate reads that row (with BookingWebsiteEnabled and BookingApiKey) once a minute, and
@@ -415,6 +429,8 @@ builder.Services.AddSingleton<ICorsPolicyProvider, PublicBookingCorsPolicyProvid
 // --- Live updates (SignalR): signals only, never data ---
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<ILiveNotifier, LiveNotifier>();
+// Live BOOKING updates (BookingHub): scoped because it re-reads the booking through the repository.
+builder.Services.AddScoped<IBookingLivePublisher, BookingLivePublisher>();
 
 builder.Services.AddControllers();
 
@@ -489,6 +505,13 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 app.MapHub<LiveHub>("/hubs/live");
+
+// The website's confirmation page (anonymous, watches one reference) and the staff calendar (JWT,
+// group "staff") both connect here, so its CORS policy is its own: BookingCorsOrigins + the staff
+// front end, with credentials — see PublicBookingCorsPolicyProvider. RequireCors on the endpoint
+// replaces the pipeline's default policy for this path only, negotiate and preflight included.
+app.MapHub<BookingHub>("/hubs/booking")
+   .RequireCors(PublicBookingCorsPolicyProvider.BookingHubCorsPolicy);
 
 // THE SITE ROOT IS NOT AN ENDPOINT. Nothing is mapped to "/" — the API is controllers under /api,
 // the terminals' /iclock, and the hub — so a browser opened at the bare host got a plain 404 that

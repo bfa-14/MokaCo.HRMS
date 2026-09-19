@@ -108,12 +108,15 @@ public class BookingRepository : IBookingRepository
             commandType: CommandType.StoredProcedure);
     }
 
-    public async Task<int> ExpireHoldsAsync()
+    /// <summary>@ReturnRows = 1 (SQL 80): one row per hold this call cancelled, so each can be announced on the hub.</summary>
+    public async Task<IReadOnlyList<string>> ExpireHoldsAsync()
     {
         using var db = _factory.Create();
-        return await db.ExecuteScalarAsync<int>(
+        var expired = await db.QueryAsync<(int BookingId, string? BookingRef)>(
             "booking.usp_Booking_ExpireHolds",
+            new { ReturnRows = true },
             commandType: CommandType.StoredProcedure);
+        return expired.Where(row => !string.IsNullOrEmpty(row.BookingRef)).Select(row => row.BookingRef!).ToList();
     }
 
     /// <summary>The procedure ends with EXEC usp_Booking_GetByRef, so the same two result sets come back and are read the same way.</summary>

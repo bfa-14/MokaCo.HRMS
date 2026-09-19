@@ -9,21 +9,21 @@
 
    Every check prints one line:  PASS|FAIL | <id> | <case> | expected=... | actual=...
    and is also written to dbo.QA_RESULT (so run.sh can build the summary).
-   Needs: API on http://localhost:5078, sqlcmd on PATH, SQLCMDPASSWORD env (falls back
-   to the development password from appsettings.json).
+   Needs: API on http://localhost:5078, sqlcmd on PATH, and SQLCMDSERVER / SQLCMDUSER /
+   SQLCMDPASSWORD from the environment or tests/qa/.env (see qa-env.mjs; nothing falls back).
    ============================================================================ */
 import { execFileSync } from 'node:child_process';
+import { SQLCMD_CONNECTION } from './qa-env.mjs';
 
 const API = process.env.QA_API ?? 'http://localhost:5078';
 const PW = 'QaPass!2026';
-const SQL_PW = process.env.SQLCMDPASSWORD ?? 'p@ssW0rd';
 const phase = process.argv[2];
 if (!['phase1', 'phase2'].includes(phase)) { console.error('usage: node api-tests.mjs phase1|phase2'); process.exit(2); }
 
 /* ---------------------------------------------------------------- helpers ---- */
 function sql(query) {
-  const out = execFileSync('sqlcmd', ['-S', 'localhost', '-U', 'sa', '-P', SQL_PW, '-C', '-I', '-h', '-1', '-W', '-s', '|',
-    '-d', 'MokaCo_HRMS', '-Q', 'SET NOCOUNT ON; ' + query], { encoding: 'utf8' });
+  const out = execFileSync('sqlcmd', [...SQLCMD_CONNECTION, '-h', '-1', '-W', '-s', '|',
+    '-Q', 'SET NOCOUNT ON; ' + query], { encoding: 'utf8' });
   return out.trim();
 }
 const q = (s) => `N'${String(s ?? '').replace(/'/g, "''")}'`;
@@ -60,6 +60,37 @@ async function api(user, method, path, body, opts = {}) {
   return { status: r.status, json, text };
 }
 const refusals = [];
+
+/* ---- a minimal SignalR client (JSON protocol over a WebSocket; Node 22 has both built in), so the suite needs no package.
+        token = staff JWT (travels as ?access_token=, the way a browser sends it) or null for the website's anonymous guest. ---- */
+const RS = '\x1e';
+async function hubConnect(token) {
+  const auth = token ? `&access_token=${encodeURIComponent(token)}` : '';
+  const neg = await fetch(`${API}/hubs/booking/negotiate?negotiateVersion=1${auth}`, { method: 'POST' });
+  if (!neg.ok) return { ok: false, status: neg.status, events: [], close() {} };
+  const { connectionToken } = await neg.json();
+  const ws = new WebSocket(`${API.replace(/^http/, 'ws')}/hubs/booking?id=${encodeURIComponent(connectionToken)}${auth}`);
+  const events = [], completions = new Map();
+  let handshake; const ready = new Promise((res, rej) => { handshake = res; ws.onerror = () => rej(new Error('websocket error')); });
+  ws.onmessage = (m) => {
+    for (const frame of String(m.data).split(RS).filter(Boolean)) {
+      const msg = JSON.parse(frame);
+      if (msg.type === undefined) handshake(msg);                                   // {} = handshake accepted
+      else if (msg.type === 1) events.push({ target: msg.target, arg: msg.arguments?.[0] });
+      else if (msg.type === 3) completions.get(msg.invocationId)?.(msg);
+    }
+  };
+  await new Promise((res) => (ws.onopen = res));
+  ws.send(JSON.stringify({ protocol: 'json', version: 1 }) + RS);
+  await ready;
+  let seq = 0;
+  return {
+    ok: true, events,
+    invoke(target, ...args) { const id = String(++seq); return new Promise((res) => { completions.set(id, res); ws.send(JSON.stringify({ type: 1, invocationId: id, target, arguments: args }) + RS); }); },
+    async waitFor(pred, ms = 4000) { const end = Date.now() + ms; while (Date.now() < end) { const hit = events.find(pred); if (hit) return hit; await new Promise((r) => setTimeout(r, 100)); } return null; },
+    close() { try { ws.close(); } catch { /* already closed */ } },
+  };
+}
 /** X1: a refusal must be JSON {error} in plain words — never SQL text or a stack trace. */
 function looksClean(text) {
   return !/Violation of|System\.|at MokaCo\.|Exception|stack|Microsoft\.Data\.SqlClient/i.test(text ?? '');
@@ -426,6 +457,10 @@ async function phase2() {
     `${cat.status} timeZone=${cat.json?.timeZone} qa-room hours=${JSON.stringify(qaRoom?.hours?.[0])} n=${qaRoom?.hours?.length} localNow=${cat.json?.rules?.localNow} addons=${JSON.stringify(qaRoom?.addons)} discounts=${JSON.stringify(qaRoom?.discounts)}`,
     cat.status === 200 && cat.json?.timeZone === 'Asia/Beirut' && qaRoom?.hours?.length === 7 && qaRoom.hours.every((h) => h.openMin === 540 && h.closeMin === 1500 && !h.isClosed) && /\+0[23]:00$/.test(cat.json?.rules?.localNow ?? ''));
   const d1 = plusDays(10);
+  /* B8: /hubs/booking. Three listeners are opened BEFORE anything changes: staff with a booking permission (qa.hr),
+     an authenticated user without one (qa.e1) and, once the reference exists, the website's anonymous guest. */
+  const hubStaff = await hubConnect(tokens.get('qa.hr'));
+  const hubNoPerm = await hubConnect(tokens.get('qa.e1'));
   const b1 = await pub('POST', '/api/public/booking', guest('B1', d1, 600, 720));
   const b1Id = idOf(b1.json?.ref);
   if (b1Id) { hold(b1Id); state('booking.b1', b1Id); }
@@ -462,7 +497,32 @@ async function phase2() {
   const quote = await pub('POST', '/api/public/booking/quote', { roomCode: 'qa-room', date: d2, startMin: 600, endMin: 780, addonIds: [ids.addon] });
   check('B5d', 'POST quote for 3 h + the 15 add-on prices the room with the 10 % discount and the add-on undiscounted', 'roomGross 60, discountAmount 6, roomTotal 54, addonTotal 15, total 69, depositPercent 20, deposit 13.80',
     `${quote.status} ${JSON.stringify(quote.json).slice(0, 300)}`, quote.status === 200 && Number(quote.json?.roomGross) === 60 && Number(quote.json?.discountAmount) === 6 && Number(quote.json?.addonTotal) === 15 && Number(quote.json?.total) === 69 && Number(quote.json?.deposit) === 13.8);
+  const hubNeg = await fetch(`${API}/hubs/booking/negotiate?negotiateVersion=1`, { method: 'POST', headers: { Origin: ORIGIN } });
+  const hubNegBad = await fetch(`${API}/hubs/booking/negotiate?negotiateVersion=1`, { method: 'POST', headers: { Origin: 'https://evil.example' } });
+  check('B8a', 'POST /hubs/booking/negotiate is anonymous and answers CORS from BookingCorsOrigins WITH credentials (no wildcard); an unlisted origin gets no CORS grant',
+    `200, Access-Control-Allow-Origin ${ORIGIN}, Allow-Credentials true; evil origin: no Allow-Origin`,
+    `${hubNeg.status} acao=${hubNeg.headers.get('access-control-allow-origin')} acac=${hubNeg.headers.get('access-control-allow-credentials')}; evil acao=${hubNegBad.headers.get('access-control-allow-origin')}`,
+    hubNeg.status === 200 && hubNeg.headers.get('access-control-allow-origin') === ORIGIN && hubNeg.headers.get('access-control-allow-credentials') === 'true' && !hubNegBad.headers.get('access-control-allow-origin'));
+  const hubGuest = await hubConnect(null), hubStranger = await hubConnect(null);
+  const watchOk = hubGuest.ok ? await hubGuest.invoke('WatchBooking', b1.json?.ref) : { error: 'no connection' };
+  const watchBad = hubStranger.ok ? await hubStranger.invoke('WatchBooking', 'MC-ZZZZZZZZ') : { error: 'no connection' };
+  const watchGroup = hubStranger.ok ? await hubStranger.invoke('WatchBooking', 'staff') : { error: 'no connection' };
+  check('B8b', 'an anonymous connection joins "booking:{ref}" only with a real MC- reference (WatchBooking, the website\'s call); an unknown reference or a group name is refused',
+    'real ref: completed without error; MC-ZZZZZZZZ and "staff": error not_found', `real=${watchOk.error ?? 'ok'}; unknown=${watchBad.error}; "staff"=${watchGroup.error}`,
+    hubGuest.ok && !watchOk.error && /not_found/.test(watchBad.error ?? '') && /not_found/.test(watchGroup.error ?? ''));
+  const created = hubStaff.ok ? await hubStaff.waitFor((e) => e.target === 'BookingChanged' && e.arg?.ref === b1.json?.ref && e.arg?.status === 'Pending') : null;
+  check('B8c', 'the public create is announced to group "staff": BookingChanged { bookingId, ref, status, roomCode, date, startMin, endMin, guestName, source }',
+    `BookingChanged ref ${b1.json?.ref} Pending Website qa-room ${d1} 600-720 with bookingId ${b1Id}`, JSON.stringify(created?.arg ?? null),
+    !!created && created.arg.bookingId === b1Id && created.arg.source === 'Website' && created.arg.roomCode === 'qa-room' && created.arg.date === d1 && created.arg.startMin === 600 && created.arg.endMin === 720 && !!created.arg.guestName);
   const conf = await api('qa.hr', 'PUT', `/api/bookings/${b1Id}/status`, { status: 'Confirmed' });
+  const gotGuest = hubGuest.ok ? await hubGuest.waitFor((e) => e.target === 'BookingStatus' && e.arg?.status === 'Confirmed') : null;
+  const gotStaff = hubStaff.ok ? await hubStaff.waitFor((e) => e.target === 'BookingChanged' && e.arg?.ref === b1.json?.ref && e.arg?.status === 'Confirmed') : null;
+  check('B8d', 'staff confirm -> the guest\'s page hears BookingStatus { ref, status, refundStatus, paid, balance } and staff hear BookingChanged Confirmed',
+    `guest: ref ${b1.json?.ref} Confirmed with paid and balance; staff: Confirmed`, `guest=${JSON.stringify(gotGuest?.arg ?? null)} staff=${gotStaff?.arg?.status ?? 'nothing'}`,
+    !!gotGuest && gotGuest.arg.ref === b1.json?.ref && 'refundStatus' in gotGuest.arg && typeof gotGuest.arg.paid === 'number' && typeof gotGuest.arg.balance === 'number' && !('guestName' in gotGuest.arg) && !!gotStaff);
+  check('B8e', 'nobody else hears it: an authenticated user without BOOKING_VIEW/MANAGE (qa.e1) and an anonymous connection that watches nothing receive no booking message',
+    '0 messages each', `no-permission user=${hubNoPerm.events.length} (connected=${hubNoPerm.ok}); anonymous stranger=${hubStranger.events.length}`, hubNoPerm.ok && hubNoPerm.events.length === 0 && hubStranger.events.length === 0);
+  for (const h of [hubStaff, hubNoPerm, hubGuest, hubStranger]) h.close();
   if (b1Id) hold(b1Id);
   check('B3b', 'staff confirm in HRMS -> Confirmed and a Confirmation e-mail is queued only now (by the trigger)', 'status Confirmed; outbox gains Confirmation/Email', `${conf.status} ${conf.json?.status}; outbox=${kinds(b1Id)}`, conf.status === 200 && conf.json?.status === 'Confirmed' && /Confirmation\/Email/.test(kinds(b1Id)));
   /* B4: staff cancel with a payment on file, cancelled-by Staff vs Guest, refunds through the API */

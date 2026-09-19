@@ -20,11 +20,13 @@ namespace MokaCo.HRMS.Api.Jobs;
 public class BookingHoldExpiryJob : IJob
 {
     private readonly IBookingService _bookings;
+    private readonly IBookingLivePublisher _live;
     private readonly ILogger<BookingHoldExpiryJob> _logger;
 
-    public BookingHoldExpiryJob(IBookingService bookings, ILogger<BookingHoldExpiryJob> logger)
+    public BookingHoldExpiryJob(IBookingService bookings, IBookingLivePublisher live, ILogger<BookingHoldExpiryJob> logger)
     {
         _bookings = bookings;
+        _live = live;
         _logger = logger;
     }
 
@@ -33,8 +35,13 @@ public class BookingHoldExpiryJob : IJob
         var expired = await _bookings.ExpireHoldsAsync();
 
         // Silent on the ordinary outcome: this runs 288 times a day and almost every run has nothing to do.
-        if (expired > 0)
+        // each cancelled hold is a state change somebody may be watching: the guest still on the
+        // payment page, and the staff calendar that showed the slot as held
+        foreach (var bookingRef in expired)
+            await _live.PublishAsync(bookingRef);
+
+        if (expired.Count > 0)
             _logger.LogInformation("Booking holds: cancelled {Count} unpaid hold(s) whose time had run out (Beirut {Now:HH:mm}).",
-                expired, BeirutTime.Now);
+                expired.Count, BeirutTime.Now);
     }
 }

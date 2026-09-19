@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Data;
 using Dapper;
 using Microsoft.Data.SqlClient;
@@ -13,6 +14,9 @@ namespace MokaCo.HRMS.Tests.Payroll;
 /// run is touched. Periods in 2099 are used so the "one live primary per period" index and the real
 /// August 2026 run are never in the way. Skipped, with the reason, when the database is not reachable.
 /// </summary>
+// One collection for every class that runs the payroll generator inside an open transaction: two of
+// them side by side take the same locks in a different order and one is chosen as the deadlock victim.
+[Collection("PayrollDb")]
 public class PayrollFixPackDbTests
 {
     private sealed class Fixture : IAsyncDisposable
@@ -90,8 +94,8 @@ public class PayrollFixPackDbTests
     /// <summary>
     /// BUG-18: an explicit NULL @RunType is a PRIMARY run. With a live primary for the period the
     /// primary path refuses with "already exists"; the supplemental path would have answered with a
-    /// different sentence ("A supplemental follows an approved primary…" / "No approved, unconsumed
-    /// adjustments…"), which is exactly how the bug showed.
+    /// different sentence ("No approved, unpaid adjustments target 2099-02…" — or, before script 81, "A
+    /// supplemental follows an approved primary…"), which is exactly how the bug showed.
     /// </summary>
     [DbFact]
     public async Task Create_WithNullRunType_TakesThePrimaryPath()
@@ -114,8 +118,16 @@ public class PayrollFixPackDbTests
     /// legacy DayFraction 0, a Leave row, a Holiday row with DayFraction 0 and a short day with no
     /// rostered shift cost nothing; a half day and an absence on rostered shifts cost 1.5 days.
     /// </summary>
-    [DbFact]
-    public async Task Generate_DeductsOnlyWorkedOrAbsentDaysOnARosteredShift()
+    /// <remarks>
+    /// Script 81: the generator counts attendance only UP TO "today" (@AsOfDate is that clock, injected
+    /// here because the fixture's month is in 2099). With the whole month behind it the answer is the
+    /// 1.5 days above; run on 5 March only the half day of the 2nd has happened, and the absence of
+    /// the 7th is a day still to come — paid as scheduled.
+    /// </remarks>
+    [DbTheory]
+    [InlineData("2099-03-31", "1.50", "1.5 day(s) short across 2 date(s)")]
+    [InlineData("2099-03-05", "0.50", "0.5 day(s) short across 1 date(s)")]
+    public async Task Generate_DeductsOnlyWorkedOrAbsentDaysOnARosteredShift(string asOf, string expectedDays, string expectedNote)
     {
         await using var f = await Fixture.OpenAsync();
         var user = await f.HrUserAsync() ?? await f.Db.QuerySingleAsync<int>("SELECT TOP 1 UserId FROM security.[USER]", transaction: f.Tx);
@@ -153,7 +165,8 @@ public class PayrollFixPackDbTests
             """, transaction: f.Tx);
 
         var run = await f.RunAsync("2099-03", user, 90000m);
-        await f.Db.ExecuteAsync("payroll.usp_PayrollRun_Generate", new { PayrollRunId = run, ActedByUserId = user },
+        await f.Db.ExecuteAsync("payroll.usp_PayrollRun_Generate",
+            new { PayrollRunId = run, ActedByUserId = user, AsOfDate = DateTime.Parse(asOf, CultureInfo.InvariantCulture) },
             f.Tx, commandType: CommandType.StoredProcedure);
 
         var days = await f.Db.QuerySingleAsync<decimal>(
@@ -167,8 +180,9 @@ public class PayrollFixPackDbTests
             """, new { R = run, E = emp }, f.Tx);
 
         var dayRate = decimal.Round(1300m / days, 4);
-        Assert.Equal(1.50m, line.Quantity);
-        Assert.Equal("1.5 day(s) short across 2 date(s)", line.Note);
-        Assert.Equal(decimal.Round(1.5m * dayRate, 2), line.Amount);
+        var expected = decimal.Parse(expectedDays, CultureInfo.InvariantCulture);
+        Assert.Equal(expected, line.Quantity);
+        Assert.Equal(expectedNote, line.Note);
+        Assert.Equal(decimal.Round(expected * dayRate, 2), line.Amount);
     }
 }

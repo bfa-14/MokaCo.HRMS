@@ -53,7 +53,7 @@ public class BookingService : IBookingService
         return booking is null ? null : ToRecap(booking);
     }
 
-    public Task<int> ExpireHoldsAsync()
+    public Task<IReadOnlyList<string>> ExpireHoldsAsync()
         => _bookings.ExpireHoldsAsync();
 
     public async Task<bool> IsDepositRequiredAsync()

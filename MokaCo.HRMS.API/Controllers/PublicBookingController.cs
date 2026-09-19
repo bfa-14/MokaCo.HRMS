@@ -59,10 +59,17 @@ public class PublicBookingController : ControllerBase
     private readonly IBookingService _bookings;
     private readonly IRoomService _rooms;
 
-    public PublicBookingController(IBookingService bookings, IRoomService rooms)
+    /// <summary>
+    /// Tells /hubs/booking after each committed change. Optional so the controller can still be built
+    /// from its two services alone (the unit tests do); the container always supplies it.
+    /// </summary>
+    private readonly IBookingLivePublisher? _live;
+
+    public PublicBookingController(IBookingService bookings, IRoomService rooms, IBookingLivePublisher? live = null)
     {
         _bookings = bookings;
         _rooms = rooms;
+        _live = live;
     }
 
     /* ---- 1. catalog ------------------------------------------------------------------------ */
@@ -250,6 +257,9 @@ public class PublicBookingController : ControllerBase
         if (created is null)
             return Invalid("The booking could not be taken. Please try again.");
 
+        // the staff calendar hears about the request the moment it exists
+        if (_live is not null) await _live.PublishAsync(created.BookingRef);
+
         var depositRequired = await _bookings.IsDepositRequiredAsync();
 
         return StatusCode(StatusCodes.Status201Created, new
@@ -304,6 +314,7 @@ public class PublicBookingController : ControllerBase
         if (released is null)
             return Unknown("No booking with that reference.");
 
+        if (_live is not null) await _live.PublishAsync(released.BookingRef);
         return Ok(new { timeZone = TimeZoneName, @ref = released.BookingRef, status = released.Status });
     }
 
@@ -322,7 +333,11 @@ public class PublicBookingController : ControllerBase
             return Invalid("Enter the phone number the booking was made with.", "phone");
 
         var recap = await _bookings.CancelByGuestAsync(bookingRef.ToUpperInvariant(), phone);
-        return recap is null ? Unknown("No booking with that reference.") : Recap(recap);
+        if (recap is null)
+            return Unknown("No booking with that reference.");
+
+        if (_live is not null) await _live.PublishAsync(recap.Ref);
+        return Recap(recap);
     }
 
     /// <summary>STEP 2: the gateway's return trip. The route exists now and answers 501 so the site can be written against the real URL.</summary>

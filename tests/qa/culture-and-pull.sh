@@ -8,8 +8,8 @@ set -u
 QA="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$QA/../.." && pwd)"
 LOG="$QA/api-engb.log"
-export SQLCMDPASSWORD="${SQLCMDPASSWORD:-p@ssW0rd}"
-SQL="sqlcmd -S localhost -U sa -C -I -h -1 -W -d MokaCo_HRMS"
+. "$QA/env.sh"
+SQL="sqlcmd -S $SQLCMDSERVER -U $SQLCMDUSER -C -I -h -1 -W -d MokaCo_HRMS"
 qsql() { $SQL -Q "SET NOCOUNT ON; $1" | tr -d '\r'; }
 record() { # id case expected actual pass(0/1)
   local p=FAIL; [ "$5" = "1" ] && p=PASS

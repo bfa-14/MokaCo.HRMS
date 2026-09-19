@@ -17,4 +17,9 @@
     <ProjectReference Include="..\MokaCo.HRMS.Services\MokaCo.HRMS.Services.csproj" />
   </ItemGroup>
 
+  <!-- The machine's secrets file is never part of a publish: a deployment brings its own. -->
+  <ItemGroup>
+    <Content Update="appsettings.Local.json" CopyToPublishDirectory="Never" />
+  </ItemGroup>
+
 </Project>

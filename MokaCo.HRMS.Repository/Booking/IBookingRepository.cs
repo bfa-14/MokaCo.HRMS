@@ -37,8 +37,8 @@ public interface IBookingRepository
     /// <summary>Frees an unpaid payment hold (booking.usp_Booking_ReleaseHold). A no-op on anything it may not touch; echoes the status either way.</summary>
     Task<BookingHoldReleased?> ReleaseHoldAsync(string bookingRef);
 
-    /// <summary>Cancels every Pending hold whose clock ran out with no money against it (booking.usp_Booking_ExpireHolds). Returns how many.</summary>
-    Task<int> ExpireHoldsAsync();
+    /// <summary>Cancels every Pending hold whose clock ran out with no money against it (booking.usp_Booking_ExpireHolds, @ReturnRows = 1). Returns the references it cancelled.</summary>
+    Task<IReadOnlyList<string>> ExpireHoldsAsync();
 
     /// <summary>
     /// The guest cancels their own booking (booking.usp_Booking_CancelByGuest, SQL 79): the last 8

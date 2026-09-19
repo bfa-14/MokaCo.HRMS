@@ -17,10 +17,14 @@
      ATTENDANCE_VIEW     reading is harmless - most staff can have it.
      ATTENDANCE_MANAGE   running the processor and editing the roster CHANGES the
                          numbers payroll will read, so it is an operator right.
-     ATTENDANCE_CORRECT  HR ONLY. Corrections, exit approvals, dispositions and day
-                         adjustments all directly change what a person is PAID. It is
+     ATTENDANCE_CORRECT  HR AND THE OPERATIONS MANAGER. Corrections, exit approvals,
+                         dispositions, day adjustments and the late / early / missing-punch
+                         anomaly decisions all directly change what a person is PAID. It is
                          kept apart from MANAGE precisely so whoever runs the processor
-                         cannot also quietly rewrite somebody's hours.
+                         cannot also quietly rewrite somebody's hours. The Operations
+                         Manager has it because the anomalies are decided by the person who
+                         knows why somebody was late — without it the decide endpoints
+                         answered 403 for that role (section 4).
      ATTENDANCE_IMPORT   uploading a spreadsheet injects punches into the system.
      DEVICE_MANAGE       a device is a source of truth about pay, so who may add one
                          (and issue its API key) is a security decision, not an admin chore.
@@ -65,6 +69,20 @@ CROSS JOIN security.PERMISSION p
 WHERE r.Name = 'HR'
   AND p.Module = 'Attendance'
   AND p.Code <> 'SETTING_MANAGE'
+  AND NOT EXISTS (SELECT 1 FROM security.ROLE_PERMISSION rp
+                  WHERE rp.RoleId = r.RoleId AND rp.PermissionId = p.PermissionId);
+GO
+
+/* -- 4. Operations Manager may correct attendance and decide anomalies ------ */
+/* Only this one code: not MANAGE, IMPORT, DEVICE_MANAGE or SETTING_MANAGE. Guarded, so re-running
+   the script (or a database where the owner already granted it on the Role Permissions page)
+   changes nothing. */
+INSERT INTO security.ROLE_PERMISSION (RoleId, PermissionId)
+SELECT r.RoleId, p.PermissionId
+FROM security.[ROLE] r
+CROSS JOIN security.PERMISSION p
+WHERE r.Name = 'OperationsManager'
+  AND p.Code = 'ATTENDANCE_CORRECT'
   AND NOT EXISTS (SELECT 1 FROM security.ROLE_PERMISSION rp
                   WHERE rp.RoleId = r.RoleId AND rp.PermissionId = p.PermissionId);
 GO

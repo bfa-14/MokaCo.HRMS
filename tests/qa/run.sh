@@ -2,11 +2,12 @@
 # tests/qa/run.sh — runs the whole QA suite and writes tests/qa/last-run.log.
 # Prerequisites: SQL Server on localhost (sa), API on http://localhost:5078,
 # web dev server on http://localhost:5173 (for ui-tests), sqlcmd, node >= 22, google-chrome.
-# Set SQLCMDPASSWORD to override the development password.
+# The SQL connection (SQLCMDSERVER / SQLCMDUSER / SQLCMDPASSWORD) comes from the environment or from
+# tests/qa/.env (gitignored; copy .env.example) — see env.sh. sqlcmd reads the password from the environment.
 set -u
 QA="$(cd "$(dirname "$0")" && pwd)"
-export SQLCMDPASSWORD="${SQLCMDPASSWORD:-p@ssW0rd}"
-SQL="sqlcmd -S localhost -U sa -C -I -d MokaCo_HRMS -W -s |"
+. "$QA/env.sh"
+SQL="sqlcmd -S $SQLCMDSERVER -U $SQLCMDUSER -C -I -d MokaCo_HRMS -W -s |"
 LOG="$QA/last-run.log"
 : > "$LOG"
 step() { echo | tee -a "$LOG"; echo "=============== $1 ($(date '+%F %T')) ===============" | tee -a "$LOG"; }

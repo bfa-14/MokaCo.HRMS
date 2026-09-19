@@ -91,6 +91,8 @@ PublishProfiles/
 # Secrets
 ############################
 appsettings.Development.json
+appsettings.Local.json
+tests/qa/.env
 secrets.json
 
 ############################

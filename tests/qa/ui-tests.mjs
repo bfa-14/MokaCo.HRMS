@@ -8,6 +8,7 @@
    the API on :5078, the QA users from seed.sql. Screenshots go to tests/qa/screenshots.
    ============================================================================ */
 import { spawn, execFileSync } from 'node:child_process';
+import { SQLCMD_CONNECTION } from './qa-env.mjs';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,12 +17,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const WEB = process.env.QA_WEB ?? 'http://localhost:5173';
 const API = process.env.QA_API ?? 'http://localhost:5078';
 const PW = 'QaPass!2026';
-const SQL_PW = process.env.SQLCMDPASSWORD ?? 'p@ssW0rd';
 const PORT = 9333;
 mkdirSync(join(HERE, 'screenshots'), { recursive: true });
 
 function sql(query) {
-  return execFileSync('sqlcmd', ['-S', 'localhost', '-U', 'sa', '-P', SQL_PW, '-C', '-I', '-h', '-1', '-W', '-d', 'MokaCo_HRMS', '-Q', 'SET NOCOUNT ON; ' + query], { encoding: 'utf8' }).trim();
+  return execFileSync('sqlcmd', [...SQLCMD_CONNECTION, '-h', '-1', '-W', '-Q', 'SET NOCOUNT ON; ' + query], { encoding: 'utf8' }).trim();
 }
 const q = (s) => `N'${String(s ?? '').replace(/'/g, "''")}'`;
 function check(id, kase, expected, actual, pass) {

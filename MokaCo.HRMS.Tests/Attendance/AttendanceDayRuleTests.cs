@@ -469,7 +469,8 @@ public class AttendanceDayRuleTests
 /// <summary>
 /// A fact that runs only when the MokaCo_HRMS database with script 77 is reachable; otherwise it is
 /// skipped with the reason. The connection string comes from MOKACO_TEST_CONNECTION, else from the
-/// API project's appsettings.json (found by walking up from the test assembly).
+/// API project's appsettings.Local.json (the untracked file that holds the real one), else from its
+/// appsettings.json — found by walking up from the test assembly.
 /// </summary>
 public sealed class DbFactAttribute : FactAttribute
 {
@@ -492,8 +493,10 @@ public sealed class DbFactAttribute : FactAttribute
             string? file = null;
             for (var d = dir; d is not null && file is null; d = d.Parent)
             {
+                var local = Path.Combine(d.FullName, "MokaCo.HRMS.API", "appsettings.Local.json");
                 var candidate = Path.Combine(d.FullName, "MokaCo.HRMS.API", "appsettings.json");
-                if (File.Exists(candidate)) file = candidate;
+                if (File.Exists(local)) file = local;
+                else if (File.Exists(candidate)) file = candidate;
             }
             if (file is null) return (null, "No MOKACO_TEST_CONNECTION and no MokaCo.HRMS.API/appsettings.json found.");
 

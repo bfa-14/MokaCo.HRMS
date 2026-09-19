@@ -27,8 +27,8 @@ public interface IBookingService
     /// <summary>The guest cancels, proving the phone number. Refusals are the procedure's (SqlException 50000). Returns the recap after the cancellation.</summary>
     Task<PublicBookingRecap?> CancelByGuestAsync(string bookingRef, string phone);
 
-    /// <summary>Cancels expired unpaid holds; returns how many. Called by the five-minute job.</summary>
-    Task<int> ExpireHoldsAsync();
+    /// <summary>Cancels expired unpaid holds; returns the references it cancelled, so each can be announced live. Called by the five-minute job.</summary>
+    Task<IReadOnlyList<string>> ExpireHoldsAsync();
 
     /// <summary>core.SETTING BookingDepositRequired — whether the website must collect the deposit online (step 2).</summary>
     Task<bool> IsDepositRequiredAsync();

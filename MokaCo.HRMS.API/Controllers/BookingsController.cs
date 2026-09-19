@@ -35,10 +35,14 @@ public class BookingsController : ControllerBase
     private readonly IBookingService _bookings;
     private readonly IRoomService _rooms;
 
-    public BookingsController(IBookingService bookings, IRoomService rooms)
+    /// <summary>Tells /hubs/booking after each committed change: the staff calendars and the guest's confirmation page.</summary>
+    private readonly IBookingLivePublisher _live;
+
+    public BookingsController(IBookingService bookings, IRoomService rooms, IBookingLivePublisher live)
     {
         _bookings = bookings;
         _rooms = rooms;
+        _live = live;
     }
 
     /* ---- 1. The calendar ---------------------------------------------------------------- */
@@ -90,6 +94,7 @@ public class BookingsController : ControllerBase
             if (created is null)
                 return BadRequest(new { error = "The booking could not be taken." });
 
+            await _live.PublishAsync(created.BookingRef);
             return Ok(created);
         }
         catch (SqlException ex) when (ex.Number == 50000)
@@ -137,6 +142,8 @@ public class BookingsController : ControllerBase
             if (changed is null)
                 return NotFound();
 
+            await _live.PublishAsync(changed.BookingRef);   // confirm / cancel / no-show / completed
+
             var detail = await _bookings.GetStaffDetailAsync(id);
             return Ok(detail is null
                 ? new
@@ -182,6 +189,8 @@ public class BookingsController : ControllerBase
             var detail = await _bookings.GetStaffDetailAsync(id);
             if (detail is null)
                 return NotFound();
+
+            await _live.PublishAsync(detail.Booking.BookingRef);   // refund recorded: refundStatus moved
 
             return Ok(new
             {
@@ -292,6 +301,8 @@ public class BookingsController : ControllerBase
             if (added is null)
                 return NotFound();
 
+            // paid and balance moved — the guest's page shows both
+            await _live.PublishAsync((await _bookings.GetStaffDetailAsync(id))?.Booking.BookingRef);
             return Ok(added);
         }
         catch (SqlException ex) when (ex.Number == 50000)
