@@ -46,6 +46,11 @@ class Cdp {
   send(method, params = {}) { const id = ++this.id; return new Promise((res, rej) => { this.pending.set(id, { res, rej }); this.ws.send(JSON.stringify({ id, method, params })); }); }
   async evaluate(expression) { const r = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }); if (r.exceptionDetails) throw new Error(r.exceptionDetails.text + ' ' + JSON.stringify(r.exceptionDetails.exception?.description ?? '')); return r.result.value; }
   async navigate(url, wait = 3500) { await this.send('Page.navigate', { url }); await sleep(wait); }
+  /** A REAL click (mouse pressed + released at the element's centre) — what Mantine's popovers and day cells listen to. `expr` is a JS expression for the element. */
+  async clickAt(expr) { const box = await this.evaluate(`(() => { const e = ${expr}; if (!e) return null; e.scrollIntoView({ block: 'center' }); const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`); if (!box) return false; await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y }); for (const type of ['mousePressed', 'mouseReleased']) await this.send('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', clickCount: 1 }); return true; }
+  async hover(expr) { const box = await this.evaluate(`(() => { const e = ${expr}; if (!e) return null; const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`); if (!box) return false; await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y }); return true; }
+  async type(text) { for (const ch of text) await this.send('Input.dispatchKeyEvent', { type: 'char', text: ch }); }
+  async key(key, vk) { for (const type of ['rawKeyDown', 'keyUp']) await this.send('Input.dispatchKeyEvent', { type, key, code: key, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }); }
   async screenshot(name) { const r = await this.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }); writeFileSync(join(HERE, 'screenshots', `${name}.png`), Buffer.from(r.data, 'base64')); }
 }
 
@@ -201,6 +206,131 @@ async function main() {
       `fewer rows than "All branches"; everybody the API returns for branchId=${b2} (${expectedPeople.length}) on the grid and no QA2 Branch 1 only employee; filter still "QA2 Branch 2" after reload`,
       `pick=${pickedBranch} rows all=${allRows} branch2=${b2Rows} requestsWithBranchId=${sent} missingPeople=[${expectedPeople.filter((n) => !names.includes(n)).join(', ')}] E1shown=${/QA2 E1\b/.test(names)} afterReload="${remembered}" rows=${rememberedRows}`,
       pickedBranch === 'picked' && b2Rows > 0 && b2Rows < allRows && sent > 0 && expectedPeople.every((n) => names.includes(n)) && !/QA2 E1\b/.test(names) && remembered === 'QA2 Branch 2' && rememberedRows === b2Rows);
+
+    /* =====================================================================================================
+       BUG A — the shared from–to field (src/components/DateRangeField). It was unusable: a page that only stores
+       COMPLETE ranges threw away the state between the first click and the second, the controlled picker snapped
+       back, and the range could never change; it was a button, so nothing could be typed; and on the booking pages
+       the choice was not in the URL. On every page that carries it: pick 01–15 of LAST month in the calendar, then
+       the field, the URL, the request and the grid must all say so — and still say so after a reload.
+       ===================================================================================================== */
+    {
+      const [ty, tm] = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Beirut' }).format(new Date()).split('-').map(Number);
+      const lm = tm === 1 ? `${ty - 1}-12` : `${ty}-${String(tm - 1).padStart(2, '0')}`;
+      const F = `${lm}-01`, T = `${lm}-15`;
+      const field = () => cdp.evaluate(`(() => { const f = document.querySelector('[data-testid="date-range"]'); return f ? { from: f.dataset.from, to: f.dataset.to, texts: [...f.querySelectorAll('input')].map((i) => i.value) } : null; })()`);
+      const dayCell = (n) => `[...document.querySelectorAll('.mantine-DatePicker-day:not([data-outside])')].find((b) => b.textContent.trim() === '${n}')`;
+      const record = () => cdp.evaluate(`(() => { window.__qaUrls = []; if (!window.__qaFetch) { window.__qaFetch = window.fetch; window.fetch = (...a) => { window.__qaUrls.push(String(a[0]?.url ?? a[0])); return window.__qaFetch(...a); }; } return 'ok'; })()`);
+      /** every date written in the grid's body, as yyyy-MM-dd */
+      const gridDates = () => cdp.evaluate(String.raw`(() => { const text = [...document.querySelectorAll('tbody')].map((b) => b.innerText).join('\n'); const out = [];
+        for (const m of text.matchAll(/\b(\d{4})-(\d{2})-(\d{2})\b/g)) out.push(m[0]);
+        for (const m of text.matchAll(/\b(\d{2})\/(\d{2})\/(\d{4})\b/g)) out.push(m[3] + '-' + m[2] + '-' + m[1]);
+        return out; })()`);
+      const nextDay = sql(`SELECT CONVERT(CHAR(10), DATEADD(DAY, 1, CAST('${T}' AS DATE)), 23)`);
+
+      const pages = [
+        ['daily', '/attendance/daily', '/api/attendance?'],
+        ['anomalies', '/attendance/anomalies', '/api/attendance/anomalies?'],
+        ['exit-variances', '/attendance/exit-variances', '/api/attendance/exit-variances?'],
+        ['bookings-list', '/bookings/list', '/api/bookings'],
+        ['bookings-report', '/bookings/report', '/api/bookings'],
+        ['requests', '/requests', '/api/requests'],
+      ];
+      for (const [name, path, apiPart] of pages) {
+        await cdp.navigate(`${WEB}${path}`, 4500);
+        await record();
+        const before = await field();
+        const openedByClick = await cdp.clickAt(`document.querySelector('[data-testid="date-range"] input[data-range-end="from"]')`);
+        await sleep(700);
+        const calendar = await cdp.evaluate(`!!document.querySelector('.mantine-DatePicker-day')`);
+        /* to last month: the calendar opens on the month of the current start (or today), so step back until the header says it */
+        const wantHeader = new Date(Date.UTC(+lm.slice(0, 4), +lm.slice(5) - 1, 1)).toLocaleString('en', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+        for (let i = 0; i < 14; i++) {
+          const h = await cdp.evaluate(`document.querySelector('.mantine-DatePicker-calendarHeaderLevel')?.textContent ?? ''`);
+          if (h === wantHeader) break;
+          const dir = new Date(h + ' 1 UTC') > new Date(wantHeader + ' 1 UTC') ? 'previous' : 'next';
+          await cdp.clickAt(`document.querySelector('.mantine-DatePicker-calendarHeaderControl[data-direction="${dir}"]')`); await sleep(350);
+        }
+        await cdp.clickAt(dayCell(1)); await sleep(500);
+        const mid = await cdp.evaluate(`({ open: !!document.querySelector('.mantine-DatePicker-day'), first: document.querySelectorAll('.mantine-DatePicker-day[data-first-in-range]').length })`);
+        await cdp.hover(dayCell(9)); await sleep(300);
+        const hoverRange = await cdp.evaluate(`document.querySelectorAll('.mantine-DatePicker-day[data-in-range]').length`);
+        await cdp.clickAt(dayCell(15)); await sleep(800);
+        /* the Daily page reloads on an explicit Apply (so the grid never moves under somebody still choosing) */
+        await cdp.clickAt(`[...document.querySelectorAll('.filter-bar button, .filter-field button')].find((b) => b.textContent.trim() === 'Apply')`);
+        await sleep(3200);
+        const picked = await field();
+        const url = await cdp.evaluate(`location.search`);
+        const requested = await cdp.evaluate(`(window.__qaUrls ?? []).filter((u) => u.includes(${JSON.stringify(apiPart)}) && u.includes('${F}') && u.includes('${T}')).length`);
+        const dates = await gridDates();
+        /* an overnight shift's clock-out is written with the next day's date: that belongs to the 15th */
+        const outside = dates.filter((d) => d < F || d > nextDay);
+        await cdp.screenshot(`range-${name}`);
+        await cdp.navigate(`${WEB}${path}${url}`, 4500);
+        const reloaded = await field();
+        const ok = openedByClick && calendar && mid.open && hoverRange >= 8 && picked?.from === F && picked?.to === T && url.includes(`from=${F}`) && url.includes(`to=${T}`) && requested > 0 && outside.length === 0 && reloaded?.from === F && reloaded?.to === T;
+        check(`UI-A-${name}`, `${path}: clicking the period opens the calendar; 01–15 of last month is picked with the hover preview; the field, the URL, the request and the grid follow; a reload keeps it`,
+          `calendar opens; after the 1st click it stays open with a draft and the hover paints the range; field = ${F}..${T}; URL ?from=${F}&to=${T}; a request for that range; every grid date inside it; the same after reload`,
+          `before=${before?.from}..${before?.to} calendar=${calendar} afterFirstClick={open:${mid.open},hoverInRange:${hoverRange}} field=${picked?.from}..${picked?.to} [${picked?.texts.join(' – ')}] url="${url}" requests=${requested} gridDates=${dates.length} outside=[${outside.slice(0, 4).join(',')}] afterReload=${reloaded?.from}..${reloaded?.to}`, ok);
+      }
+
+      /* typing, the shortcuts, the X, and Arabic — once, on the exit-variances page (the one that could not be changed at all) */
+      await cdp.navigate(`${WEB}/attendance/exit-variances?from=${F}&to=${T}`, 4500);
+      const toInput = `document.querySelector('[data-testid="date-range"] input[data-range-end="to"]')`;
+      await cdp.clickAt(toInput); await sleep(400);
+      await cdp.evaluate(`${toInput}.select(); 'ok'`);
+      const typedText = `10/${lm.slice(5)}/${lm.slice(0, 4)}`;
+      await cdp.type(typedText); await cdp.key('Enter', 13); await sleep(2500);
+      const typed = await field();
+      const typedUrl = await cdp.evaluate(`location.search`);
+      await cdp.evaluate(`${toInput}.select(); 'ok'`);
+      await cdp.type('31/02/2026'); await cdp.key('Enter', 13); await sleep(800);
+      const nonsense = await cdp.evaluate(`({ to: document.querySelector('[data-testid="date-range"]').dataset.to, invalid: document.querySelector('[data-testid="date-range"]').dataset.invalid ?? null })`);
+      await cdp.key('Escape', 27); await sleep(500);
+      check('UI-A-typing', 'a date can be typed into either end: DD/MM/YYYY + Enter applies it and writes the URL; a day that does not exist (31/02) is refused and changes nothing',
+        `to = ${lm}-10 in the field and the URL; 31/02/2026 marked invalid, the range untouched`,
+        `typed "${typedText}" -> ${typed?.from}..${typed?.to} url="${typedUrl}"; "31/02/2026" -> to=${nonsense.to} invalid=${nonsense.invalid}`,
+        typed?.from === F && typed?.to === `${lm}-10` && typedUrl.includes(`to=${lm}-10`) && nonsense.to === `${lm}-10` && nonsense.invalid === 'to');
+
+      const preset = async (p) => { await cdp.clickAt(`document.querySelector('[data-testid="date-range"] input[data-range-end="from"]')`); await sleep(600); const okClick = await cdp.clickAt(`document.querySelector('[data-preset="${p}"]')`); await sleep(2200); return okClick ? field() : null; };
+      const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Beirut' }).format(new Date());
+      const minus6 = sql(`SELECT CONVERT(CHAR(10), DATEADD(DAY, -6, CAST('${today}' AS DATE)), 23)`);
+      const lastMonthEnd = sql(`SELECT CONVERT(CHAR(10), EOMONTH('${F}'), 23)`);
+      const thisMonthEnd = sql(`SELECT CONVERT(CHAR(10), EOMONTH('${today}'), 23)`);
+      const p7 = await preset('last7Days');
+      const pLast = await preset('lastMonth');
+      const customShown = await (async () => { await cdp.clickAt(`document.querySelector('[data-testid="date-range"] input[data-range-end="from"]')`); await sleep(600); const v = await cdp.evaluate(`[...document.querySelectorAll('[data-preset]')].map((b) => b.dataset.preset + (b.dataset.active ? '*' : '')).join(',')`); await cdp.key('Escape', 27); await sleep(400); return v; })();
+      const hasReset = await cdp.evaluate(`!!document.querySelector('[data-range-clear]')`);
+      await cdp.clickAt(`document.querySelector('[data-range-clear]')`); await sleep(2200);
+      const reset = await field();
+      const resetUrl = await cdp.evaluate(`location.search`);
+      check('UI-A-presets', 'the shortcuts "This month", "Last month", "Last 7 days", "Custom" are offered and apply; the X goes back to the page default',
+        `last7Days = ${minus6}..${today}; lastMonth = ${F}..${lastMonthEnd} (marked active); X -> this month ${today.slice(0, 8)}01..${thisMonthEnd} (the URL drops the range or carries the default)`,
+        `last7Days=${p7?.from}..${p7?.to} lastMonth=${pLast?.from}..${pLast?.to} offered=[${customShown}] resetButton=${hasReset} afterX=${reset?.from}..${reset?.to} url="${resetUrl}"`,
+        p7?.from === minus6 && p7?.to === today && pLast?.from === F && pLast?.to === lastMonthEnd && customShown === 'thisMonth,lastMonth*,last7Days,custom' && hasReset
+          && reset?.from === `${today.slice(0, 8)}01` && reset?.to === thisMonthEnd && (!/from=|to=/.test(resetUrl) || resetUrl.includes(`from=${today.slice(0, 8)}01`)));
+
+      /* Arabic: the page is RTL, the field still opens, picks and writes the URL; the dates themselves stay left-to-right */
+      const ownerUserId = +sql(`SELECT UserId FROM security.[USER] WHERE Username = N'qa2.owner'`);
+      await cdp.evaluate(`localStorage.setItem('lang:${ownerUserId}', 'ar'); 'ok'`);
+      await cdp.navigate(`${WEB}/attendance/exit-variances`, 5000);
+      const dir = await cdp.evaluate(`document.documentElement.dir`);
+      await cdp.clickAt(`document.querySelector('[data-testid="date-range"] input[data-range-end="from"]')`); await sleep(700);
+      const arPresets = await cdp.evaluate(`[...document.querySelectorAll('[data-preset]')].map((b) => b.textContent.trim()).join(' | ')`);
+      await cdp.clickAt(`document.querySelector('[data-preset="lastMonth"]')`); await sleep(2200);
+      await cdp.clickAt(`document.querySelector('[data-testid="date-range"] input[data-range-end="from"]')`); await sleep(700);
+      await cdp.clickAt(dayCell(1)); await sleep(400);
+      await cdp.clickAt(dayCell(15)); await sleep(2500);
+      const ar = await field();
+      const arUrl = await cdp.evaluate(`location.search`);
+      const inputDir = await cdp.evaluate(`document.querySelector('[data-testid="date-range"] input').dir`);
+      await cdp.screenshot('range-arabic');
+      await cdp.evaluate(`localStorage.removeItem('lang:${ownerUserId}'); 'ok'`);
+      check('UI-A-rtl', 'in Arabic the page is right-to-left and the field works the same: shortcuts in Arabic, 01–15 picked in the calendar, URL written; the digits stay left-to-right',
+        `dir=rtl; field = ${F}..${T}; URL carries it; inputs dir=ltr`, `dir=${dir} presets="${arPresets}" field=${ar?.from}..${ar?.to} url="${arUrl}" inputDir=${inputDir}`,
+        dir === 'rtl' && ar?.from === F && ar?.to === T && arUrl.includes(`from=${F}`) && inputDir === 'ltr' && /الشهر الماضي/.test(arPresets));
+      await cdp.navigate(`${WEB}/attendance/exit-variances`, 3000);
+    }
     ws.close();
   } finally {
     chrome.kill('SIGKILL');
