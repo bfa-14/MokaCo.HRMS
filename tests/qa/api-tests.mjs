@@ -157,7 +157,12 @@ async function phase1() {
       'rows > 0, 0 of another branch, fewer than the unscoped call', `manager rows=${r[0]} otherBranch=${r[1]} unscoped=${r[2]}`, r[0] > 0 && r[1] === 0 && r[2] > r[0]);
     const hygiene = sql(`SELECT CONCAT((SELECT COUNT(*) FROM security.ROLE_PERMISSION rp JOIN security.[ROLE] r ON r.RoleId = rp.RoleId JOIN security.PERMISSION p ON p.PermissionId = rp.PermissionId
         WHERE r.Name = N'Employee' AND p.Code IN ('REQUEST_RAISE_OTHERS', 'REQUEST_VIEW_ALL', 'WORKFLOW_CONFIGURE')), '|', (SELECT SettingValue FROM core.SETTING WHERE SettingKey = 'AllowSystemReset'))`);
-    check('X4l', 'role hygiene: the Employee role holds none of REQUEST_RAISE_OTHERS / REQUEST_VIEW_ALL / WORKFLOW_CONFIGURE, and AllowSystemReset is 0', '0|0', hygiene, hygiene === '0|0');
+    /* The ROLE is what script 87 fixed and what must stay fixed. AllowSystemReset is the owner's own switch on the
+       Settings page: script 87 disarmed it, and re-arming it is a deliberate act by whoever holds SETTING_MANAGE — a
+       suite must not go red because the owner used it. It is reported, with who and when, not judged. */
+    check('X4l', 'role hygiene: the Employee role holds none of REQUEST_RAISE_OTHERS / REQUEST_VIEW_ALL / WORKFLOW_CONFIGURE', '0 of the three', hygiene.split('|')[0], hygiene.split('|')[0] === '0');
+    if (hygiene.split('|')[1] !== '0')
+      note(`X4l: AllowSystemReset = ${hygiene.split('|')[1]} — the system reset is ARMED. ${sql(`SELECT CONCAT('Set by ', ISNULL(u.Username, '?'), ' at ', CONVERT(VARCHAR(19), s.ModifiedAt, 120), ' UTC') FROM core.SETTING s LEFT JOIN security.[USER] u ON u.UserId = s.ModifiedBy WHERE s.SettingKey = 'AllowSystemReset'`)}. Script 87 had set it to 0; turn it off again in Settings → Danger zone when the reset is no longer wanted.`);
   }
   const opsPayroll = await api('qa.ops', 'GET', '/api/payroll/runs');
   check('X4b', 'an Operations Manager gets 403 on GET /api/payroll/runs (no PAYROLL_* permission)', '403', `${opsPayroll.status} body=${opsPayroll.text.slice(0, 80) || '(empty)'}`, opsPayroll.status === 403);

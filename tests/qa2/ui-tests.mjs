@@ -331,6 +331,118 @@ async function main() {
         dir === 'rtl' && ar?.from === F && ar?.to === T && arUrl.includes(`from=${F}`) && inputDir === 'ltr' && /الشهر الماضي/.test(arPresets));
       await cdp.navigate(`${WEB}/attendance/exit-variances`, 3000);
     }
+
+    /* =====================================================================================================
+       BUG B — "after the owner signs, the roster is not activated". Driven exactly as people do it: HR submits the
+       month from the roster page; the branch manager, HR and the owner each open the request, choose Approve in the
+       Decide dialog and sign with their password. What was wrong: the database WAS right (request Approved,
+       ROSTER_APPROVAL.AppliedAt set, month Approved) — the roster page left open never re-read the month, so it said
+       "Waiting for approval" and stayed read-only until somebody reloaded; nothing announced the approval; and a
+       login with no employee (an owner's / admin's account) got no approval banner at all.
+       The HR roster page stays OPEN in a first tab through all three approvals, which happen in a second tab.
+       ===================================================================================================== */
+    {
+      const month = sql(`SELECT CONVERT(CHAR(7), DATEADD(MONTH, 2, CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Middle East Standard Time' AS DATE)), 23)`);   // beyond the months the seed approves
+      const monthName = new Date(Date.UTC(+month.slice(0, 4), +month.slice(5) - 1, 1)).toLocaleString('en', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+      const B1 = +sql(`SELECT BranchId FROM hr.BRANCH WHERE Name = N'QA2 Branch 1'`);
+      const e1 = +sql(`SELECT dbo.QA2_Emp(N'E1')`);
+      const evening = +sql(`SELECT ShiftId FROM attendance.SHIFT WHERE Name = N'QA2 Evening'`);
+      const hrLogin = await login('qa2.hr');
+      /* E1 normally works the Morning shift; the roster being approved puts them on the EVENING shift on the 5th–7th, so "attendance used the approved roster" can be told from "attendance used the usual pattern" */
+      for (const d of ['05', '06', '07'])
+        await fetch(`${API}/api/roster/day`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${hrLogin.accessToken}` }, body: JSON.stringify({ employeeId: e1, workDate: `${month}-${d}`, shiftId: evening, isRestDay: false }) });
+
+      const bannerOf = (tab) => tab.evaluate(`(document.querySelector('input[aria-label="Branch"]')?.closest('.card'))?.innerText.replace(/\\n+/g, ' | ').slice(0, 260) ?? null`);
+      const sessionIn = async (tab, user) => { const t = await login(user); await tab.navigate(`${WEB}/login`, 2500); await tab.evaluate(`sessionStorage.setItem('mokaco.accessToken', ${JSON.stringify(t.accessToken)}); sessionStorage.setItem('mokaco.refreshToken', ${JSON.stringify(t.refreshToken)}); 'ok'`); };
+
+      /* tab A — HR, the roster page, QA2 Branch 1 */
+      const tabA = cdp;
+      await sessionIn(tabA, 'qa2.hr');
+      await tabA.evaluate(`localStorage.setItem('mokaco.roster.branch.qa2.hr', '${B1}'); 'ok'`);
+      await tabA.navigate(`${WEB}/attendance/roster?period=${month}`, 5000);
+      const beforeSubmit = await bannerOf(tabA);
+      await tabA.clickAt(`[...document.querySelectorAll('button')].find((b) => /submit month for approval/i.test(b.textContent))`);
+      await sleep(3500);
+      const rid = +sql(`SELECT ISNULL((SELECT TOP 1 ra.RequestInstanceId FROM workflow.ROSTER_APPROVAL ra JOIN workflow.REQUEST_INSTANCE ri ON ri.RequestInstanceId = ra.RequestInstanceId WHERE ra.BranchId = ${B1} AND ra.MonthDate = '${month}-01' AND ri.[Status] = 'Pending' ORDER BY 1 DESC), 0)`);
+      await tabA.navigate(`${WEB}/attendance/roster?period=${month}`, 5000);      // submitting opens the request; HR goes back to the roster and leaves it open
+      const waiting = await bannerOf(tabA);
+      check('UI-B1', 'HR submits the month from the roster page ("Submit month for approval"); the page then says it is waiting, with the request number',
+        `a Pending ROSTER_APPROVAL request for QA2 Branch 1 / ${month}; banner "Waiting for approval — request #<id>"`,
+        `before="${(beforeSubmit ?? '').slice(0, 70)}" request=${rid} banner="${(waiting ?? '').slice(0, 90)}"`, rid > 0 && new RegExp(`Waiting for approval — request #${rid}`).test(waiting ?? ''));
+
+      /* tab B — the three approvers, each through the Decide dialog, signing with the password */
+      const t2 = await (await fetch(`http://127.0.0.1:${PORT}/json/new?about:blank`, { method: 'PUT' })).json();
+      const ws2 = new WebSocket(t2.webSocketDebuggerUrl); await new Promise((res) => (ws2.onopen = res));
+      const tabB = new Cdp(ws2); await tabB.send('Page.enable'); await tabB.send('Runtime.enable');
+      await tabB.send('Emulation.setDeviceMetricsOverride', { width: 1366, height: 900, deviceScaleFactor: 1, mobile: false });
+      const steps = [];
+      let approverToast = '';
+      for (const user of ['qa2.manager', 'qa2.hr', 'qa2.owner']) {
+        await sessionIn(tabB, user);
+        await tabB.navigate(`${WEB}/requests/${rid}`, 4500);
+        const opened = await tabB.clickAt(`[...document.querySelectorAll('button')].find((b) => /^(decide|finish decision)$/i.test(b.textContent.trim()))`);
+        await sleep(2000);
+        await tabB.clickAt(`[...document.querySelectorAll('[role="dialog"] input')].find((i) => i.getAttribute('aria-haspopup') === 'listbox')`);
+        await sleep(700);
+        const picked = await tabB.evaluate(`(() => { const i = [...document.querySelectorAll('[role="dialog"] input')].find((x) => x.getAttribute('aria-haspopup') === 'listbox'); const box = document.getElementById(i?.getAttribute('aria-controls') ?? ''); const o = [...(box ?? document).querySelectorAll('[role="option"]')].find((e) => /^approve/i.test(e.textContent.trim())); if (!o) return 'no Approve option'; o.click(); return 'Approve'; })()`);
+        await sleep(700);
+        await tabB.clickAt(`document.querySelector('[role="dialog"] textarea')`); await sleep(200); await tabB.type(`QA2 ${user} signs the roster`);
+        await tabB.clickAt(`document.querySelector('#wf-decide-pw')`); await sleep(200); await tabB.type(PW);
+        await sleep(300);
+        await tabB.clickAt(`[...document.querySelectorAll('[role="dialog"] button')].find((b) => /^sign and approve/i.test(b.textContent.trim()))`);
+        await sleep(1800);
+        approverToast = await tabB.evaluate(`[...document.querySelectorAll('.mantine-Notification-root')].map((n) => n.textContent).join(' || ')`);
+        await sleep(2200);
+        const err = await tabB.evaluate(`[...document.querySelectorAll('[role="dialog"] .alert--error')].map((e) => e.textContent).join(';')`);
+        steps.push(`${user}: ${opened ? picked : 'no Decide button'}${err ? ' ERROR ' + err : ''} -> ${sql(`SELECT CONCAT([Status], ' step ', ISNULL(CAST(CurrentStepNo AS VARCHAR(5)), '-')) FROM workflow.REQUEST_INSTANCE WHERE RequestInstanceId = ${rid}`)}`);
+      }
+      const db = sql(`SELECT CONCAT(ri.[Status], '|', CASE WHEN ra.AppliedAt IS NULL THEN 'AppliedAt NULL' ELSE 'AppliedAt set' END, '|', (SELECT rm.[Status] FROM attendance.ROSTER_MONTH rm WHERE rm.BranchId = ra.BranchId AND rm.MonthDate = ra.MonthDate), '|',
+        (SELECT COUNT(*) FROM workflow.WORKFLOW_SIGNATURE ws WHERE ws.RequestInstanceId = ri.RequestInstanceId))
+        FROM workflow.ROSTER_APPROVAL ra JOIN workflow.REQUEST_INSTANCE ri ON ri.RequestInstanceId = ra.RequestInstanceId WHERE ra.RequestInstanceId = ${rid}`);
+      check('UI-B2', 'manager, HR and owner each approve in the Decide dialog, signing with the password; the LAST signature activates the roster in the database',
+        'three steps move on; then Approved | AppliedAt set | month Approved | the signatures of the three approvers on record (the submission is signed too); the owner is told the roster is now active',
+        `${steps.join(' ; ')} ; db=${db} ; owner's toast="${approverToast.slice(0, 120)}"`,
+        /^Approved\|AppliedAt set\|Approved\|\d+$/.test(db) && +db.split('|')[3] >= 3 && /active roster/i.test(approverToast));
+
+      /* back to the tab HR left open: NO reload, only coming back to it */
+      await tabA.send('Page.bringToFront');
+      await sleep(4500);
+      const stale = await bannerOf(tabA);
+      const toast = await tabA.evaluate(`[...document.querySelectorAll('.mantine-Notification-root')].map((n) => n.textContent).join(' || ')`);
+      const locked = await tabA.evaluate(`/read-only until they decide/i.test(document.body.innerText)`);
+      await tabA.screenshot('roster-approved-without-reload');
+      check('UI-B3', 'the roster page that was OPEN the whole time shows the month as approved without a reload, says so in a toast, and is no longer read-only',
+        `banner "${monthName} is approved."; toast "Roster for ${monthName} approved — QA2 Branch 1…"; no "read-only until they decide"`,
+        `banner="${(stale ?? '').slice(0, 80)}" toast="${toast.slice(0, 110)}" stillLocked=${locked}`,
+        new RegExp(`${monthName} is approved`).test(stale ?? '') && new RegExp(`Roster for ${monthName} approved`).test(toast) && !locked);
+
+      /* the owner's login has no employee, hence no branch of its own: it used to get no approval banner at all */
+      await sessionIn(tabB, 'qa2.owner');
+      await tabB.evaluate(`localStorage.removeItem('mokaco.roster.branch.qa2.owner'); 'ok'`);
+      await tabB.navigate(`${WEB}/attendance/roster?period=${month}`, 5000);
+      const ownerBanner = await bannerOf(tabB);
+      await tabB.evaluate(`localStorage.setItem('mokaco.roster.branch.qa2.owner', '${B1}'); 'ok'`);
+      await tabB.navigate(`${WEB}/attendance/roster?period=${month}`, 5000);
+      const ownerB1 = await bannerOf(tabB);
+      await tabB.evaluate(`localStorage.removeItem('mokaco.roster.branch.qa2.owner'); 'ok'`);
+      check('UI-B4', 'the owner (a login with no employee, so no branch of its own) gets the approval banner too, and sees the month approved once the branch is chosen',
+        `a banner with no branch chosen; "${monthName} is approved." for QA2 Branch 1`, `noBranch="${(ownerBanner ?? 'NO BANNER').slice(0, 60)}" branch1="${(ownerB1 ?? 'NO BANNER').slice(0, 60)}"`,
+        ownerBanner != null && new RegExp(`${monthName} is approved`).test(ownerB1 ?? ''));
+
+      /* ATTENDANCE USES THE APPROVED ROSTER. E1 punches 15:25–23:00 on the 5th: measured against the approved EVENING
+         shift that is 25 minutes late on a full day; against E1's usual Morning shift it would be something else
+         entirely. The 8th is not on the approved roster: punches there make no attendance record (rule 3). */
+      sql(`DECLARE @d5 DATETIME2(0) = '${month}-05', @d8 DATETIME2(0) = '${month}-08', @i DATETIME2(0), @o DATETIME2(0);
+           SET @i = DATEADD(MINUTE, 925, @d5); SET @o = DATEADD(MINUTE, 1380, @d5); EXEC dbo.QA2_Punch ${e1}, @i, 0; EXEC dbo.QA2_Punch ${e1}, @o, 1;
+           SET @i = DATEADD(MINUTE, 925, @d8); SET @o = DATEADD(MINUTE, 1380, @d8); EXEC dbo.QA2_Punch ${e1}, @i, 0; EXEC dbo.QA2_Punch ${e1}, @o, 1;
+           EXEC dbo.QA2_Process;`);
+      const att = sql(`SELECT CONCAT(ISNULL((SELECT CONCAT(a.[Status], ' late=', a.LateMinutes, ' anomalyShiftStart=', ISNULL((SELECT TOP 1 CONVERT(CHAR(5), CAST(an.ShiftStartUtc AS TIME), 108) FROM attendance.ATTENDANCE_ANOMALY an WHERE an.AttendanceId = a.AttendanceId AND an.[Type] = 'LateArrival'), '-'))
+             FROM attendance.ATTENDANCE_RECORD a WHERE a.EmployeeId = ${e1} AND a.WorkDate = '${month}-05'), 'no record'), ' | 8th: ',
+             (SELECT COUNT(*) FROM attendance.ATTENDANCE_RECORD a WHERE a.EmployeeId = ${e1} AND a.WorkDate = '${month}-08'), ' record(s)')`);
+      check('UI-B5', 'attendance processing measures the day against the APPROVED roster: E1, on the Evening shift by that roster, punches 15:25–23:00 on the 5th; the 8th is not rostered',
+        'Present late=25 anomalyShiftStart=15:00 | 8th: 0 record(s)', att, /^Present late=25 anomalyShiftStart=15:00 \| 8th: 0 record/.test(att));
+      ws2.close();
+    }
     ws.close();
   } finally {
     chrome.kill('SIGKILL');

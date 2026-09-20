@@ -41,7 +41,13 @@ fi
 if [ -f "$QA2/ui-tests.mjs" ]; then
   step "$n. WEB (part E)"
   if curl -s -m 3 -o /dev/null "${QA_API:-http://localhost:5078}/health"; then
-    node "$QA2/ui-tests.mjs" 2>&1 | tee -a "$FULL" | grep -E "^(PASS|FAIL|NOTE) \|" | tee -a "$LOG"
+    # A web stage that cannot even start (a syntax error, a missing module) must not read as "nothing to report".
+    if node --check "$QA2/ui-tests.mjs" 2>>"$FULL"; then
+      node "$QA2/ui-tests.mjs" 2>&1 | tee -a "$FULL" | grep -E "^(PASS|FAIL|NOTE) \|" | tee -a "$LOG"
+    else
+      echo "FAIL | UI-0 | tests/qa2/ui-tests.mjs does not parse - the WEB stage did not run (see last-run.full.log)" | tee -a "$LOG" "$FULL"
+      $SQL -Q "EXEC dbo.QA2_Check N'UI-0', N'the WEB stage script parses and runs', N'node --check passes', N'syntax error - stage not run', 0" >/dev/null 2>&1
+    fi
   else
     echo "NOTE | WEB stage skipped: ${QA_API:-http://localhost:5078} is not reachable" | tee -a "$LOG" "$FULL"
   fi
