@@ -5,6 +5,7 @@ using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
 using MokaCo.HRMS.Api.Auth;
@@ -512,6 +513,19 @@ if (mpgsOptions.SendsThreeDsBypass)
 // stack trace or SQL text from an API route. The empty lambda is deliberate — ApiExceptionHandler
 // always writes the response, so there is no fallback branch to configure.
 app.UseExceptionHandler(_ => { });
+
+// BEHIND NGINX EVERY CONNECTION ARRIVES FROM 127.0.0.1, and two things in this file read the
+// connection's address as the caller's identity: the public-booking rate limiter partitions by it
+// (without this, every website visitor shares one five-bookings-a-minute bucket, and the sixth
+// person is refused for the first one's bookings), and the HTTPS redirect judges the scheme by it.
+// This swaps in X-Forwarded-For and X-Forwarded-Proto — but only when the connection itself comes
+// from a loopback address, which is what the default KnownNetworks/KnownProxies restrict it to. A
+// caller reaching Kestrel directly cannot forge its own address with a header, and a deployment
+// without a proxy in front is simply unchanged, because nothing sets these headers there.
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+});
 
 if (app.Environment.IsDevelopment())
 {
