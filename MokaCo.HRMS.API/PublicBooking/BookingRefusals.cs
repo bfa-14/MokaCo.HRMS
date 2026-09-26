@@ -37,6 +37,15 @@ public static class BookingRefusals
         if (Contains(text, "hold has expired") || Contains(text, "hold was released") || Contains(text, "has been released"))
             return (StatusCodes.Status409Conflict, "hold_expired");
 
+        if (Starts(text, "This booking is not waiting for a payment"))
+            return (StatusCodes.Status409Conflict, "not_pending");
+
+        if (Starts(text, "This booking has already been paid"))
+            return (StatusCodes.Status409Conflict, "already_paid");
+
+        if (Starts(text, "There is no deposit to pay"))
+            return (StatusCodes.Status409Conflict, "nothing_due");
+
         if (Starts(text, "Online cancellation closes"))
             return (StatusCodes.Status409Conflict, "cancel_window");
 
