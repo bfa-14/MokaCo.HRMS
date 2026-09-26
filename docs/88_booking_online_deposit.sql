@@ -155,9 +155,10 @@ GO
    Only a Pending WEBSITE booking whose hold has not run out. Stamps HoldExpiresUtc = now +
    BookingHoldMinutes and PaymentOpenedUtc = now, and sets the gateway order id to the reference.
    Calling it again for the same reference is allowed (a new checkout session on the SAME order):
-   the hold is re-stamped and PreviousOpenedUtc tells the API a session was opened before, so it
-   asks the gateway first whether that one was paid. THE AMOUNT IS THE ROW'S DepositDue, priced by
-   usp_Booking_Create exactly as usp_Booking_Quote prices it; the caller never supplies it. */
+   the hold is re-stamped. The API asks the gateway about the earlier session BEFORE calling this
+   again (a paid or still-unconfirmed session must not be followed by a second one);
+   PreviousOpenedUtc echoes when that earlier session was opened. THE AMOUNT IS THE ROW'S DepositDue,
+   priced by usp_Booking_Create exactly as usp_Booking_Quote prices it; the caller never supplies it. */
 CREATE OR ALTER PROCEDURE booking.usp_Booking_StartPayment
     @Ref VARCHAR(12)
 AS BEGIN
@@ -335,7 +336,9 @@ GO
 /* ---- 8. The gateway was asked -------------------------------------------------------------
    Stamps PaymentCheckedUtc. @KeepHold = 1 (the answer was "not settled yet") also pushes the hold
    out to at least now + BookingHoldMinutes, so that while the gateway cannot say, the slot is NOT
-   offered to somebody else — every availability query frees a Pending hold whose clock ran out. */
+   offered to somebody else — every availability query frees a Pending hold whose clock ran out.
+   ONLY A BOOKING WHOSE PAYMENT WAS OPENED is touched: a hold must never be put on a booking that
+   had none (a request taken without a deposit), or the expiry sweep would later cancel it. */
 CREATE OR ALTER PROCEDURE booking.usp_Booking_PaymentChecked
     @Ref VARCHAR(12), @KeepHold BIT = 0
 AS BEGIN SET NOCOUNT ON;
@@ -349,7 +352,8 @@ AS BEGIN SET NOCOUNT ON;
         HoldExpiresUtc = CASE WHEN @KeepHold = 1 AND [Status] = 'Pending'
                                    AND (HoldExpiresUtc IS NULL OR HoldExpiresUtc < @Until)
                               THEN @Until ELSE HoldExpiresUtc END
-    WHERE BookingRef = @Ref;
+    WHERE BookingRef = @Ref
+      AND PaymentOpenedUtc IS NOT NULL;
 
     SELECT BookingRef, [Status], HoldExpiresUtc, PaymentCheckedUtc FROM booking.BOOKING WHERE BookingRef = @Ref;
 END;

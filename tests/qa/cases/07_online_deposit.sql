@@ -10,6 +10,9 @@
        and still cancels a lapsed hold nobody tried to pay (@ReturnRows = 1 contract of script 80)
    D5  usp_Booking_ListPaymentsToReconcile lists the opened, unsettled one and not the paid one
    D6  paying an already-paid booking is refused ('already been paid' → 409 already_paid)
+   D7  a staff payment alert is queued once per booking per kind, however often it is asked for
+   D8  "keep the hold" never puts a hold on a booking whose payment was never opened (a request
+       taken without a deposit would otherwise be handed to the expiry sweep)
 
    Everything runs inside ONE transaction that is rolled back: the three throw-away bookings (on
    2099-06-15, a Monday), their payment line and the outbox rows the triggers write never persist.
@@ -26,7 +29,11 @@ IF @Room IS NULL
 DECLARE @Day DATE = '2099-06-15';
 DECLARE @a1 NVARCHAR(600) = N'not run', @p1 BIT = 0, @a2 NVARCHAR(600) = N'not run', @p2 BIT = 0,
         @a3 NVARCHAR(600) = N'not run', @p3 BIT = 0, @a4 NVARCHAR(600) = N'not run', @p4 BIT = 0,
-        @a5 NVARCHAR(600) = N'not run', @p5 BIT = 0, @a6 NVARCHAR(600) = N'not run', @p6 BIT = 0;
+        @a5 NVARCHAR(600) = N'not run', @p5 BIT = 0, @a6 NVARCHAR(600) = N'not run', @p6 BIT = 0,
+        @a7 NVARCHAR(600) = N'not run', @p7 BIT = 0, @a8 NVARCHAR(600) = N'not run', @p8 BIT = 0;
+DECLARE @chk TABLE (BookingRef VARCHAR(12), [Status] VARCHAR(12), HoldExpiresUtc DATETIME2, PaymentCheckedUtc DATETIME2);
+DECLARE @HasNotify BIT = CASE WHEN NULLIF(LTRIM(RTRIM((SELECT SettingValue FROM core.SETTING WHERE SettingKey = 'BookingNotifyEmail'))), N'') IS NULL THEN 0 ELSE 1 END;
+DECLARE @q TABLE (Seq INT IDENTITY(1,1), Queued BIT);
 DECLARE @HoldMin INT = ISNULL(TRY_CAST((SELECT SettingValue FROM core.SETTING WHERE SettingKey = 'BookingHoldMinutes') AS INT), 15);
 
 DECLARE @made TABLE (BookingId INT, BookingRef VARCHAR(12), TotalAmount DECIMAL(10,2), DepositDue DECIMAL(10,2), DepositPercent DECIMAL(5,2), CurrencyCode CHAR(3), [Status] VARCHAR(12), Hours DECIMAL(6,2), RoomName NVARCHAR(80), RoomId INT, DiscountPercent DECIMAL(5,2), DiscountAmount DECIMAL(10,2));
@@ -85,6 +92,12 @@ BEGIN TRY
         SET @p3 = CASE WHEN ERROR_NUMBER() IN (2601, 2627) AND ERROR_MESSAGE() LIKE '%UX_BOOKING_PAYMENT_GatewayOrder%' THEN 1 ELSE 0 END;
     END CATCH;
 
+    /* D8: C has no hold and no payment opened */
+    INSERT INTO @chk EXEC booking.usp_Booking_PaymentChecked @Ref = @RefC, @KeepHold = 1;
+    SELECT @a8 = CONCAT('hold=', CASE WHEN HoldExpiresUtc IS NULL THEN 'NULL' ELSE 'set' END, ' checked=', CASE WHEN PaymentCheckedUtc IS NULL THEN 'NULL' ELSE 'set' END),
+           @p8 = CASE WHEN HoldExpiresUtc IS NULL AND PaymentCheckedUtc IS NULL THEN 1 ELSE 0 END
+    FROM booking.BOOKING WHERE BookingId = @BidC;
+
     /* D4: B's hold lapsed while its payment was open; C's lapsed with no payment ever opened */
     UPDATE booking.BOOKING SET HoldExpiresUtc = DATEADD(MINUTE, -1, SYSUTCDATETIME()), PaymentOpenedUtc = DATEADD(MINUTE, -20, SYSUTCDATETIME()), GatewayOrderId = BookingRef WHERE BookingId = @BidB;
     UPDATE booking.BOOKING SET HoldExpiresUtc = DATEADD(MINUTE, -1, SYSUTCDATETIME()) WHERE BookingId = @BidC;
@@ -102,6 +115,15 @@ BEGIN TRY
     SET @a5 = CONCAT('B ', CASE WHEN EXISTS (SELECT 1 FROM @rc WHERE BookingId = @BidB) THEN 'listed' ELSE 'not listed' END,
                      '; A(paid) ', CASE WHEN EXISTS (SELECT 1 FROM @rc WHERE BookingId = @BidA) THEN 'listed' ELSE 'not listed' END);
     SET @p5 = CASE WHEN EXISTS (SELECT 1 FROM @rc WHERE BookingId = @BidB) AND NOT EXISTS (SELECT 1 FROM @rc WHERE BookingId = @BidA) THEN 1 ELSE 0 END;
+
+    /* D7: the unconfirmed-payment alert for B, asked for twice */
+    INSERT INTO @q (Queued) EXEC booking.usp_Booking_QueuePaymentAlert @BookingId = @BidB, @Kind = 'PayUnconfirmed', @Detail = N'QA check';
+    INSERT INTO @q (Queued) EXEC booking.usp_Booking_QueuePaymentAlert @BookingId = @BidB, @Kind = 'PayUnconfirmed', @Detail = N'QA check';
+    SELECT @n = COUNT(*) FROM core.EMAIL_OUTBOX WHERE BookingId = @BidB AND MailKind = 'PayUnconfirmed' AND Channel = 'Email';
+    SET @a7 = CONCAT('queued=', (SELECT STRING_AGG(CAST(Queued AS CHAR(1)), ',') WITHIN GROUP (ORDER BY Seq) FROM @q), ' rows=', @n,
+                     CASE WHEN @HasNotify = 0 THEN ' (BookingNotifyEmail empty)' ELSE '' END);
+    SET @p7 = CASE WHEN @HasNotify = 1 AND @a7 = 'queued=1,0 rows=1' THEN 1
+                   WHEN @HasNotify = 0 AND @a7 LIKE 'queued=0,0 rows=0%' THEN 1 ELSE 0 END;
 
     /* D6: last, a refusal */
     BEGIN TRY
@@ -123,5 +145,7 @@ EXEC dbo.QA_Check 'D2', 'replay: usp_Booking_ConfirmOnlinePayment twice for the 
 EXEC dbo.QA_Check 'D3', 'a second payment line for the same gateway order is refused by UX_BOOKING_PAYMENT_GatewayOrder even when inserted directly', 'refused: error 2601 on UX_BOOKING_PAYMENT_GatewayOrder', @a3, @p3;
 EXEC dbo.QA_Check 'D4', 'usp_Booking_ExpireHolds leaves a lapsed hold with PaymentOpenedUtc set to the reconciliation job, and still cancels a lapsed hold nobody tried to pay', 'B(payment opened)=Pending not listed; C(never opened)=Cancelled listed', @a4, @p4;
 EXEC dbo.QA_Check 'D5', 'usp_Booking_ListPaymentsToReconcile lists an opened, unsettled payment and not a paid one', 'B listed; A(paid) not listed', @a5, @p5;
+EXEC dbo.QA_Check 'D7', 'usp_Booking_QueuePaymentAlert queues ONE staff e-mail per booking per kind (a second call is a no-op)', 'queued=1,0 rows=1', @a7, @p7;
+EXEC dbo.QA_Check 'D8', 'usp_Booking_PaymentChecked @KeepHold = 1 on a booking whose payment was never opened leaves it untouched (no hold appears)', 'hold=NULL checked=NULL', @a8, @p8;
 EXEC dbo.QA_Check 'D6', 'usp_Booking_StartPayment on a booking that already carries its gateway payment is refused', 'This booking has already been paid.', @a6, @p6;
 GO
