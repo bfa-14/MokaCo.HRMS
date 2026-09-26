@@ -294,6 +294,10 @@ public class MpgsOptionsTests
     {
         var plain = new Dictionary<string, string?>(Complete) { [MpgsOptions.BaseKey] = "http://test-bobsal.gateway.mastercard.com" };
         Assert.Contains("MPGS_BASE must be https", Assert.Throws<InvalidOperationException>(() => Read(plain)).Message);
+
+        // a stand-in gateway on this machine is the one exception
+        var local = new Dictionary<string, string?>(Complete) { [MpgsOptions.BaseKey] = "http://127.0.0.1:5099" };
+        Assert.Equal("http://127.0.0.1:5099", Read(local).BaseUrl);
     }
 
     [Theory]

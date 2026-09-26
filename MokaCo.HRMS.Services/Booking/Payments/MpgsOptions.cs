@@ -85,8 +85,11 @@ public sealed class MpgsOptions
             return value;
         }
 
+        // The password travels in the Authorization header of every call: https, except to a stand-in
+        // gateway on this machine (a local test double).
         var baseUrl = Origin(BaseKey);
-        if (baseUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+        if (baseUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            && !(Uri.TryCreate(baseUrl, UriKind.Absolute, out var gatewayUri) && gatewayUri.IsLoopback))
             problems.Add($"{BaseKey} must be https");
 
         var merchant = Required(MerchantIdKey);
