@@ -13,8 +13,11 @@ namespace MokaCo.HRMS.Api.Jobs;
 /// through THE SAME PATH AS /verify (<see cref="IOnlineDepositService.SettleAsync"/>):
 ///
 ///   paid         → recorded and confirmed, the guest's confirmation queued, the hub told;
-///   failed / never attempted, once GiveUpAfterMinutes have passed → the hold is released;
-///   still unconfirmed → the hold is kept alive, and past GiveUpAfterMinutes staff get ONE e-mail.
+///   abandoned    (the gateway does not know the order, or it carries no transaction) → released once
+///                the hold has run out; until then the hold is left as it is and the next run looks again;
+///   failed       → released once GiveUpAfterMinutes have passed (the guest may be retrying before);
+///   cannot tell  (a transaction not settled, a network error, a timeout — never abandonment) → the hold
+///                is kept alive, the next run asks again, and past GiveUpAfterMinutes staff get ONE e-mail.
 ///
 /// NO WEBHOOKS: the gateway is asked, never listened to. This is also what makes the hold-expiry
 /// sweep safe (SQL 88): the sweep leaves every booking whose payment was opened to this job.

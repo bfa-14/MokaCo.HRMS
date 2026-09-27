@@ -162,9 +162,11 @@ public sealed class OnlineDepositOptions
     public int ReconcileAfterMinutes { get; set; } = 10;
 
     /// <summary>
-    /// Before this age the job only waits (the guest may still be on the gateway's page, even retrying
-    /// after a decline). From this age: an order the gateway never saw, or a failed one, is released;
-    /// one it still cannot confirm is reported to staff (once) and keeps its hold.
+    /// Before this age the job waits on a failed payment (the guest may still be retrying on the
+    /// gateway's page after a decline); from this age a failed one is released, and one it still cannot
+    /// confirm (a transaction not settled, or no answer at all) is reported to staff once and keeps its
+    /// hold. An ABANDONED payment — nothing ever attempted on the order — does not wait for this: it is
+    /// released as soon as its hold (BookingHoldMinutes) has run out.
     /// </summary>
     public int GiveUpAfterMinutes { get; set; } = 30;
 

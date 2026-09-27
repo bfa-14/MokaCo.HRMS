@@ -169,11 +169,21 @@ public class MpgsClientTests
 
         var lookup = await client.RetrieveOrderAsync(Ref);
 
-        Assert.Equal(new MpgsOrderLookup(MpgsLookupKind.Found, "SUCCESS", "CAPTURED", 12.5m, "USD", 12.50m, "3"), lookup);
+        Assert.Equal(new MpgsOrderLookup(MpgsLookupKind.Found, "SUCCESS", "CAPTURED", 12.5m, "USD", 12.50m, "3", TransactionCount: 3), lookup);
         var (request, _) = Assert.Single(handler.Seen);
         Assert.Equal(HttpMethod.Get, request.Method);
         Assert.Equal("https://test-bobsal.gateway.mastercard.com/api/rest/version/73/merchant/TESTMOKANDCO/order/MC-1A2B3C4D", request.RequestUri!.ToString());
         Assert.Equal("Basic", request.Headers.Authorization!.Scheme);
+    }
+
+    [Fact]
+    public void An_order_with_no_transaction_parses_as_such_and_is_abandoned()
+    {
+        // a checkout session was opened on the order and the guest never submitted a card
+        var lookup = MpgsClient.Parse(JsonNode.Parse(@"{""result"":""SUCCESS"",""status"":""INITIATED"",""amount"":12.5,""currency"":""USD"",""totalCapturedAmount"":0,""totalAuthorizedAmount"":0}")!);
+
+        Assert.Equal((0, 0m), (lookup.TransactionCount, lookup.TotalAuthorizedAmount));
+        Assert.True(PaymentDecisionTable.Decide(lookup, 12.5m, "USD").NothingAttempted);
     }
 
     [Fact]

@@ -86,6 +86,29 @@ public class PaymentDecisionTableTests
         => Assert.Equal(PaymentOutcome.Unconfirmed, Decide(MpgsOrderLookup.NotFound()));
 
     [Fact]
+    public void Nothing_attempted_is_flagged_only_when_the_gateway_answered_that_nothing_was_tried()
+    {
+        static PaymentDecision D(MpgsOrderLookup o) => PaymentDecisionTable.Decide(o, Deposit, "USD");
+
+        // abandoned: the gateway does not know the order, or the order carries no transaction and no money
+        Assert.True(D(MpgsOrderLookup.NotFound()).NothingAttempted);
+        var empty = new MpgsOrderLookup(MpgsLookupKind.Found, "SUCCESS", "INITIATED", Deposit, "USD", 0m, null, TransactionCount: 0, TotalAuthorizedAmount: 0m);
+        Assert.Equal((PaymentOutcome.Unconfirmed, true), (D(empty).Outcome, D(empty).NothingAttempted));
+
+        // NOT abandoned: no answer at all, a transaction on the order, money authorised, or a count not reported
+        Assert.False(D(MpgsOrderLookup.Error("timeout")).NothingAttempted);
+        Assert.False(D(MpgsOrderLookup.Error("network error")).NothingAttempted);
+        Assert.False(D(empty with { TransactionCount = 1 }).NothingAttempted);
+        Assert.False(D(empty with { TotalAuthorizedAmount = Deposit }).NothingAttempted);
+        Assert.False(D(empty with { TotalCapturedAmount = Deposit }).NothingAttempted);
+        Assert.False(D(empty with { TransactionCount = null }).NothingAttempted);
+
+        // and never on paid or failed
+        Assert.False(D(Order("SUCCESS", "CAPTURED")).NothingAttempted);
+        Assert.False(D(empty with { Status = "FAILED" }).NothingAttempted);
+    }
+
+    [Fact]
     public void A_result_the_table_does_not_know_is_unconfirmed()
         => Assert.Equal(PaymentOutcome.Unconfirmed, Decide(Order("PENDING", "CAPTURED")));
 }

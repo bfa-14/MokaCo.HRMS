@@ -42,12 +42,22 @@ public class OnlineDepositServiceTests
             new OnlineDepositOptions { ReconcileAfterMinutes = 10, GiveUpAfterMinutes = 30 },
             NullLogger<OnlineDepositService>.Instance, new FixedClock(Now));
 
-        public void State(string status = "Pending", int openedMinutesAgo = 5, bool gatewayPaid = false, bool opened = true)
+        /// <param name="holdMinutesLeft">Minutes until HoldExpiresUtc; negative = the hold has run out.</param>
+        public void State(string status = "Pending", int openedMinutesAgo = 5, bool gatewayPaid = false, bool opened = true, int holdMinutesLeft = 10)
             => Deposits.Setup(d => d.GetPaymentStateAsync(Ref)).ReturnsAsync(new PaymentState
             {
                 BookingId = 42, BookingRef = Ref, Status = status, Source = "Website", DepositDue = 12.50m, CurrencyCode = "USD",
                 PaymentOpenedUtc = opened ? Now.AddMinutes(-openedMinutesAgo) : null, GatewayPaid = gatewayPaid,
+                HoldExpiresUtc = opened ? Now.AddMinutes(holdMinutesLeft) : null,
             });
+
+        /// <summary>Nothing about the hold or the booking was written.</summary>
+        public void NothingWritten()
+        {
+            Deposits.Verify(d => d.PaymentCheckedAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never());
+            Deposits.Verify(d => d.ConfirmOnlinePaymentAsync(It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>()), Times.Never());
+            Bookings.Verify(b => b.ReleaseHoldAsync(It.IsAny<string>()), Times.Never());
+        }
 
         public void Order(MpgsOrderLookup order)
             => Client.Setup(c => c.RetrieveOrderAsync(Ref, It.IsAny<CancellationToken>())).ReturnsAsync(order);
@@ -64,6 +74,9 @@ public class OnlineDepositServiceTests
     private static MpgsOrderLookup Authorized => new(MpgsLookupKind.Found, "SUCCESS", "AUTHORIZED", 12.50m, "USD", 0m, "7");
     private static MpgsOrderLookup Declined => new(MpgsLookupKind.Found, "FAILURE", "FAILED", 12.50m, "USD", 0m, "7");
 
+    /// <summary>The gateway knows the order (a checkout was opened on it) and nothing was ever attempted.</summary>
+    private static MpgsOrderLookup NoTransaction => new(MpgsLookupKind.Found, "SUCCESS", null, 12.50m, "USD", 0m, null, TransactionCount: 0, TotalAuthorizedAmount: 0m);
+
     private static PaymentStarted Started() => new()
     {
         BookingId = 42, BookingRef = Ref, DepositDue = 12.50m, CurrencyCode = "USD", TotalAmount = 62.50m,
@@ -77,6 +90,7 @@ public class OnlineDepositServiceTests
     public async Task Pay_charges_the_bookings_own_deposit_and_returns_the_session()
     {
         var rig = new Rig();
+        rig.State(opened: false);
         rig.Deposits.Setup(d => d.StartPaymentAsync(Ref)).ReturnsAsync(Started());
         rig.Client.Setup(c => c.InitiateCheckoutAsync(Ref, 12.50m, "USD", "Room deposit: Studio, 2026-10-01, 2.5h (total USD 62.50)",
                 "https://api.mokanco.com.lb/api/public/booking/verify?ref=MC-1A2B3C4D",
@@ -108,6 +122,21 @@ public class OnlineDepositServiceTests
 
         Assert.Equal(PayOpenResult.Opened, opening.Result);
         Assert.Equal("SESSION0002", opening.SessionId);
+        rig.NothingWritten();       // the hold is not released under the guest who is paying again
+    }
+
+    [Fact]
+    public async Task Pay_again_after_a_session_with_no_transaction_opens_a_new_one()
+    {
+        var rig = new Rig();
+        rig.State(openedMinutesAgo: 3);
+        rig.Deposits.Setup(d => d.StartPaymentAsync(Ref)).ReturnsAsync(Started());
+        rig.Order(NoTransaction);
+        rig.Client.Setup(c => c.InitiateCheckoutAsync(Ref, 12.50m, "USD", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("SESSION0004");
+
+        Assert.Equal(PayOpenResult.Opened, (await rig.Service.OpenAsync(Ref)).Result);
+        rig.NothingWritten();
     }
 
     [Fact]
@@ -121,6 +150,7 @@ public class OnlineDepositServiceTests
             .ReturnsAsync("SESSION0003");
 
         Assert.Equal(PayOpenResult.Opened, (await rig.Service.OpenAsync(Ref)).Result);
+        rig.NothingWritten();
     }
 
     [Fact]
@@ -136,6 +166,48 @@ public class OnlineDepositServiceTests
         Assert.Equal(PayOpenResult.AlreadyPaid, opening.Result);
         Assert.True(opening.Changed);
         rig.Deposits.Verify(d => d.ConfirmOnlinePaymentAsync(Ref, 12.50m, "USD", Ref, "7"), Times.Once());
+        rig.Deposits.Verify(d => d.StartPaymentAsync(It.IsAny<string>()), Times.Never());
+        rig.Client.Verify(c => c.InitiateCheckoutAsync(It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never());
+    }
+
+    /// <summary>
+    /// ONE PATH: a paid session found by a second /pay is recorded by exactly the call /verify makes —
+    /// the procedure that confirms, writes the payment line and (through its trigger) queues the
+    /// messages — and both report a change for the hub.
+    /// </summary>
+    [Fact]
+    public async Task Pay_again_and_the_gateway_return_record_a_paid_session_identically()
+    {
+        var viaPay = new Rig();
+        viaPay.State(openedMinutesAgo: 3);
+        viaPay.Order(Captured);
+        viaPay.Confirms(OnlinePaymentRecorded.Confirmed);
+        var viaVerify = new Rig();
+        viaVerify.State(openedMinutesAgo: 3);
+        viaVerify.Order(Captured);
+        viaVerify.Confirms(OnlinePaymentRecorded.Confirmed);
+
+        var opening = await viaPay.Service.OpenAsync(Ref);
+        var settled = await viaVerify.Service.SettleAsync(Ref, SettleTrigger.GatewayReturn);
+
+        Assert.True(opening.Changed);
+        Assert.True(settled.Changed);
+        foreach (var rig in new[] { viaPay, viaVerify })
+        {
+            rig.Deposits.Verify(d => d.ConfirmOnlinePaymentAsync(Ref, 12.50m, "USD", Ref, "7"), Times.Once());
+            rig.Bookings.Verify(b => b.ReleaseHoldAsync(It.IsAny<string>()), Times.Never());
+        }
+    }
+
+    [Fact]
+    public async Task Pay_again_when_the_gateway_cannot_be_reached_is_refused_and_keeps_the_hold()
+    {
+        var rig = new Rig();
+        rig.State(openedMinutesAgo: 3);
+        rig.Order(MpgsOrderLookup.Error("timeout"));
+
+        Assert.Equal(PayOpenResult.PreviousUnconfirmed, (await rig.Service.OpenAsync(Ref)).Result);
+        rig.Deposits.Verify(d => d.PaymentCheckedAsync(Ref, true), Times.Once());
         rig.Deposits.Verify(d => d.StartPaymentAsync(It.IsAny<string>()), Times.Never());
     }
 
@@ -168,6 +240,7 @@ public class OnlineDepositServiceTests
     public async Task Pay_when_the_gateway_will_not_open_a_session_is_a_gateway_error()
     {
         var rig = new Rig();
+        rig.State(opened: false);
         rig.Deposits.Setup(d => d.StartPaymentAsync(Ref)).ReturnsAsync(Started());
         rig.Client.Setup(c => c.InitiateCheckoutAsync(Ref, 12.50m, "USD", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new MpgsException("no"));
@@ -250,8 +323,25 @@ public class OnlineDepositServiceTests
         new MpgsOrderLookup(MpgsLookupKind.Found, "SUCCESS", "AUTHORIZED", 12.50m, "USD", 0m, "7"),
         new MpgsOrderLookup(MpgsLookupKind.Found, "SUCCESS", "CAPTURED", 10m, "USD", 10m, "7"),       // amount mismatch
         MpgsOrderLookup.Error("HTTP 503"),
-        MpgsOrderLookup.NotFound(),
     };
+
+    [Fact]
+    public async Task Return_for_an_order_nobody_tried_to_pay_keeps_the_hold_but_does_not_extend_it()
+    {
+        foreach (var order in new[] { MpgsOrderLookup.NotFound(), NoTransaction })
+        {
+            var rig = new Rig();
+            rig.State();
+            rig.Order(order);
+
+            var settled = await rig.Service.SettleAsync(Ref, SettleTrigger.GatewayReturn);
+
+            Assert.Equal(SettlementResult.Unconfirmed, settled.Result);      // the guest is never told "nothing was charged" here
+            rig.Deposits.Verify(d => d.PaymentCheckedAsync(Ref, false), Times.Once());
+            rig.Deposits.Verify(d => d.PaymentCheckedAsync(Ref, true), Times.Never());
+            rig.Bookings.Verify(b => b.ReleaseHoldAsync(It.IsAny<string>()), Times.Never());
+        }
+    }
 
     [Fact]
     public async Task Return_paid_on_a_closed_booking_needs_staff()
@@ -328,35 +418,88 @@ public class OnlineDepositServiceTests
         Assert.Equal(SettlementResult.Released, (await rig.Service.SettleAsync(Ref, SettleTrigger.Reconciliation)).Result);
     }
 
-    [Fact]
-    public async Task Job_releases_an_old_session_the_gateway_never_saw()
+    /* ABANDONED: the gateway answered, and nothing was ever attempted on the order. */
+
+    public static TheoryData<MpgsOrderLookup> Abandoned => new() { MpgsOrderLookup.NotFound(), NoTransaction };
+
+    [Theory]
+    [MemberData(nameof(Abandoned))]
+    public async Task Job_releases_an_abandoned_payment_once_the_hold_has_run_out(MpgsOrderLookup order)
     {
         var rig = new Rig();
-        rig.State(openedMinutesAgo: 45);
-        rig.Order(MpgsOrderLookup.NotFound());
+        rig.State(openedMinutesAgo: 16, holdMinutesLeft: -1);      // before GiveUpAfterMinutes: the hold is what counts
+        rig.Order(order);
         rig.Releases();
 
-        Assert.Equal(SettlementResult.Released, (await rig.Service.SettleAsync(Ref, SettleTrigger.Reconciliation)).Result);
+        var settled = await rig.Service.SettleAsync(Ref, SettleTrigger.Reconciliation);
+
+        Assert.Equal((SettlementResult.Released, true), (settled.Result, settled.Changed));
+        rig.Bookings.Verify(b => b.ReleaseHoldAsync(Ref), Times.Once());
+        rig.Deposits.Verify(d => d.QueuePaymentAlertAsync(It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string?>()), Times.Never());
+    }
+
+    [Theory]
+    [MemberData(nameof(Abandoned))]
+    public async Task Job_leaves_an_abandoned_payment_alone_while_its_hold_is_still_running(MpgsOrderLookup order)
+    {
+        var rig = new Rig();
+        rig.State(openedMinutesAgo: 12, holdMinutesLeft: 3);      // the guest may still be on the gateway's page
+        rig.Order(order);
+
+        var settled = await rig.Service.SettleAsync(Ref, SettleTrigger.Reconciliation);
+
+        Assert.Equal(SettlementResult.Unconfirmed, settled.Result);
+        rig.Bookings.Verify(b => b.ReleaseHoldAsync(It.IsAny<string>()), Times.Never());
+        rig.Deposits.Verify(d => d.PaymentCheckedAsync(Ref, false), Times.Once());    // looked at, the hold NOT extended
+        rig.Deposits.Verify(d => d.PaymentCheckedAsync(Ref, true), Times.Never());
+    }
+
+    /* A NETWORK ERROR OR A TIMEOUT IS NOT ABANDONMENT: keep the hold, ask again next run, tell staff once past the threshold. */
+
+    [Theory]
+    [InlineData("timeout")]
+    [InlineData("network error")]
+    [InlineData("HTTP 503")]
+    public async Task Job_never_releases_on_no_answer_even_with_the_hold_run_out(string problem)
+    {
+        var rig = new Rig();
+        rig.State(openedMinutesAgo: 16, holdMinutesLeft: -1);
+        rig.Order(MpgsOrderLookup.Error(problem));
+
+        var settled = await rig.Service.SettleAsync(Ref, SettleTrigger.Reconciliation);
+
+        Assert.Equal((SettlementResult.Unconfirmed, false), (settled.Result, settled.Changed));
+        rig.Bookings.Verify(b => b.ReleaseHoldAsync(It.IsAny<string>()), Times.Never());
+        rig.Deposits.Verify(d => d.PaymentCheckedAsync(Ref, true), Times.Once());     // the hold is kept alive
+        rig.Deposits.Verify(d => d.QueuePaymentAlertAsync(It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string?>()), Times.Never());
     }
 
     [Fact]
-    public async Task Job_keeps_a_young_session_the_gateway_has_not_seen_yet()
+    public async Task Job_asks_again_on_every_run_while_there_is_no_answer()
     {
         var rig = new Rig();
-        rig.State(openedMinutesAgo: 12);
-        rig.Order(MpgsOrderLookup.NotFound());
+        rig.State(openedMinutesAgo: 16, holdMinutesLeft: -1);
+        rig.Order(MpgsOrderLookup.Error("timeout"));
 
-        Assert.Equal(SettlementResult.Unconfirmed, (await rig.Service.SettleAsync(Ref, SettleTrigger.Reconciliation)).Result);
+        await rig.Service.SettleAsync(Ref, SettleTrigger.Reconciliation);
+        await rig.Service.SettleAsync(Ref, SettleTrigger.Reconciliation);
+
+        rig.Client.Verify(c => c.RetrieveOrderAsync(Ref, It.IsAny<CancellationToken>()), Times.Exactly(2));
+        rig.Deposits.Verify(d => d.PaymentCheckedAsync(Ref, true), Times.Exactly(2));
         rig.Bookings.Verify(b => b.ReleaseHoldAsync(It.IsAny<string>()), Times.Never());
     }
 
+    /// <summary>
+    /// Past GiveUpAfterMinutes the job asks for the staff e-mail on each run; usp_Booking_QueuePaymentAlert
+    /// queues it ONCE per booking (QA case D7) and answers false after that.
+    /// </summary>
     [Theory]
     [InlineData(12, false)]
     [InlineData(31, true)]
     public async Task Job_alerts_staff_only_once_the_wait_is_over(int openedMinutesAgo, bool alerts)
     {
         var rig = new Rig();
-        rig.State(openedMinutesAgo: openedMinutesAgo);
+        rig.State(openedMinutesAgo: openedMinutesAgo, holdMinutesLeft: -1);
         rig.Order(MpgsOrderLookup.Error("timeout"));
         rig.Deposits.Setup(d => d.QueuePaymentAlertAsync(42, "PayUnconfirmed", It.IsAny<string?>())).ReturnsAsync(true);
 

@@ -47,6 +47,11 @@ public enum MpgsLookupKind
 }
 
 /// <summary>What RETRIEVE_ORDER said, reduced to what the decision table reads.</summary>
+/// <param name="TransactionCount">
+/// How many transactions the order carries: 0 when the gateway answered with an order and no
+/// transaction on it (a checkout was opened and nothing was ever attempted). NULL when not reported,
+/// which is never read as "none".
+/// </param>
 public sealed record MpgsOrderLookup(
     MpgsLookupKind Kind,
     string? Result = null,
@@ -55,7 +60,9 @@ public sealed record MpgsOrderLookup(
     string? Currency = null,
     decimal? TotalCapturedAmount = null,
     string? TransactionId = null,
-    string? Problem = null)
+    string? Problem = null,
+    int? TransactionCount = null,
+    decimal? TotalAuthorizedAmount = null)
 {
     public static MpgsOrderLookup Error(string problem) => new(MpgsLookupKind.Error, Problem: problem);
     public static MpgsOrderLookup NotFound() => new(MpgsLookupKind.NotFound, Problem: "order not found");
@@ -248,8 +255,11 @@ public sealed class MpgsClient : IMpgsClient
     public static MpgsOrderLookup Parse(JsonNode json)
     {
         string? transactionId = null;
+        var transactionCount = 0;
         if (json["transaction"] is JsonArray transactions)
         {
+            transactionCount = transactions.Count;
+
             var rows = transactions
                 .Select(t => (Result: Text(t, "result"), Type: Text(t?["transaction"], "type"), Id: Text(t?["transaction"], "id")))
                 .Where(t => !string.IsNullOrEmpty(t.Id))
@@ -268,7 +278,9 @@ public sealed class MpgsClient : IMpgsClient
             Amount: Number(json["amount"]),
             Currency: Text(json, "currency"),
             TotalCapturedAmount: Number(json["totalCapturedAmount"]),
-            TransactionId: transactionId);
+            TransactionId: transactionId,
+            TransactionCount: transactionCount,
+            TotalAuthorizedAmount: Number(json["totalAuthorizedAmount"]));
     }
 
     private void Authorize(HttpRequestMessage request)

@@ -11,11 +11,23 @@ public enum SettleTrigger
     /// <summary>GET /verify — the guest's browser came back from the gateway. Failed releases at once.</summary>
     GatewayReturn,
 
-    /// <summary>The Quartz job. Waits until GiveUpAfterMinutes before releasing or alerting.</summary>
+    /// <summary>
+    /// The Quartz job. An abandoned payment (nothing attempted on the order) is released once the hold
+    /// has run out; a failed one after GiveUpAfterMinutes; one it cannot tell about keeps its hold and
+    /// is reported to staff once, after GiveUpAfterMinutes.
+    /// </summary>
     Reconciliation,
 
     /// <summary>POST /{ref}/release — the guest walked away. Released only if the gateway says nothing was paid.</summary>
     GuestRelease,
+
+    /// <summary>
+    /// POST /{ref}/pay again for a booking whose payment was already opened: the earlier session on the
+    /// same order is settled before a new one may be opened. Paid is recorded exactly as /verify records
+    /// it; failed or nothing attempted is <see cref="SettlementResult.NotPaid"/> and NOTHING is written
+    /// (a new checkout follows at once, so the hold is not released).
+    /// </summary>
+    PayAgain,
 }
 
 public enum SettlementResult
@@ -39,6 +51,12 @@ public enum SettlementResult
 
     /// <summary>Nothing to do: not Pending any more (reconciliation), or nothing to release.</summary>
     NotApplicable,
+
+    /// <summary>
+    /// <see cref="SettleTrigger.PayAgain"/> only: the gateway says no money was taken on the order (it
+    /// failed, or nothing was attempted). Nothing was written; a new checkout may be opened on it.
+    /// </summary>
+    NotPaid,
 }
 
 /// <param name="Changed">The booking row changed: the hub should be told.</param>
@@ -72,8 +90,10 @@ public sealed record PaymentOpening(
 
 /// <summary>
 /// Online deposits end to end: opening a checkout session for a booking, and SETTLING it — one code
-/// path shared by the gateway's return trip (/verify), the reconciliation job and the guest's release,
-/// so that a payment is judged the same way whoever asks.
+/// path (<see cref="SettleAsync"/>) shared by the gateway's return trip (/verify), a second /pay, the
+/// reconciliation job and the guest's release, so that a payment is judged, and a paid one recorded,
+/// the same way whoever asks. The SQL expiry sweep never settles: it leaves every booking whose payment
+/// was opened to the reconciliation job.
 /// </summary>
 public interface IOnlineDepositService
 {
@@ -118,29 +138,27 @@ public sealed class OnlineDepositService : IOnlineDepositService
 
     public async Task<PaymentOpening> OpenAsync(string bookingRef, CancellationToken cancellationToken = default)
     {
-        // A SECOND /pay FOR THE SAME BOOKING reuses the order id, so the earlier session is asked about
-        // FIRST, before anything is stamped: if it was paid, paying again would charge twice; if the
-        // gateway cannot say yet, nothing new is opened and the hold is kept. Asking before stamping
-        // also means a guest pressing the button again does not reset PaymentOpenedUtc, the clock the
-        // reconciliation job and its staff alert run on.
-        var state = await _deposits.GetPaymentStateAsync(bookingRef);
-        if (state is { PaymentOpenedUtc: not null, Status: "Pending", GatewayPaid: false })
+        // A SECOND /pay FOR THE SAME BOOKING reuses the order id, so the earlier session is SETTLED
+        // FIRST, before anything is stamped — through SettleAsync, the path /verify takes, so a paid
+        // session has exactly the same effects whoever finds it (Confirmed, the payment line, the
+        // messages; the caller tells the hub). Paid: paying again would charge twice. Cannot tell yet:
+        // nothing new is opened and the hold is kept. Settling before stamping also means a second press
+        // does not reset PaymentOpenedUtc, the clock the reconciliation job and its staff alert run on.
+        var earlier = await SettleAsync(bookingRef, SettleTrigger.PayAgain, cancellationToken);
+        switch (earlier.Result)
         {
-            var earlier = await _gateway.RetrieveOrderAsync(bookingRef, cancellationToken);
-            var decision = PaymentDecisionTable.Decide(earlier, state.DepositDue, state.CurrencyCode);
+            case SettlementResult.Paid or SettlementResult.PaidNeedsStaff:
+                return new PaymentOpening(PayOpenResult.AlreadyPaid, bookingRef, Changed: earlier.Changed);
 
-            if (decision.Outcome == PaymentOutcome.Paid)
-            {
-                var recorded = await RecordPaidAsync(bookingRef, earlier, state.CurrencyCode);
-                return new PaymentOpening(PayOpenResult.AlreadyPaid, bookingRef, Changed: recorded.Changed);
-            }
-
-            if (decision.Outcome != PaymentOutcome.Failed && earlier.Kind != MpgsLookupKind.NotFound)
-            {
-                await _deposits.PaymentCheckedAsync(bookingRef, keepHold: true);
-                _log.LogWarning("Deposit {Ref}: not reopened, the earlier session is unconfirmed ({Reason}).", bookingRef, decision.Reason);
+            case SettlementResult.Unconfirmed:
+                _log.LogWarning("Deposit {Ref}: not reopened, the earlier session is unconfirmed ({Reason}).", bookingRef, earlier.Reason);
                 return new PaymentOpening(PayOpenResult.PreviousUnconfirmed, bookingRef);
-            }
+
+            case SettlementResult.UnknownBooking:
+                return new PaymentOpening(PayOpenResult.UnknownBooking, bookingRef);
+
+            // NotPaid (failed, or nothing attempted on the order) and NotApplicable (no payment opened
+            // yet, or not Pending — the procedure below refuses that with its own code): go on.
         }
 
         // Validates (not found, not pending, hold expired, already paid, nothing due — refusals travel
@@ -195,7 +213,7 @@ public sealed class OnlineDepositService : IOnlineDepositService
             return new Settlement(state.Status is "Confirmed" or "Completed" ? SettlementResult.Paid : SettlementResult.PaidNeedsStaff,
                 bookingRef, false, state.Status, "already recorded");
 
-        if (trigger == SettleTrigger.Reconciliation && state.Status != "Pending")
+        if (trigger is SettleTrigger.Reconciliation or SettleTrigger.PayAgain && state.Status != "Pending")
             return new Settlement(SettlementResult.NotApplicable, bookingRef, false, state.Status, "no longer pending");
 
         if (state.PaymentOpenedUtc is null)
@@ -213,8 +231,10 @@ public sealed class OnlineDepositService : IOnlineDepositService
 
         var order = await _gateway.RetrieveOrderAsync(bookingRef, cancellationToken);
         var decision = PaymentDecisionTable.Decide(order, state.DepositDue, state.CurrencyCode);
-        var age = state.PaymentOpenedUtc is { } opened ? _clock.GetUtcNow().UtcDateTime - opened : TimeSpan.MaxValue;
+        var now = _clock.GetUtcNow().UtcDateTime;
+        var age = state.PaymentOpenedUtc is { } opened ? now - opened : TimeSpan.MaxValue;
         var patienceOver = age >= TimeSpan.FromMinutes(_timing.GiveUpAfterMinutes);
+        var holdOver = state.HoldExpiresUtc is not { } holdUntil || holdUntil <= now;
 
         _log.LogInformation("Deposit {Ref} ({Trigger}): {Outcome}, {Reason}.", bookingRef, trigger, decision.Outcome, decision.Reason);
 
@@ -223,17 +243,33 @@ public sealed class OnlineDepositService : IOnlineDepositService
             case PaymentOutcome.Paid:
                 return (await RecordPaidAsync(bookingRef, order, state.CurrencyCode)).Settlement;
 
+            // No money was taken on the order and a new checkout is about to be opened on it: nothing is
+            // written, and above all the hold is not released under the guest who is paying again.
+            case PaymentOutcome.Failed when trigger == SettleTrigger.PayAgain:
+            case PaymentOutcome.Unconfirmed when decision.NothingAttempted && trigger == SettleTrigger.PayAgain:
+                return new Settlement(SettlementResult.NotPaid, bookingRef, false, state.Status, decision.Reason);
+
             case PaymentOutcome.Failed when trigger != SettleTrigger.Reconciliation || patienceOver:
                 return await ReleaseAsync(state, decision.Reason, ifNotReleased: SettlementResult.Failed, markChecked: true);
 
-            case PaymentOutcome.Unconfirmed when order.Kind == MpgsLookupKind.NotFound
-                                                && (trigger == SettleTrigger.GuestRelease || (trigger == SettleTrigger.Reconciliation && patienceOver)):
-                // Nothing was ever attempted on the order: nothing can have been charged.
+            // ABANDONED: the gateway answered and nothing was ever attempted on the order, so nothing can
+            // have been charged. The guest walking away releases it at once; the job releases it once the
+            // hold has run out (the guest had the whole hold to pay).
+            case PaymentOutcome.Unconfirmed when decision.NothingAttempted
+                                                && (trigger == SettleTrigger.GuestRelease || (trigger == SettleTrigger.Reconciliation && holdOver)):
                 return await ReleaseAsync(state, "abandoned: " + decision.Reason, ifNotReleased: SettlementResult.Failed, markChecked: true);
+
+            // Abandoned, but the hold is still running: the guest may still be on the gateway's page. The
+            // hold is left as it is — NOT extended, since there is no payment in flight to protect — and
+            // the next run looks again.
+            case PaymentOutcome.Unconfirmed when decision.NothingAttempted:
+                await _deposits.PaymentCheckedAsync(bookingRef, keepHold: false);
+                return new Settlement(SettlementResult.Unconfirmed, bookingRef, false, state.Status, decision.Reason);
         }
 
-        // Unconfirmed (or failed, with the guest possibly still retrying on the gateway's page):
-        // the slot stays held and the booking stays Pending.
+        // Cannot tell — a transaction the gateway has not settled, or no answer at all (a network error
+        // or a timeout is NEVER abandonment) — or failed, with the guest possibly still retrying on the
+        // gateway's page: the slot stays held, the booking stays Pending, the next run asks again.
         await _deposits.PaymentCheckedAsync(bookingRef, keepHold: true);
 
         if (trigger == SettleTrigger.Reconciliation && patienceOver && decision.Outcome == PaymentOutcome.Unconfirmed)

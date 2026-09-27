@@ -17,7 +17,12 @@ public enum PaymentOutcome
 
 /// <param name="Outcome">What to do.</param>
 /// <param name="Reason">Why, in a few words, for the log and a staff alert. Never shown to a guest.</param>
-public sealed record PaymentDecision(PaymentOutcome Outcome, string Reason);
+/// <param name="NothingAttempted">
+/// Set only with <see cref="PaymentOutcome.Unconfirmed"/>: the gateway answered, and nothing was
+/// ever attempted on the order — it does not know the order, or the order carries no transaction and
+/// no money. ABANDONED, not "cannot tell": a network error or a timeout never sets it.
+/// </param>
+public sealed record PaymentDecision(PaymentOutcome Outcome, string Reason, bool NothingAttempted = false);
 
 /// <summary>
 /// THE ONE PLACE that decides whether a deposit was paid, from what RETRIEVE_ORDER said. Pure: no
@@ -30,6 +35,8 @@ public sealed record PaymentDecision(PaymentOutcome Outcome, string Reason);
 ///   failed      status FAILED, CANCELLED or EXPIRED, or result FAILURE.
 ///   unconfirmed everything else — a retrieval error, an order the gateway has not seen, PENDING,
 ///               AUTHORIZED, INITIATED, a partial capture, an amount or currency that does not match.
+///               Of these, an order the gateway does not know and an order with no transaction and no
+///               money on it are flagged <see cref="PaymentDecision.NothingAttempted"/>: abandoned.
 /// </summary>
 public static class PaymentDecisionTable
 {
@@ -41,7 +48,7 @@ public static class PaymentDecisionTable
             return new(PaymentOutcome.Unconfirmed, $"retrieval error ({order.Problem})");
 
         if (order.Kind == MpgsLookupKind.NotFound)
-            return new(PaymentOutcome.Unconfirmed, "the gateway has no such order");
+            return new(PaymentOutcome.Unconfirmed, "the gateway has no such order", NothingAttempted: true);
 
         var result = order.Result?.Trim().ToUpperInvariant();
         var status = order.Status?.Trim().ToUpperInvariant();
@@ -65,6 +72,11 @@ public static class PaymentDecisionTable
 
         if (result == "FAILURE")
             return new(PaymentOutcome.Failed, "result FAILURE");
+
+        // A checkout was opened on the order and nothing was ever tried: no transaction, and no money
+        // captured or authorised. A transaction count the gateway did not report is never read as zero.
+        if (order.TransactionCount == 0 && (order.TotalCapturedAmount ?? 0) == 0 && (order.TotalAuthorizedAmount ?? 0) == 0)
+            return new(PaymentOutcome.Unconfirmed, "the order has no transaction", NothingAttempted: true);
 
         return new(PaymentOutcome.Unconfirmed, $"result {result ?? "-"}, status {status ?? "-"}");
     }
