@@ -21,6 +21,10 @@ public class BookingRefusalsTests
     [InlineData("Online cancellation closes 24 hours before the start — please call us.", 409, "cancel_window")]
     [InlineData("This booking can no longer be cancelled online.", 409, "not_cancellable")]
     [InlineData("Booking not found.", 404, "not_found")]
+    [InlineData("This booking is not waiting for a payment (it is Confirmed).", 409, "not_pending")]          // SQL 88, /pay
+    [InlineData("The payment hold has expired. Please choose the slot again.", 409, "hold_expired")]
+    [InlineData("This booking has already been paid.", 409, "already_paid")]
+    [InlineData("There is no deposit to pay on this booking.", 409, "nothing_due")]
     [InlineData("Mokha takes 2 to 8 persons.", 400, "invalid_input")]
     [InlineData("Times must be in 60-minute steps.", 400, "invalid_input")]
     [InlineData("The phone number does not match this booking.", 400, "invalid_input")]

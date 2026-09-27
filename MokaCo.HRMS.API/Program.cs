@@ -5,6 +5,7 @@ using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
 using MokaCo.HRMS.Api.Auth;
@@ -27,6 +28,7 @@ using MokaCo.HRMS.Services.Report;
 using MokaCo.HRMS.Services.Workflow;
 using MokaCo.HRMS.Services.Payroll;
 using MokaCo.HRMS.Services.Booking;
+using MokaCo.HRMS.Services.Booking.Payments;
 using MokaCo.HRMS.Api.Hubs;
 using MokaCo.HRMS.Api.Jobs;
 using MokaCo.HRMS.Api.Controllers;
@@ -61,6 +63,14 @@ var connectionString = builder.Configuration.GetConnectionString("MokaCo")
 
 var jwtOptions = builder.Configuration.GetSection("Jwt").Get<JwtOptions>()
     ?? throw new InvalidOperationException("Missing 'Jwt' configuration.");
+
+// ONLINE DEPOSITS (MPGS). The gateway's credentials and the two public origins come from the
+// environment — /etc/mokaco/api.env in production, the gitignored appsettings.Local.json in
+// development — never from a tracked file. FAIL FAST: a missing value stops the start here, naming
+// the key (never the value). See MpgsOptions for the 3-D Secure bypass rule (TEST profile + flag).
+var mpgsOptions = MpgsOptions.FromSettings(key => builder.Configuration[key]);
+var depositTiming = builder.Configuration.GetSection(OnlineDepositOptions.Section).Get<OnlineDepositOptions>() ?? new OnlineDepositOptions();
+depositTiming.Validate();
 
 // --- DI: infrastructure ---
 builder.Services.AddSingleton<IDbConnectionFactory>(new SqlConnectionFactory(connectionString));
@@ -131,6 +141,7 @@ builder.Services.AddScoped<IPayrollRepository, PayrollRepository>();
 // --- DI: repositories (Booking) ---
 builder.Services.AddScoped<IRoomRepository, RoomRepository>();
 builder.Services.AddScoped<IBookingRepository, BookingRepository>();
+builder.Services.AddScoped<IOnlineDepositRepository, OnlineDepositRepository>();
 
 // --- DI: services (Security) ---
 builder.Services.AddSingleton<IPasswordHasher, Argon2PasswordHasher>();
@@ -222,6 +233,16 @@ builder.Services.AddScoped<IPayrollService, PayrollService>();
 builder.Services.AddScoped<IRoomService, RoomService>();
 builder.Services.AddScoped<IBookingService, BookingService>();
 
+// Online deposits. The gateway client is a TYPED HttpClient (pooled handlers, no socket exhaustion);
+// its own calls carry short per-request timeouts, the client-wide one is only a backstop. Logged
+// headers are redacted wholesale: the Authorization header carries the merchant password.
+builder.Services.AddSingleton(mpgsOptions);
+builder.Services.AddSingleton(depositTiming);
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddHttpClient<IMpgsClient, MpgsClient>(client => client.Timeout = TimeSpan.FromSeconds(60))
+    .RedactLoggedHeaders(_ => true);
+builder.Services.AddScoped<IOnlineDepositService, OnlineDepositService>();
+
 // --- Scheduled jobs (Quartz.NET, in-memory RAMJobStore — no DB job store) ---
 builder.Services.AddQuartz(q =>
 {
@@ -250,6 +271,17 @@ builder.Services.AddQuartz(q =>
         .ForJob(bookingHoldExpiryJobKey)
         .WithIdentity("BookingHoldExpiryTrigger")
         .WithCronSchedule("0 0/5 * * * ?"));
+
+    // Bookings: every OnlineDeposits:ReconcileEveryMinutes, settle the online deposits whose return
+    // trip never arrived — ask the gateway, then confirm, release or alert staff through the same
+    // path as /verify. The sweep above leaves every booking whose payment was opened to this job.
+    var bookingPaymentReconcileJobKey = new JobKey("BookingPaymentReconcileJob");
+    q.AddJob<BookingPaymentReconcileJob>(opts => opts.WithIdentity(bookingPaymentReconcileJobKey));
+    q.AddTrigger(t => t
+        .ForJob(bookingPaymentReconcileJobKey)
+        .WithIdentity("BookingPaymentReconcileTrigger")
+        .StartAt(DateBuilder.FutureDate(1, IntervalUnit.Minute))
+        .WithSimpleSchedule(s => s.WithIntervalInMinutes(depositTiming.ReconcileEveryMinutes).RepeatForever()));
 });
 builder.Services.AddQuartzHostedService(opts => opts.WaitForJobsToComplete = true);
 
@@ -471,11 +503,29 @@ builder.Services.AddOpenApi();
 
 var app = builder.Build();
 
+// Everything about the gateway but the password, once, so a wrong host or profile is visible in the log.
+app.Logger.LogInformation("Online deposits: {Gateway}.", mpgsOptions);
+if (mpgsOptions.SendsThreeDsBypass)
+    app.Logger.LogWarning("Online deposits: 3-D Secure BYPASS is on (TEST merchant profile, {Flag}). Never in production.", MpgsOptions.TestBypassKey);
+
 // FIRST IN THE PIPELINE, and therefore INSIDE the developer exception page that WebApplication adds
 // by itself in Development: the handler answers before that page can, so no environment returns a
 // stack trace or SQL text from an API route. The empty lambda is deliberate — ApiExceptionHandler
 // always writes the response, so there is no fallback branch to configure.
 app.UseExceptionHandler(_ => { });
+
+// BEHIND NGINX EVERY CONNECTION ARRIVES FROM 127.0.0.1, and two things in this file read the
+// connection's address as the caller's identity: the public-booking rate limiter partitions by it
+// (without this, every website visitor shares one five-bookings-a-minute bucket, and the sixth
+// person is refused for the first one's bookings), and the HTTPS redirect judges the scheme by it.
+// This swaps in X-Forwarded-For and X-Forwarded-Proto — but only when the connection itself comes
+// from a loopback address, which is what the default KnownNetworks/KnownProxies restrict it to. A
+// caller reaching Kestrel directly cannot forge its own address with a header, and a deployment
+// without a proxy in front is simply unchanged, because nothing sets these headers there.
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+});
 
 if (app.Environment.IsDevelopment())
 {

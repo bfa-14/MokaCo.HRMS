@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using MokaCo.HRMS.Api.PublicBooking;
 using MokaCo.HRMS.Model.Booking;
 using MokaCo.HRMS.Services.Booking;
+using MokaCo.HRMS.Services.Booking.Payments;
 
 namespace MokaCo.HRMS.Api.Controllers;
 
@@ -33,6 +34,12 @@ namespace MokaCo.HRMS.Api.Controllers;
 ///
 /// NOTHING HERE QUEUES A NOTIFICATION. booking.trg_Booking_Notify queues the request, the staff
 /// alert, the confirmation and the cancellation inside the transaction that changed the row.
+///
+/// ONLINE DEPOSITS (step 2): /{ref}/pay opens a gateway checkout session for the booking's deposit,
+/// /verify is the gateway's return trip and the ONE action the access gate lets through without an
+/// origin or key (<see cref="GatewayReturnAttribute"/>), and /{ref}/release asks the gateway before
+/// giving back a slot whose payment was opened. All three settle through
+/// <see cref="IOnlineDepositService"/>, the same path as the reconciliation job.
 /// </summary>
 [ApiController]
 [Route("api/public/booking")]
@@ -40,7 +47,7 @@ namespace MokaCo.HRMS.Api.Controllers;
 [EnableCors(BookingCorsPolicy)]
 [PublicBookingAccess]
 [PublicBookingErrorFilter]
-public class PublicBookingController : ControllerBase
+public partial class PublicBookingController : ControllerBase
 {
     /// <summary>The CORS policy built per request from core.SETTING BookingCorsOrigins (<see cref="PublicBookingCorsPolicyProvider"/>).</summary>
     public const string BookingCorsPolicy = "PublicBooking";
@@ -65,12 +72,23 @@ public class PublicBookingController : ControllerBase
     /// </summary>
     private readonly IBookingLivePublisher? _live;
 
-    public PublicBookingController(IBookingService bookings, IRoomService rooms, IBookingLivePublisher? live = null)
+    /// <summary>Online deposits. Optional for the same reason as <see cref="_live"/>; the container always supplies it.</summary>
+    private readonly IOnlineDepositService? _deposits;
+
+    private readonly ILogger<PublicBookingController>? _log;
+
+    public PublicBookingController(IBookingService bookings, IRoomService rooms, IBookingLivePublisher? live = null,
+        IOnlineDepositService? deposits = null, ILogger<PublicBookingController>? log = null)
     {
         _bookings = bookings;
         _rooms = rooms;
         _live = live;
+        _deposits = deposits;
+        _log = log;
     }
+
+    private IOnlineDepositService Deposits
+        => _deposits ?? throw new InvalidOperationException("Online deposits are not registered.");
 
     /* ---- 1. catalog ------------------------------------------------------------------------ */
 
@@ -305,17 +323,34 @@ public class PublicBookingController : ControllerBase
     /// Gives the slot back when a payment failed or was abandoned. Safe to expose to a caller holding
     /// only a reference: the procedure touches only a Pending WEBSITE booking that HAS an expiry and
     /// has taken no money, and echoes the status either way.
+    ///
+    /// WHEN A PAYMENT WAS OPENED FOR IT, THE GATEWAY IS ASKED FIRST (the same settlement as /verify):
+    /// paid → the booking is confirmed instead; nothing attempted or failed → released; cannot tell →
+    /// NOT released (the hold stays until the reconciliation job knows). The answer is the status
+    /// either way, so the site reads the truth rather than assuming its request was obeyed.
     /// </summary>
     [HttpPost("{bookingRef:" + RefPattern + "}/release")]
     [EnableRateLimiting(WriteRateLimitPolicy)]
     public async Task<IActionResult> Release(string bookingRef)
     {
-        var released = await _bookings.ReleaseHoldAsync(bookingRef.ToUpperInvariant());
-        if (released is null)
+        var reference = bookingRef.ToUpperInvariant();
+
+        if (_deposits is null)
+        {
+            var released = await _bookings.ReleaseHoldAsync(reference);
+            if (released is null)
+                return Unknown("No booking with that reference.");
+
+            if (_live is not null) await _live.PublishAsync(released.BookingRef);
+            return Ok(new { timeZone = TimeZoneName, @ref = released.BookingRef, status = released.Status });
+        }
+
+        var settled = await _deposits.SettleAsync(reference, SettleTrigger.GuestRelease);
+        if (settled.Result == SettlementResult.UnknownBooking)
             return Unknown("No booking with that reference.");
 
-        if (_live is not null) await _live.PublishAsync(released.BookingRef);
-        return Ok(new { timeZone = TimeZoneName, @ref = released.BookingRef, status = released.Status });
+        if (_live is not null) await _live.PublishAsync(settled.BookingRef);
+        return Ok(new { timeZone = TimeZoneName, @ref = settled.BookingRef, status = settled.Status });
     }
 
     /// <summary>
@@ -340,16 +375,124 @@ public class PublicBookingController : ControllerBase
         return Recap(recap);
     }
 
-    /// <summary>STEP 2: the gateway's return trip. The route exists now and answers 501 so the site can be written against the real URL.</summary>
-    [HttpGet("verify")]
-    [EnableRateLimiting(ReadRateLimitPolicy)]
-    public IActionResult Verify([FromQuery] string? @ref)
-        => StatusCode(StatusCodes.Status501NotImplemented, new
+    /* ---- 6. online deposit (step 2) --------------------------------------------------------- */
+
+    /// <summary>
+    /// Opens a gateway checkout session for the booking's DEPOSIT — the amount priced when the booking
+    /// was taken (the same arithmetic as /quote), never anything from the request, which has no body.
+    /// Valid only for a Pending website booking whose hold has not run out; stamps the hold
+    /// (now + BookingHoldMinutes) and PaymentOpenedUtc in one transaction, then asks the gateway.
+    /// The site then sends the guest to /pay/#session={sessionId}.
+    ///
+    /// CALLING IT TWICE IS SAFE: a new session on the same order (the order id is the reference). If
+    /// an earlier session on it was already paid, the payment is recorded and the answer is 409
+    /// already_paid; if the gateway cannot yet say, 409 payment_unconfirmed — a second payment could
+    /// be a double charge.
+    ///
+    /// Refusals: 404 not_found, 409 not_pending, 409 hold_expired, 409 already_paid, 409 nothing_due,
+    /// 409 payment_unconfirmed, 502 gateway_error, 503 paused, 401 unauthorized, 429.
+    /// </summary>
+    [HttpPost("{bookingRef:" + RefPattern + "}/pay")]
+    [PausesWithWebsite]
+    [EnableRateLimiting(WriteRateLimitPolicy)]
+    public async Task<IActionResult> Pay(string bookingRef)
+    {
+        var opening = await Deposits.OpenAsync(bookingRef.ToUpperInvariant());
+
+        if (opening.Changed && _live is not null) await _live.PublishAsync(opening.BookingRef);
+
+        return opening.Result switch
         {
-            error = "Online payment is not switched on yet.",
-            code = "not_implemented",
-            timeZone = TimeZoneName,
-        });
+            PayOpenResult.Opened => Ok(new
+            {
+                timeZone = TimeZoneName,
+                sessionId = opening.SessionId,
+                @ref = opening.BookingRef,
+                deposit = opening.Deposit,
+                currency = opening.Currency,
+                holdExpiresUtc = opening.HoldExpiresUtc is { } utc ? DateTime.SpecifyKind(utc, DateTimeKind.Utc) : (DateTime?)null,
+                expiresAt = opening.HoldExpiresUtc is { } hold ? BeirutTime.FromUtc(hold) : (DateTimeOffset?)null,
+            }),
+            PayOpenResult.AlreadyPaid => Conflict(new
+            {
+                error = "This booking has already been paid.",
+                code = "already_paid",
+                @ref = opening.BookingRef,
+                timeZone = TimeZoneName,
+            }),
+            PayOpenResult.PreviousUnconfirmed => Conflict(new
+            {
+                error = "We are still confirming an earlier payment for this booking. Please do not pay again; we will be in touch, or WhatsApp us.",
+                code = "payment_unconfirmed",
+                @ref = opening.BookingRef,
+                timeZone = TimeZoneName,
+            }),
+            PayOpenResult.GatewayError => StatusCode(StatusCodes.Status502BadGateway, new
+            {
+                error = "We could not start the payment step. Try again, or book over WhatsApp.",
+                code = "gateway_error",
+                timeZone = TimeZoneName,
+            }),
+            _ => Unknown("No booking with that reference."),
+        };
+    }
+
+    /// <summary>
+    /// THE GATEWAY'S RETURN TRIP (its returnUrl, {API_PUBLIC_URL}/api/public/booking/verify?ref=). In
+    /// production that is https://mokanco.com.lb/api/public/booking/verify?ref={ref}: the SAME origin as
+    /// the site, whose nginx vhost proxies /api here — there is no api. host. A top-level browser
+    /// redirect: no Origin, no key —
+    /// hence <see cref="GatewayReturnAttribute"/>; the controller's [AllowAnonymous] keeps the
+    /// authorization fallback away. The query string is not trusted for anything but the reference:
+    /// the outcome comes from RETRIEVE_ORDER, asked server-side, through the decision table.
+    ///
+    ///   paid         → 302 {site}/reservations/confirmed/?ref=
+    ///   failed       → the hold is released, 302 {site}/reservations/?payment=failed
+    ///                  (also: an unknown reference, or one no payment was ever opened for — nothing written)
+    ///   anything else (unconfirmed, paid-but-needs-staff, an error here)
+    ///                → the hold is kept, 302 {site}/reservations/?payment=unconfirmed&amp;ref=
+    ///
+    /// IDEMPOTENT: a refresh, a double return or a return after the job has already settled it finds
+    /// the payment line and redirects the same way without writing anything.
+    /// </summary>
+    [HttpGet("verify")]
+    [GatewayReturn]
+    [EnableRateLimiting(ReadRateLimitPolicy)]
+    public async Task<IActionResult> Verify([FromQuery(Name = "ref")] string? reference)
+    {
+        var gateway = Deposits.Gateway;
+        Response.Headers.CacheControl = "no-store";
+
+        var bookingRef = (reference ?? string.Empty).Trim().ToUpperInvariant();
+        if (!ReferenceShape().IsMatch(bookingRef))
+            return Redirect(gateway.FailedUrl());
+
+        Settlement settled;
+        try
+        {
+            // Not the request's token: a guest closing the tab must not abandon a half-recorded payment.
+            settled = await Deposits.SettleAsync(bookingRef, SettleTrigger.GatewayReturn);
+        }
+        catch (Exception ex)
+        {
+            _log?.LogError(ex, "Verify {Ref}: settlement failed; the guest is sent to the unconfirmed page.", bookingRef);
+            return Redirect(gateway.UnconfirmedUrl(bookingRef));
+        }
+
+        if (settled.Changed && _live is not null) await _live.PublishAsync(bookingRef);
+
+        return settled.Result switch
+        {
+            SettlementResult.Paid => Redirect(gateway.ConfirmedUrl(bookingRef)),
+            // Nothing was charged: the gateway said so, or no payment was ever opened for this reference.
+            SettlementResult.Released or SettlementResult.Failed or SettlementResult.UnknownBooking or SettlementResult.NotApplicable
+                => Redirect(gateway.FailedUrl()),
+            _ => Redirect(gateway.UnconfirmedUrl(bookingRef)),
+        };
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex("^MC-[A-Z0-9]{8}$")]
+    private static partial System.Text.RegularExpressions.Regex ReferenceShape();
 
     /* ---- shapes ----------------------------------------------------------------------------- */
 

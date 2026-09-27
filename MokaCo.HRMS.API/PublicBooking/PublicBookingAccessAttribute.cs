@@ -15,8 +15,19 @@ namespace MokaCo.HRMS.Api.PublicBooking;
 public sealed class PausesWithWebsiteAttribute : Attribute;
 
 /// <summary>
+/// Marks the ONE action the access gate lets through without an origin or a key: GET /verify, the
+/// payment gateway's return trip. It is a TOP-LEVEL BROWSER REDIRECT from the gateway's page, so it
+/// carries no Origin header and no X-Booking-Key, and the gate would answer 401 to a guest who has
+/// just paid. It is safe to leave open because it takes nothing from the caller but a reference in
+/// the booking pattern, is idempotent, and decides only from what the API itself asks the gateway
+/// server-side; it keeps its rate limit. Anything else must never carry this attribute.
+/// </summary>
+[AttributeUsage(AttributeTargets.Method)]
+public sealed class GatewayReturnAttribute : Attribute;
+
+/// <summary>
 /// Decides whether a caller may talk to the public booking API at all, before any action runs —
-/// IN THIS ORDER:
+/// IN THIS ORDER (an action marked <see cref="GatewayReturnAttribute"/> skips all of it):
 ///   1. BookingWebsiteEnabled = '0' and the action <see cref="PausesWithWebsiteAttribute"/> →
 ///      503 { error: "Online booking is paused. Book over WhatsApp.", code: "paused" }. Before the
 ///      access check on purpose: "we are not taking bookings" is a truer answer than "who are you".
@@ -34,6 +45,12 @@ public sealed class PublicBookingAccessAttribute : ActionFilterAttribute
 
     public override async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
+        if (context.ActionDescriptor.EndpointMetadata.OfType<GatewayReturnAttribute>().Any())
+        {
+            await next();
+            return;
+        }
+
         var gate = context.HttpContext.RequestServices.GetRequiredService<IPublicBookingGate>();
         var snapshot = await gate.CurrentAsync(context.HttpContext.RequestAborted);
 
