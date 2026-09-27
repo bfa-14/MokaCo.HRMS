@@ -19,7 +19,7 @@
 
   <!-- The machine's secrets file is never part of a publish: a deployment brings its own. -->
   <ItemGroup>
-    <Content Update="appsettings.Local.json" CopyToPublishDirectory="Never" />
+    <!-- Local developer settings (secrets): never part of a publish -->
+    <Content Update="appsettings.Local*.json" CopyToPublishDirectory="Never" />
   </ItemGroup>
-
 </Project>
