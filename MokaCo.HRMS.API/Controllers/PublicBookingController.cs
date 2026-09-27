@@ -438,7 +438,10 @@ public partial class PublicBookingController : ControllerBase
     }
 
     /// <summary>
-    /// THE GATEWAY'S RETURN TRIP (its returnUrl). A top-level browser redirect: no Origin, no key —
+    /// THE GATEWAY'S RETURN TRIP (its returnUrl, {API_PUBLIC_URL}/api/public/booking/verify?ref=). In
+    /// production that is https://mokanco.com.lb/api/public/booking/verify?ref={ref}: the SAME origin as
+    /// the site, whose nginx vhost proxies /api here — there is no api. host. A top-level browser
+    /// redirect: no Origin, no key —
     /// hence <see cref="GatewayReturnAttribute"/>; the controller's [AllowAnonymous] keeps the
     /// authorization fallback away. The query string is not trusted for anything but the reference:
     /// the outcome comes from RETRIEVE_ORDER, asked server-side, through the decision table.

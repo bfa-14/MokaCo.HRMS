@@ -34,7 +34,7 @@ public class PaymentEndpointTests
         ApiPassword = "pw-not-real",
         ApiVersion = 73,
         SiteUrl = "https://mokanco.com.lb",
-        ApiPublicUrl = "https://api.mokanco.com.lb",
+        ApiPublicUrl = "https://mokanco.com.lb",
     };
 
     private static (PublicBookingController Controller, Mock<IOnlineDepositService> Deposits, Mock<IBookingLivePublisher> Live) Controller()

@@ -45,10 +45,15 @@ public sealed class MpgsOptions
     /// <summary>The REST API version in the URL. 73 is what the website's proven flow uses.</summary>
     public int ApiVersion { get; init; }
 
-    /// <summary>The website's origin the guest is sent back to, e.g. https://mokanco.com.lb.</summary>
+    /// <summary>The website's origin the guest is sent back to: https://mokanco.com.lb in production, http://localhost:4321 in development.</summary>
     public string SiteUrl { get; init; } = string.Empty;
 
-    /// <summary>This API's public origin, e.g. https://api.mokanco.com.lb — the gateway's returnUrl points here.</summary>
+    /// <summary>
+    /// This API's public origin, as the guest's browser reaches it — the gateway's returnUrl is
+    /// {ApiPublicUrl}/api/public/booking/verify. Production: https://mokanco.com.lb, the SAME origin as
+    /// the site, whose nginx vhost proxies /api to this API (there is no api. host). Development: the
+    /// local API's own URL, e.g. http://localhost:5078.
+    /// </summary>
     public string ApiPublicUrl { get; init; } = string.Empty;
 
     /// <summary>The raw developer flag. Read <see cref="SendsThreeDsBypass"/>, never this.</summary>

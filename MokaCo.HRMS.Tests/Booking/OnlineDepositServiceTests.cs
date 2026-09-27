@@ -29,7 +29,7 @@ public class OnlineDepositServiceTests
         ApiPassword = "pw-not-real",
         ApiVersion = 73,
         SiteUrl = "https://mokanco.com.lb",
-        ApiPublicUrl = "https://api.mokanco.com.lb",
+        ApiPublicUrl = "https://mokanco.com.lb",
     };
 
     private sealed class Rig
@@ -93,7 +93,7 @@ public class OnlineDepositServiceTests
         rig.State(opened: false);
         rig.Deposits.Setup(d => d.StartPaymentAsync(Ref)).ReturnsAsync(Started());
         rig.Client.Setup(c => c.InitiateCheckoutAsync(Ref, 12.50m, "USD", "Room deposit: Studio, 2026-10-01, 2.5h (total USD 62.50)",
-                "https://api.mokanco.com.lb/api/public/booking/verify?ref=MC-1A2B3C4D",
+                "https://mokanco.com.lb/api/public/booking/verify?ref=MC-1A2B3C4D",
                 "https://mokanco.com.lb/reservations/?payment=cancelled",
                 "https://mokanco.com.lb/reservations/?payment=unconfirmed&ref=MC-1A2B3C4D",
                 It.IsAny<CancellationToken>()))

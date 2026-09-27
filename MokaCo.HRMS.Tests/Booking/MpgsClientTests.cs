@@ -38,7 +38,7 @@ public class MpgsClientTests
         ApiPassword = "pw-not-real",
         ApiVersion = 73,
         SiteUrl = "https://mokanco.com.lb",
-        ApiPublicUrl = "https://api.mokanco.com.lb",
+        ApiPublicUrl = "https://mokanco.com.lb",
         TestBypassRequested = bypassFlag,
     };
 
@@ -74,7 +74,7 @@ public class MpgsClientTests
         var interaction = json["interaction"]!;
         Assert.Equal("PURCHASE", (string?)interaction["operation"]);
         Assert.Equal("Moka & Co Lebanon", (string?)interaction["merchant"]!["name"]);
-        Assert.Equal("https://api.mokanco.com.lb/api/public/booking/verify?ref=MC-1A2B3C4D", (string?)interaction["returnUrl"]);
+        Assert.Equal("https://mokanco.com.lb/api/public/booking/verify?ref=MC-1A2B3C4D", (string?)interaction["returnUrl"]);
         Assert.Equal("https://mokanco.com.lb/reservations/?payment=cancelled", (string?)interaction["cancelUrl"]);
         Assert.Equal("https://mokanco.com.lb/reservations/?payment=unconfirmed&ref=MC-1A2B3C4D", (string?)interaction["timeoutUrl"]);
         Assert.Equal("HIDE", (string?)interaction["displayControl"]!["billingAddress"]);
@@ -263,7 +263,7 @@ public class MpgsOptionsTests
         [MpgsOptions.ApiPasswordKey] = "pw-not-real",
         [MpgsOptions.ApiVersionKey] = "73",
         [MpgsOptions.SiteUrlKey] = "https://mokanco.com.lb/",
-        [MpgsOptions.ApiPublicUrlKey] = "https://api.mokanco.com.lb",
+        [MpgsOptions.ApiPublicUrlKey] = "https://mokanco.com.lb",
     };
 
     private static MpgsOptions Read(Dictionary<string, string?> values) => MpgsOptions.FromSettings(key => values.GetValueOrDefault(key));

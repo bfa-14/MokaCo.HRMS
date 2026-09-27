@@ -4,11 +4,16 @@ For Reda. The HRMS API now owns the server half of the deposit payment (Bank of 
 
 **Nothing changes for guests until `BookingDepositRequired` is switched on**, and that happens only after both sides are deployed (see [Switching it on](#switching-it-on)).
 
+**Production is same-origin.** `https://mokanco.com.lb` serves the site, and the site's nginx vhost proxies `/api` and `/hubs` to the HRMS API. There is no `api.` host. So the site's `PUBLIC_BOOKING_API` and the HRMS's `API_PUBLIC_URL` and `BOOKING_SITE_URL` are all `https://mokanco.com.lb`, and the gateway's return trip lands on the site's own origin.
+
+The website side is implemented on mokanco-lb branch `feature/online-deposits-wiring`. This page remains the contract it was built against.
+
 ## The flow
 
 ```
 wizard submit
-  │  POST /api/public/booking                     (unchanged: create, answers 201 with ref, deposit, depositRequired)
+  │  POST /api/public/booking/                    (create, WITH the trailing slash: nginx 301s the bare path,
+  │                                                and a browser repeats a redirected POST as a GET)
   │
   ├─ depositRequired = false → /reservations/confirmed/?ref=MC-XXXXXXXX           (today's behaviour)
   │
@@ -22,7 +27,7 @@ wizard submit
      /pay/ (pay.ts, unchanged) → Checkout.showPaymentPage() → the guest pays on the gateway's page
        │
        ▼  the gateway sends the browser to ONE of:
-     returnUrl   https://api.mokanco.com.lb/api/public/booking/verify?ref=MC-…  (the API asks the gateway, then 302s:)
+     returnUrl   https://mokanco.com.lb/api/public/booking/verify?ref=MC-…  (same origin; the API asks the gateway, then 302s:)
                    paid         → /reservations/confirmed/?ref=MC-…
                    failed       → /reservations/?payment=failed                  (the hold is already released)
                    anything else → /reservations/?payment=unconfirmed&ref=MC-…   (the hold is kept)
@@ -84,12 +89,12 @@ Every refusal is `{ error, code }`. `error` is a sentence written for the guest,
 | 409 | `nothing_due` | The booking has no deposit to pay | Go to the confirmed page |
 | 502 | `gateway_error` | The gateway did not open a session | Show `error` ("…Try again, or book over WhatsApp."); retrying `/pay` for the same ref is safe |
 | 503 | `paused` | Online booking is paused | As for create |
-| 401 | `unauthorized` | Origin not in `BookingCorsOrigins` and no key | Configuration problem |
+| 401 | `unauthorized` | Origin not in `BookingCorsOrigins` and no key | Configuration problem. In production the page's origin is `https://mokanco.com.lb`, which must be in `BookingCorsOrigins` even though the call is same-origin, because the API's access gate reads the `Origin` header. |
 | 429 | — | Rate limit (the same write tier as create: 5 per minute per IP) | Show a "try again in a minute" message |
 
 **Calling `/pay` twice for the same ref is safe.** It opens a new session on the same gateway order. If the first session was paid, the second call answers `already_paid` and never opens a second checkout.
 
-The hold: `/pay` holds the slot for `BookingHoldMinutes` (15). `expiresAt` in the answer is Beirut time with its offset, if you want a countdown. The HRMS keeps the hold while a payment is unconfirmed.
+The hold: `/pay` holds the slot for `BookingHoldMinutes` (15). `expiresAt` in the answer is Beirut time with its offset, if you want a countdown. The HRMS keeps the hold while a payment is unconfirmed. A payment nobody attempted (the guest closed the tab on the gateway page) is released by the HRMS job once those 15 minutes have run out.
 
 ## What moves out of the website
 
@@ -101,13 +106,28 @@ The test host is `https://test-bobsal.gateway.mastercard.com`. At go-live (produ
 
 1. HRMS `/etc/mokaco/api.env`: `MPGS_BASE`, `MPGS_MERCHANT_ID`, `MPGS_API_PASSWORD`.
 2. `src/scripts/pay.ts`: `GATEWAY_BASE`.
-3. The `/pay/` Content-Security-Policy: `public/_headers` **and the nginx vhost on the VM**, which carries the CSP now that the site is hosted there (script-src, connect-src, frame-src, img-src, form-action).
+3. The `/pay/` Content-Security-Policy (script-src, connect-src, frame-src, img-src, form-action). **Production's is emitted by the site's nginx vhost on the VM (`mokanco-site`)**. `public/_headers` only mirrors it for local `:8788`, so change both.
 
 The 3DS bypass exists only on the TEST profile with a developer flag, and the API can never send it for MOKANDCO.
 
+## The HRMS side: `/etc/mokaco/api.env`
+
+For reference. The API refuses to start without these keys:
+
+```
+MPGS_BASE=https://test-bobsal.gateway.mastercard.com   # the live host at go-live
+MPGS_MERCHANT_ID=TESTMOKANDCO                          # MOKANDCO at go-live
+MPGS_API_PASSWORD=<the merchant profile's API password>
+MPGS_API_VERSION=73
+BOOKING_SITE_URL=https://mokanco.com.lb
+API_PUBLIC_URL=https://mokanco.com.lb                  # same origin: returnUrl = https://mokanco.com.lb/api/public/booking/verify?ref=…
+```
+
+`MPGS_TEST_3DS_BYPASS` never goes in production. In development the same keys go in the HRMS's gitignored `appsettings.Local.json`, with `BOOKING_SITE_URL=http://localhost:4321` and `API_PUBLIC_URL` set to the local API's own URL.
+
 ## Switching it on
 
-1. HRMS: apply `docs/88_booking_online_deposit.sql`, add the `api.env` keys, and deploy the API. `BookingDepositRequired` stays `0`.
+1. HRMS: apply `docs/88_booking_online_deposit.sql`, add the `api.env` keys above, and deploy the API. `BookingDepositRequired` stays `0`.
 2. Website: deploy this wiring. With the setting at `0`, nothing changes for guests.
-3. Test end to end against the TEST profile (`TESTMOKANDCO`, card 5123 4500 0000 0008, exp 01/39, CVC 100) on a staging origin, in a **headed** browser (the card iframes don't render headless). Cover a paid booking, a cancel, and a closed tab (the job settles it).
+3. Test end to end against the TEST profile (`TESTMOKANDCO`, card 5123 4500 0000 0008, exp 01/39, CVC 100) on a staging origin, in a **headed** browser (the card iframes don't render headless). Cover a paid booking, a cancel, and a closed tab (the job releases it once the 15-minute hold has run out).
 4. Only then set `BookingDepositRequired = 1` on the HRMS Settings page. The catalog's `rules.depositRequired` and create's `depositRequired` follow within a minute.
