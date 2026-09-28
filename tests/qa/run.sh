@@ -40,6 +40,7 @@ runsql "$QA/cases/04_payroll.sql"
 step "8. bookings (SQL)"
 runsql "$QA/cases/05_bookings.sql"
 runsql "$QA/cases/07_online_deposit.sql"
+runsql "$QA/cases/08_booking_midnight_start.sql"
 
 step "9. cross-cutting (SQL)"
 runsql "$QA/cases/06_crosscutting.sql"
