@@ -31,4 +31,18 @@ public class CurrenciesController : ControllerBase
         await _live.NotifyAsync("payroll", "dashboard");
         return NoContent();
     }
+
+    /// <summary>
+    /// Deletes a currency nothing uses, with its exchange rates. A currency still held anywhere —
+    /// a salary component, a payroll run, a room, a setting — is refused by the procedure with a
+    /// sentence naming where, which the error handler returns as a 409.
+    /// </summary>
+    [HttpDelete("{code:length(3)}")]
+    [HasPermission("CORE_MANAGE")]
+    public async Task<IActionResult> Delete(string code)
+    {
+        await _currencies.DeleteAsync(code);
+        await _live.NotifyAsync("payroll", "dashboard");
+        return NoContent();
+    }
 }

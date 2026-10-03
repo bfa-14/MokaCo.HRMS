@@ -6,4 +6,5 @@ public interface ICurrencyService
 {
     Task<IEnumerable<Currency>> GetAllAsync();
     Task UpsertAsync(string currencyCode, string name, int decimalPlaces);
+    Task DeleteAsync(string currencyCode);
 }

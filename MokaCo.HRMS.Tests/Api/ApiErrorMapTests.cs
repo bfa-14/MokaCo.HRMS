@@ -20,6 +20,8 @@ public class ApiErrorMapTests
     [InlineData("Waiting for approval — request #59.", 409)]
     [InlineData("This payroll run is locked.", 409)]
     [InlineData("This period is paid — raise a payroll adjustment instead.", 409)]
+    [InlineData("LBP is already used and cannot be deleted: hr.SALARY_COMPONENT.CurrencyCode (12), setting PrimaryCurrency.", 409)]
+    [InlineData("Currency XYZ does not exist.", 400)]
     public void A_procedure_refusal_keeps_its_sentence_and_is_a_400_or_a_409(string raised, int status)
     {
         var error = ApiErrorMap.ForSql(50000, raised, Trace);

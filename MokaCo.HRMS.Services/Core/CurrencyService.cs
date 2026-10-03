@@ -13,4 +13,6 @@ public class CurrencyService : ICurrencyService
 
     public Task UpsertAsync(string currencyCode, string name, int decimalPlaces)
         => _repo.UpsertAsync(currencyCode, name, decimalPlaces);
+
+    public Task DeleteAsync(string currencyCode) => _repo.DeleteAsync(currencyCode.Trim().ToUpperInvariant());
 }

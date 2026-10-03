@@ -27,4 +27,13 @@ public class CurrencyRepository : ICurrencyRepository
             new { CurrencyCode = currencyCode, Name = name, DecimalPlaces = decimalPlaces },
             commandType: CommandType.StoredProcedure);
     }
+
+    public async Task DeleteAsync(string currencyCode)
+    {
+        using var db = _factory.Create();
+        await db.ExecuteAsync(
+            "core.usp_Currency_Delete",
+            new { CurrencyCode = currencyCode },
+            commandType: CommandType.StoredProcedure);
+    }
 }
