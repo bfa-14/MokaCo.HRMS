@@ -48,7 +48,9 @@ DOTNET=$(command -v dotnet) || die "dotnet not on PATH"
 echo "    dotnet: $($DOTNET --version)   node: $(node -v 2>/dev/null || echo none)   nginx: $(nginx -v 2>&1 | cut -d/ -f2)"
 
 command -v nginx >/dev/null || die "nginx is not installed"
-others=$(ls /etc/nginx/sites-enabled/ 2>/dev/null | grep -vE '^(default|mokaco)$' || true)
+# the sites this project adds itself (enable-https-ip.sh / enable-tls.sh, the website, the test
+# subdomain) are not "other sites"
+others=$(ls /etc/nginx/sites-enabled/ 2>/dev/null | grep -vE '^(default|mokaco|mokaco-default|mokaco-api|mokaco-test|mokanco-site)$' || true)
 if [[ -n "$others" ]]; then
   die "nginx already serves other sites on this shared box: $others
      Adding a default_server for the API would fight with them. Show this to Reda before continuing."
@@ -188,6 +190,12 @@ map $http_x_forwarded_proto $mokaco_proto {
 }
 EOF
 
+# THE SITE IS WRITTEN ON THE FIRST INSTALL ONLY. After it, enable-https-ip.sh / enable-tls.sh add
+# HTTPS to it and enable-env-switch.sh the test switch; rewriting it here on every redeploy would wipe
+# both (and the port-80 default_server below would clash with mokaco-default's).
+if [[ -f /etc/nginx/sites-available/mokaco ]]; then
+  log "keeping the existing nginx site /etc/nginx/sites-available/mokaco"
+else
 sudo tee /etc/nginx/sites-available/mokaco >/dev/null <<EOF
 server {
     listen 80 default_server;
@@ -239,6 +247,8 @@ EOF
 fi
 sudo chown -R www-data:www-data "$WEBROOT"
 
+fi
+
 sudo ln -sf /etc/nginx/sites-available/mokaco /etc/nginx/sites-enabled/mokaco
 sudo rm -f /etc/nginx/sites-enabled/default        # the stock "Welcome to nginx" page; file stays in sites-available
 sudo nginx -t
@@ -251,12 +261,14 @@ log "verifying"
 sleep 4
 echo "--- service:"; systemctl is-active "$SVC" | sed 's/^/    /'
 echo "--- Kestrel direct   :"; curl -s -m 5 "http://127.0.0.1:$PORT/health" | sed 's/^/    /'; echo
-echo "--- through nginx    :"; curl -s -m 5 "http://127.0.0.1/health" | sed 's/^/    /'; echo
+BASE=http://127.0.0.1
+curl -sk -o /dev/null -m 5 https://127.0.0.1/ && BASE=https://127.0.0.1   # port 80 only redirects since HTTPS
+echo "--- through nginx    :"; curl -sk -m 5 "$BASE/health" | sed 's/^/    /'; echo
 echo "--- login endpoint answers (400/401 = alive, it just needs a body):"
-echo "    HTTP $(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST http://127.0.0.1/api/auth/login -H 'Content-Type: application/json' -d '{}')"
+echo "    HTTP $(curl -sk -o /dev/null -w '%{http_code}' -m 5 -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' -d '{}')"
 echo "--- last log lines:"; sudo journalctl -u "$SVC" -n 15 --no-pager -o cat | sed 's/^/    /'
 
-if systemctl is-active --quiet "$SVC" && curl -sf -m 5 "http://127.0.0.1/health" >/dev/null; then
+if systemctl is-active --quiet "$SVC" && curl -skf -m 5 "$BASE/health" >/dev/null; then
   cat <<EOF
 
 API is up. From your laptop (tunnel up):  http://82.146.175.34/health
