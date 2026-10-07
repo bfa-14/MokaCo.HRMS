@@ -17,7 +17,7 @@ IF DB_ID() <= 4
     THROW 50000, N'93_identity_cache_off.sql: run it in the application database (sqlcmd -d MokaCo_HRMS), not in a system database.', 1;
 
 IF EXISTS (SELECT 1 FROM sys.database_scoped_configurations
-           WHERE name = N'IDENTITY_CACHE' AND CAST(value AS INT) = 1)
+           WHERE name = N'IDENTITY_CACHE' AND CONVERT(NVARCHAR(60), value) NOT IN (N'0', N'OFF'))
 BEGIN
     EXEC (N'ALTER DATABASE SCOPED CONFIGURATION SET IDENTITY_CACHE = OFF;');
     PRINT CONCAT(DB_NAME(), N': IDENTITY_CACHE turned OFF.');
