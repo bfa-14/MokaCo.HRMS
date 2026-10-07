@@ -1,7 +1,9 @@
 # Test environment on the production VM
 
-A second API (`mokaco-api-test`, 127.0.0.1:5079) on the database `MokaCo_HRMS_Test`, served at
-`https://test.hrms.mokanco.com.lb`. It uses the same VM, SQL Server and nginx as production, with no Docker.
+A second API (`mokaco-api-test`, 127.0.0.1:5079) on the database `MokaCo_HRMS_Test`. It uses the same VM,
+SQL Server and nginx as production, with no Docker. It is reached at the **same address** through the
+**Test environment switch on the login page**: on, nginx sends the API and the pages to the test copy; off,
+to production. In test, the login page and the header turn red with a TEST tag.
 
 | | Production | Test |
 |---|---|---|
@@ -12,7 +14,7 @@ A second API (`mokaco-api-test`, 127.0.0.1:5079) on the database `MokaCo_HRMS_Te
 | database / login | `MokaCo_HRMS` / `mokaco_api` | `MokaCo_HRMS_Test` / `mokaco_api_test` (no access to production) |
 | documents | `/var/lib/mokaco/documents` | `/var/lib/mokaco-test/documents` |
 | front end | `/var/www/mokaco-web` | `/var/www/mokaco-web-test` |
-| nginx site | `mokaco` | `mokaco-test` (no `/iclock`) |
+| routing | default | cookie `mokaco_env=test`, set by the login switch (`/iclock` always production) |
 | JWT issuer/audience/key | production's | different, so tokens do not cross |
 | card gateway | `MOKANDCO` | `TESTMOKANDCO` only |
 
@@ -37,7 +39,8 @@ A second API (`mokaco-api-test`, 127.0.0.1:5079) on the database `MokaCo_HRMS_Te
 | `apply-sql-test.sh` | run | Applies `docs/*.sql` to the test DB with the `USE MokaCo_HRMS;` line removed. |
 | `mokaco-api-test.service` | `/etc/systemd/system/` | The unit. |
 | `api-test.env.example` | `/etc/mokaco/api-test.env` | Settings template; fill it in on the VM. |
-| `nginx-mokaco-test.conf` | `/etc/nginx/sites-available/mokaco-test` | The site. |
+| `enable-env-switch.sh` | run with sudo | Turns the login switch on in nginx; `--undo` puts the site back exactly. |
+| `nginx-mokaco-test.conf` | `/etc/nginx/sites-available/mokaco-test` | Optional: a separate address instead (step 8). |
 
 ## Setting it up
 
@@ -127,8 +130,21 @@ sleep 30; sudo journalctl -u mokaco-api-test -n 60 --no-pager
 About 20 seconds after startup, the journal must say **"Notifications are OFF"** and **"Machine pull is OFF"**. If
 either line is missing, stop the service and go back to step 3.
 
-### 7. nginx and the certificate
+### 7. The login switch
 
+The front end must be a build that has the switch (mokaco-web-mantine, Oct 2026 or later) in **both**
+folders: deploy it to production as usual (`deploy-web.sh`), then copy it to the test folder:
+```bash
+sudo rsync -a --delete /var/www/mokaco-web/ /var/www/mokaco-web-test/
+sudo ~/test-env/enable-env-switch.sh            # shows what it changed; undo: --undo
+```
+Then on the login page: **Test environment** on → the page reloads with a red TEST tag, and everything
+after sign-in uses `MokaCo_HRMS_Test`. Off → production. Switching signs that tab out; other open tabs
+follow when they are next looked at.
+
+### 8. Optional: a separate address instead
+
+Only if you also want `test.hrms.mokanco.com.lb` (needs the DNS record from IDM).
 Use a self-signed certificate until DNS is live:
 ```bash
 sudo openssl req -x509 -newkey rsa:2048 -nodes -days 825 \

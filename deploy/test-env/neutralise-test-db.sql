@@ -59,6 +59,11 @@ UPDATE attendance.DEVICE
 SET PullEnabled = 0, PullIp = NULL
 WHERE PullEnabled = 1 OR PullIp IS NOT NULL;
 
+/* 4. Production's sign-ins. The copy holds the refresh tokens that were live in production when
+      the backup was taken; with them, a production session could be renewed on the test API.
+      Everyone signs in to the test copy afresh. */
+DELETE FROM security.REFRESH_TOKEN;
+
 COMMIT;
 
 /* What it left, for the operator to read. */
