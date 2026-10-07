@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# deploy/sync-test.sh — send the code of the `test` branch to the VM, for deploy-test.sh.
+# deploy/sync-test.sh — send the code of the `dev` branch to the VM, for deploy-test.sh.
 # Run ON THE LAPTOP, VPN on:
 #
-#   bash deploy/sync-test.sh             # branch test, in both repos
+#   bash deploy/sync-test.sh             # branch dev, in both repos
 #   bash deploy/sync-test.sh my-branch   # another branch
 #
 # It sends what is PUSHED to GitHub on that branch (git fetch + git archive), not the files in your
@@ -13,7 +13,7 @@
 # commit), never in ~/src: a production deploy can never pick it up.
 set -euo pipefail
 
-BRANCH="${1:-test}"
+BRANCH="${1:-dev}"
 VM="${VM:-mokanco-vm}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # the folder holding both repos
 

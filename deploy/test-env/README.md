@@ -37,7 +37,7 @@ to production. In test, the login page and the header turn red with a TEST tag.
 | `neutralise-test-db.sql` | run, not installed | Mail, WhatsApp, terminal and booking settings off; pending outbox marked Failed; device addresses removed. Refuses any database but `MokaCo_HRMS_Test`. |
 | `refresh-test-db.sh` | run with sudo | Restores a production backup over `MokaCo_HRMS_Test`, then neutralises it and maps the test login. `--in-place` skips the restore. |
 | `setup-test-api.sh` | run with sudo | Steps 2, 4, 5 and 6 below in one run: login, files, settings, service, then checks it. |
-| `deploy-test.sh` | run on the VM | Builds what `deploy/sync-test.sh` (laptop) sent and updates the test side only. |
+| `deploy-test.sh` | run on the VM | Builds what `deploy/sync-test.sh` (laptop) sent from `dev` and updates the test side only. |
 | `apply-sql-test.sh` | run | Applies `docs/*.sql` to the test DB with the `USE MokaCo_HRMS;` line removed. |
 | `mokaco-api-test.service` | `/etc/systemd/system/` | The unit. |
 | `api-test.env.example` | `/etc/mokaco/api-test.env` | Settings template; fill it in on the VM. |
@@ -171,22 +171,26 @@ Before DNS exists, test from the laptop with the **VPN off**:
 
 Once IDM's record resolves: `sudo certbot --nginx -d test.hrms.mokanco.com.lb`.
 
-## Day to day: test first, then production
+## Day to day: `dev` for work and test, `main` for production
 
-| You say (to Claude or yourself) | The code goes to | Then you run |
+Two branches in both repos: **`main` is what production runs**; **`dev` is where all work goes**. Check out
+`dev` on the laptop to see and edit the work in progress.
+
+| Step | Code | Then you run |
 |---|---|---|
-| **"test"** | branch `test` (in whichever repo changed) | laptop: `bash deploy/sync-test.sh` · VM: `bash ~/test-env/deploy-test.sh` |
-| **"to production"** | `test` merged into `main` | laptop: `bash ~/sync-to-vm.sh` · VM: `bash ~/deploy-api.sh` and/or `bash ~/deploy-web.sh` |
-| nothing | `main` | the production deploy, as above |
+| Work and test | pushed to `dev` | laptop: `bash deploy/sync-test.sh` · VM: `bash ~/test-env/deploy-test.sh` |
+| Ready for production | `dev` merged into `main` | laptop: `bash deploy/sync-prod.sh` · VM: `bash ~/deploy-api.sh` and/or `bash ~/deploy-web.sh` |
 
-- `sync-test.sh` sends what is **pushed** on `test` (a repo without a `test` branch sends its `main`) to
-  `~/src-test` on the VM; `deploy-test.sh` builds only from there, into the test folders, and restarts only
-  `mokaco-api-test`. Production deploys build from `~/src`, so untested code cannot reach production.
+- `sync-test.sh` sends what is **pushed** on `dev` to `~/src-test` on the VM; `deploy-test.sh` builds only
+  from there, into the test folders, and restarts only `mokaco-api-test`.
+- `sync-prod.sh` sends what is **pushed** on `main` to `~/src`, whatever the laptop has checked out (the old
+  `sync-to-vm.sh` copied the working folder, so being on `dev` would have deployed untested code).
 - `deploy-test.sh api` or `deploy-test.sh web` does one side only. It refuses a front end without the
   Test environment switch (there would be no way back), and stops the test API again if it does not come
   up as Staging with mail and the machine pull off.
 - A new `docs/*.sql`: on test with `~/test-env/apply-sql-test.sh docs/NN_name.sql`; on production after the
   merge, as usual.
+- An urgent production fix: make it on `main`, deploy it, then merge `main` into `dev` so the fix is not lost.
 
 ## Using it
 
