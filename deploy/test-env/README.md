@@ -36,6 +36,7 @@ to production. In test, the login page and the header turn red with a TEST tag.
 |---|---|---|
 | `neutralise-test-db.sql` | run, not installed | Mail, WhatsApp, terminal and booking settings off; pending outbox marked Failed; device addresses removed. Refuses any database but `MokaCo_HRMS_Test`. |
 | `refresh-test-db.sh` | run with sudo | Restores a production backup over `MokaCo_HRMS_Test`, then neutralises it and maps the test login. `--in-place` skips the restore. |
+| `setup-test-api.sh` | run with sudo | Steps 2, 4, 5 and 6 below in one run: login, files, settings, service, then checks it. |
 | `apply-sql-test.sh` | run | Applies `docs/*.sql` to the test DB with the `USE MokaCo_HRMS;` line removed. |
 | `mokaco-api-test.service` | `/etc/systemd/system/` | The unit. |
 | `api-test.env.example` | `/etc/mokaco/api-test.env` | Settings template; fill it in on the VM. |
@@ -65,6 +66,15 @@ With the VPN on:
 scp -r deploy/test-env mokanco-vm:~/test-env
 ssh mokanco-vm 'chmod +x ~/test-env/*.sh'
 ```
+
+**Steps 2 to 6 in one run** (after step 3's test database exists):
+```bash
+sudo ~/test-env/setup-test-api.sh       # or: sudo MPGS_TEST_PASSWORD='...' ~/test-env/setup-test-api.sh
+```
+It creates the login with a generated password, copies production's build and front end, writes
+`/etc/mokaco/api-test.env` once, installs the service with production's `ExecStart`, starts it, and stops
+it again unless `/health` says Staging and the log says mail and the machine pull are OFF. The steps below
+are what it does, for doing them by hand.
 
 ### 2. Create the test API's SQL login (once)
 

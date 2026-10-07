@@ -11,7 +11,7 @@
 [Unit]
 Description=MokaCo HRMS API - TEST (MokaCo_HRMS_Test, 127.0.0.1:5079)
 After=network-online.target mssql-server.service
-Wants=network-online.target
+Wants=network-online.target mssql-server.service
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -31,8 +31,12 @@ TimeoutStopSec=30
 SyslogIdentifier=mokaco-api-test
 CPUQuota=100%
 MemoryMax=2G
+# As production: the API writes only under its data folder (documents, data-protection keys).
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mokaco-test
 
 [Install]
 WantedBy=multi-user.target
