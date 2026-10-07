@@ -49,18 +49,23 @@ sudo chown -R www-data:www-data "$NEW"
 sudo mv "$WEBROOT" "$OLD" && sudo mv "$NEW" "$WEBROOT" && sudo rm -rf "$OLD"
 
 log "verifying"
-code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1/)
-title=$(curl -s -m 5 http://127.0.0.1/ | grep -oE '<title>[^<]*' | head -1)
-echo "    GET /            -> HTTP $code  $title"
-echo "    GET /health      -> $(curl -s -m 5 http://127.0.0.1/health)"
-echo "    GET /some/route  -> HTTP $(curl -s -o /dev/null -w '%{http_code}' -m 5 http://127.0.0.1/employees)  (200 = SPA fallback works)"
+# Since HTTPS was turned on, port 80 only answers 301 -> https, so check the site where it is
+# served. -k: the certificate names the host, not 127.0.0.1.
+BASE=http://127.0.0.1
+curl -sk -o /dev/null -m 5 https://127.0.0.1/ && BASE=https://127.0.0.1
+get() { curl -sk -m 5 "$@"; }
+code=$(get -o /dev/null -w '%{http_code}' "$BASE/")
+title=$(get "$BASE/" | grep -oE '<title>[^<]*' | head -1)
+echo "    GET $BASE/            -> HTTP $code  $title"
+echo "    GET $BASE/health      -> $(get "$BASE/health")"
+echo "    GET $BASE/some/route  -> HTTP $(get -o /dev/null -w '%{http_code}' "$BASE/employees")  (200 = SPA fallback works)"
 asset=$(grep -oE 'assets/[^"]+\.js' "$WEBROOT/index.html" | head -1)
-[[ -n "$asset" ]] && echo "    GET /$asset -> HTTP $(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://127.0.0.1/$asset")"
+[[ -n "$asset" ]] && echo "    GET $BASE/$asset -> HTTP $(get -o /dev/null -w '%{http_code}' "$BASE/$asset")"
 
 [[ "$code" == 200 ]] || die "the site root is not answering 200"
 cat <<EOF
 
-Web app is live. From your laptop (tunnel up):  http://82.146.175.34/
+Web app is live: https://hrms.mokanco.com.lb/
 
 Redeploy after changes:  bash ~/sync-to-vm.sh (laptop)  then  bash ~/deploy-web.sh (VM)
 EOF
