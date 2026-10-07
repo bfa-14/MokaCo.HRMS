@@ -1,0 +1,38 @@
+# /etc/systemd/system/mokaco-api-test.service — the TEST API, beside production's mokaco-api.
+#
+# Same kind of build and the same user as production; its own folder, env file (port, database,
+# JWT, storage, gateway) and nothing else shared. CAPPED so a runaway test cannot starve production
+# on this 4 vCPU / 15 GB machine: one CPU's worth and 2 GB at most.
+#
+# BEFORE INSTALLING: compare ExecStart with production's (systemctl cat mokaco-api) and keep its
+# form - the dotnet path, or the published executable if the build is self-contained - changing
+# only /opt/mokaco/api to /opt/mokaco/api-test. If production's ExecStart passes --urls, this one
+# must pass --urls http://127.0.0.1:5079: the command line beats ASPNETCORE_URLS in the env file.
+[Unit]
+Description=MokaCo HRMS API - TEST (MokaCo_HRMS_Test, 127.0.0.1:5079)
+After=network-online.target mssql-server.service
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=mokaco
+Group=mokaco
+WorkingDirectory=/opt/mokaco/api-test
+EnvironmentFile=/etc/mokaco/api-test.env
+ExecStart=/usr/bin/dotnet /opt/mokaco/api-test/MokaCo.HRMS.API.dll
+# on-failure, not always: a broken test config gives up after 5 tries in 5 minutes instead of
+# restarting forever beside production.
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGINT
+TimeoutStopSec=30
+SyslogIdentifier=mokaco-api-test
+CPUQuota=100%
+MemoryMax=2G
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
