@@ -77,6 +77,19 @@ public static class WorkflowSqlErrors
             || message.StartsWith("Waiting for approval", StringComparison.OrdinalIgnoreCase))
             return new WorkflowException(409, message);
 
+        // The auto-roster's save (96_auto_roster.sql): a day whose row moved after the preview, or a
+        // pinned day the draft would change. The draft was right when it was made; what exists now
+        // refuses it, and the answer is to preview again (or unpin), not to fix the request.
+        if (message.StartsWith("The roster changed since", StringComparison.OrdinalIgnoreCase)
+            || message.StartsWith("This day is pinned", StringComparison.OrdinalIgnoreCase))
+            return new WorkflowException(409, message);
+
+        // The auto-roster's branch scope: EMP_VIEW_ALL or the branch's manager. The wrong person
+        // asking, like the approver refusals above.
+        if (message.StartsWith("You can only plan rosters for the branches you manage", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("belongs to another branch now", StringComparison.OrdinalIgnoreCase))
+            return new WorkflowException(403, message);
+
         // Everything else the procedures raise is a request-state or input rule, not a 500.
         return new WorkflowException(400, message);
     }

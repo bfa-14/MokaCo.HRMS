@@ -37,6 +37,7 @@ public class AttendanceAuthorizationTests
         typeof(DevicesController),
         typeof(ShiftsController),
         typeof(RosterController),
+        typeof(AutoRosterController),
         typeof(RosterApprovalsController),
         typeof(ExitPermissionsController),
     };

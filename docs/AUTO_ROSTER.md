@@ -102,8 +102,10 @@ for each week w in window:
   1 options(e) = every subset S ⊆ P(e,w) with |S| = need(e,w) such that
         - the working runs it creates (counting the run carried in from previous days, and the
           next known rest/leave/holiday/unknown day after the week) never exceed the hard cap;
-        - when the next week is inside the window: the run left at Sunday plus the index of the
-          earliest day in the next week that can break a run stays ≤ cap.
+        - the run left at Sunday stays ≤ the look-ahead for (e,w): computed backward from the end
+          of the window, the longest run that lets every later week keep its 6/5 without an extra
+          rest or a breach; for the last week it uses the saved rows after the window (up to
+          HorizonTo = WindowTo + cap; no row counts as a break).
      none feasible → relax the cap for this person and week (error CONSECUTIVE_CAP when planned
      days create the breach, warning when facts already do).
   2 slots: target rests per day by water-filling Σ need over the week's days:
@@ -179,8 +181,10 @@ Idempotent (`IF NOT EXISTS`, `CREATE OR ALTER`), `QUOTED_IDENTIFIER ON`, no `USE
 ```
 attendance.ROSTER_RHYTHM (
   EmployeeId INT NOT NULL PK FK hr.EMPLOYEE,
-  AnchorWeekStart DATE NOT NULL  CHECK (DATEDIFF(DAY,'19000101',AnchorWeekStart) % 7 = 0),  -- a Monday
-  AnchorWorkDays TINYINT NOT NULL CHECK (AnchorWorkDays IN (5,6)),
+  AnchorWeekStart DATE NULL  CHECK (DATEDIFF(DAY,'19000101',AnchorWeekStart) % 7 = 0),  -- a Monday
+  AnchorWorkDays TINYINT NULL CHECK (AnchorWorkDays IN (5,6)),
+  -- CK_RosterRhythm_Anchor: both set or both NULL. NULL = taken off rotation before any rhythm was
+  -- known; the flag alone is stored, and a comeback starts on a 6-day week (D2).
   OnRotation BIT NOT NULL DEFAULT 1,
   UpdatedAt DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME(), UpdatedBy INT NULL)
 
@@ -234,14 +238,14 @@ Result sets, in this order:
 2. **Settings**: `SettingKey, SettingValue` (keys `Roster%`)
 3. **Staff**: `EmployeeId, FullName, PositionId, Position, HireDate, TerminationDate`
 4. **StaffDays**: `EmployeeId, WorkDate, BranchId` — every employed day HistoryFrom..WindowTo (branch of that day)
-5. **Rows**: `EmployeeId, WorkDate, ShiftId, IsRestDay` — SHIFT_ASSIGNMENT of the staff, HistoryFrom..WindowTo, **all branches** (read after the branch is authorised)
+5. **Rows**: `EmployeeId, WorkDate, ShiftId, IsRestDay` — SHIFT_ASSIGNMENT of the staff, HistoryFrom..HorizonTo (WindowTo + RosterMaxConsecutiveWorkDays, clamped 1..31), **all branches** (read after the branch is authorised)
 6. **Locks**: `EmployeeId, WorkDate, Reason` (`Paid` | `Past` | `Recorded`) — target-month staff days
 7. **Holidays**: `HolidayDate, BranchId, IsPaid, Name` — 12 months before WindowFrom .. WindowTo, rows with BranchId NULL or = @BranchId
 8. **HolidaysWorked**: `EmployeeId, Days` — working rows on those holidays in the 12 months before WindowFrom
-9. **Leaves**: `EmployeeId, FromDate, ToDate, HalfDay, Status, IsPaid` — Approved/Pending/OnHold, overlapping HistoryFrom..WindowTo
+9. **Leaves**: `EmployeeId, FromDate, ToDate, HalfDay, Status, IsPaid` — Approved/Pending/OnHold, overlapping HistoryFrom..HorizonTo
 10. **Shifts**: `ShiftId, Name, StartTime, EndTime, CrossesMidnight, BreakMinutes, IsActive` (all)
 11. **Patterns**: `EmployeeId, DayOfWeek, ShiftId, IsRestDay` (IsActive = 1)
-12. **Rhythm**: `EmployeeId, AnchorWeekStart, AnchorWorkDays, OnRotation`
+12. **Rhythm**: `EmployeeId, AnchorWeekStart, AnchorWorkDays, OnRotation` (the anchor pair may be NULL: no rhythm yet)
 13. **Cells**: `EmployeeId, WorkDate, AutoState, AutoShiftId, ReasonCode, IsPinned` (window)
 14. **Staffing**: `DayOfWeek, ShiftId, MinOnDuty, TargetOnDuty` (branch, active)
 15. **LastRun**: `RunId, MonthDate, Mode, ParamsJson, CreatedAt` (latest for the branch, 0 or 1 row)
@@ -251,7 +255,11 @@ Recursive date CTEs: `OPTION (MAXRECURSION 400)`.
 **`attendance.usp_AutoRoster_Commit @BranchId INT, @MonthDate DATE, @Mode VARCHAR(20), @ChangesJson NVARCHAR(MAX), @RhythmJson NVARCHAR(MAX) = NULL, @ParamsJson NVARCHAR(MAX) = NULL, @IssueCount INT = 0, @CallerUserId INT = NULL`**
 
 `@ChangesJson` (camelCase): `[{ "employeeId", "workDate", "action": "upsert"|"delete", "shiftId", "isRestDay", "expectedExists", "expectedShiftId", "expectedIsRestDay", "isAuto", "reasonCode", "isPinned" }]`
-`@RhythmJson`: `[{ "employeeId", "anchorWeekStart", "anchorWorkDays", "onRotation" }]`
+`@RhythmJson`: `[{ "employeeId", "anchorWeekStart", "anchorWorkDays", "onRotation" }]` — the anchor pair may be left out
+(the flag alone is stored). Optional expected state, flat `expectedAnchorWeekStart, expectedAnchorWorkDays, expectedOnRotation`
+or nested `expected: {…}`: when given and the stored row differs, the commit is refused as stale (409). The API does not
+send it yet. Changing the flag or replacing an existing anchor needs the person's branch today or a future transfer
+into a branch the caller manages (`'… belongs to another branch now — …'`, 403).
 
 1. Scope as GetContext. `'Choose a real mode.'` for anything but FillEmpty/ReplanAuto/ReplanAll.
 2. Each change: in the month; branch of day = @BranchId (`'… is not in this branch on …'`);
@@ -369,3 +377,22 @@ changes); transfer mid-week; hire mid-week; small branches (2, 3, 4 people); det
 shuffling; a seeded property loop (≥ 300 scenarios) where every hard rule holds or is reported.
 Controller: preview never notifies; commit notifies once on success, never on refusal; error issues
 → 400; MapMessage 409/403. Web: `rosterCounters` tests.
+
+## 7. As built — where the code departs from the plan, and what is still open
+
+Departures (kept on purpose):
+- A week that cannot fit its 6/5 within the cap first takes one extra rest; the cap is relaxed only
+  when that fails too. The extra rest is reported as RHYTHM_OVER.
+- Rest slots left over after water-filling go to the days of the week in a rotating order, so
+  no weekday always takes the remainder.
+- A Saturday or Sunday off is given only to people within one day of the most owed (D9 ledger).
+- The cost of dropping below a day's minimum grows with how far below it goes.
+- Stability holds by construction: ReplanAuto keeps every saved week that still fits and changes as
+  few days as possible in one that does not. ReplanAll plans from scratch (so a changed setting or
+  pattern can take effect).
+
+Open:
+- The commit's rhythm staleness check (`expected*` in @RhythmJson) is in the SQL but the API does
+  not send it yet.
+- `ValidateSubmission` raises WORK_WITHOUT_SHIFT for an unchanged submitted day on a retired shift
+  (the SQL accepts it). The web never sends such a day.
