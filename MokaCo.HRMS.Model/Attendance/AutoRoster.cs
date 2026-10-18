@@ -258,6 +258,9 @@ public class AutoRosterIssue
     public int? EmployeeId { get; set; }
     public DateOnly? Date { get; set; }
 
+    /// <summary>D16: the shift a SHIFT_UNCOVERED or per-shift SHORT_STAFFED issue is about, so the web can name it in its own language.</summary>
+    public int? ShiftId { get; set; }
+
     /// <summary>An English sentence with the figures, for logs and for a client that does not know the code.</summary>
     public string Message { get; set; } = string.Empty;
 }

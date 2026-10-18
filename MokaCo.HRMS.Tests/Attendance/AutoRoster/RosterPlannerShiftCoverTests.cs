@@ -57,6 +57,8 @@ public class RosterPlannerShiftCoverTests
         var setup = AutoRosterSetupFactory.Create(world.Context(Dec), Dec);
         Assert.True(setup.ShiftCoverDetected);
         Assert.Equal([RosterWorld.Morning, RosterWorld.Evening], setup.ShiftCover.Select(r => r.ShiftId!.Value));
+        // The drawer lists the shifts in the order of the day: 07:00, 09:00, 15:00, 22:00.
+        Assert.Equal([RosterWorld.Morning, RosterWorld.Day, RosterWorld.Evening, RosterWorld.Night], setup.Shifts.Select(s => s.ShiftId));
     }
 
     [Fact]
@@ -193,7 +195,8 @@ public class RosterPlannerShiftCoverTests
         foreach (var day in p.PerDay)
             Assert.Equal(p.Cell(1, day.Date).State == "work" ? 1 : 2, uncovered.Count(i => i.Date == day.Date));
         Assert.All(uncovered, i => Assert.Equal("warning", i.Severity));
-        Assert.Contains(uncovered, i => i.Message.Contains("Evening"));
+        Assert.Contains(uncovered, i => i.Message.Contains("Evening") && i.ShiftId == RosterWorld.Evening);
+        Assert.All(uncovered, i => Assert.NotNull(i.ShiftId));
         Assert.All(p.PerEmployee, e => Assert.All(e.Weeks, w => Assert.True(w.Ok)));
     }
 

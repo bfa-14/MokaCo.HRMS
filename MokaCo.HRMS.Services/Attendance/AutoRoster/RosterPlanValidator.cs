@@ -405,12 +405,18 @@ public static class RosterPlanValidator
                     continue;
                 var onShift = OnShift(grid, date, rule.ShiftId!.Value);
                 var name = input.Shifts.TryGetValue(rule.ShiftId!.Value, out var s) ? s.Name : $"shift {rule.ShiftId}";
+                AutoRosterIssue? issue = null;
                 if (onShift == 0)
-                    issues.Add(holiday
+                    issue = holiday
                         ? Issue(Info, ShiftUncovered, null, date, $"Nobody is on {name} on {HolidayName(input, date)}; raise its cover to cover every shift.")
-                        : Issue(Warning, ShiftUncovered, null, date, $"Nobody is on {name}; it needs {rule.MinOnDuty}."));
+                        : Issue(Warning, ShiftUncovered, null, date, $"Nobody is on {name}; it needs {rule.MinOnDuty}.");
                 else if (!holiday && onShift < rule.MinOnDuty)
-                    issues.Add(Issue(Warning, ShortStaffed, null, date, $"{onShift} on {name}; the minimum is {rule.MinOnDuty}."));
+                    issue = Issue(Warning, ShortStaffed, null, date, $"{onShift} on {name}; the minimum is {rule.MinOnDuty}.");
+                if (issue is not null)
+                {
+                    issue.ShiftId = rule.ShiftId;
+                    issues.Add(issue);
+                }
             }
         }
     }

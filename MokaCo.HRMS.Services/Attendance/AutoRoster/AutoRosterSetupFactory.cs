@@ -98,9 +98,11 @@ public static class AutoRosterSetupFactory
             .Select(h => new AutoRosterSetupHoliday { Date = h.Date, Name = h.Name, IsPaid = h.IsPaid })
             .ToList();
 
+        // In the order of the day (morning, evening, night): the drawer lists the shifts to cover this way.
         setup.Shifts = input.Shifts.Values
             .Where(s => s.IsActive)
-            .OrderBy(s => s.ShiftId)
+            .OrderBy(s => s.StartTime)
+            .ThenBy(s => s.ShiftId)
             .Select(s => new AutoRosterSetupShift { ShiftId = s.ShiftId, Name = s.Name })
             .ToList();
 

@@ -348,7 +348,7 @@ AutoRosterPreview { branchId, monthDate, windowFrom, windowTo,
   perEmployee: [{ employeeId, workDays, restDays, saturdaysOff, sundaysOff, owedSaturday, owedSunday,
                   weeks: [{ weekStart, workDays (6|5), rests, quota, ok }] }],
   perDay: [{ date, onDuty, min?, target?, shifts: [{ shiftId, onDuty, min, target? }] }],
-  issues: [{ severity ("error"|"warning"|"info"), code, employeeId?, date?, message }],
+  issues: [{ severity ("error"|"warning"|"info"), code, employeeId?, date?, shiftId? (D16), message }],
   summary: { inserts, updates, deletes, unchanged, kept } }
 
 AutoRosterCommitRequest = AutoRosterRequest + { cells: [{ employeeId, workDate, action ("upsert"|"delete"),
@@ -360,7 +360,7 @@ AutoRosterSetup { branchId, monthDate, settings: {…keys of §3.2 as camelCase�
   staff: [{ employeeId, fullName, position, onRotation, anchorWeekStart?, anchorWorkDays?, firstWeekWorkDays }],
   staffing: [StaffingRequirementDto], shiftCover: [StaffingRequirementDto] (D16, as the planner reads it),
   shiftCoverDetected (true = found from the roster, nothing stored), holidays: [{ date, name, isPaid }],
-  shifts: [{ shiftId, name }] (active), lastParams?: AutoRosterRequest, monthStatus?, openRequestId? }
+  shifts: [{ shiftId, name }] (active, in the order they start), lastParams?: AutoRosterRequest, monthStatus?, openRequestId? }
 RosterCellInfo { employeeId, workDate, isPinned, isAuto, reasonCode? }
 StaffingRequirementDto { dayOfWeek? (1..7), shiftId?, minOnDuty, targetOnDuty? }
 RosterRhythmDto { employeeId, onRotation, anchorWeekStart?, anchorWorkDays? }
@@ -411,7 +411,9 @@ moved, the commit reports an emptied shift, regenerate = 0 changes); a seeded pr
 scenarios) where every hard rule holds or is reported — including: no shift short while someone the
 run decides sits on a shift that could spare them.
 Controller: preview never notifies; commit notifies once on success, never on refusal; error issues
-→ 400; MapMessage 409/403. Web: `rosterCounters` tests.
+→ 400; MapMessage 409/403. Web: `rosterCounters`, `rosterDraftCells` and `shiftCover` tests (the
+shift-cover editor's rows: ticked/unticked, found vs stored, weekday rules kept, validation; the
+per-shift footer under draft edits).
 
 ## 7. As built — where the code departs from the plan, and what is still open
 
