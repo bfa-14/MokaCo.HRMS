@@ -77,6 +77,21 @@ public static class AutoRosterSetupFactory
             })
             .ToList();
 
+        setup.ShiftCoverDetected = input.ShiftCoverDetected;
+        setup.ShiftCover = input.ShiftCover
+            .Where(r => input.IsActiveShift(r.ShiftId))
+            .OrderBy(r => r.DayOfWeek ?? 0)
+            .ThenBy(r => input.Shifts[r.ShiftId!.Value].StartTime)
+            .ThenBy(r => r.ShiftId)
+            .Select(r => new StaffingRequirementDto
+            {
+                DayOfWeek = r.DayOfWeek,
+                ShiftId = r.ShiftId,
+                MinOnDuty = r.MinOnDuty,
+                TargetOnDuty = r.TargetOnDuty,
+            })
+            .ToList();
+
         setup.Holidays = input.Holidays.Values
             .Where(h => input.InMonth(h.Date))
             .OrderBy(h => h.Date)

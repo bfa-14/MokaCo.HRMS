@@ -23,6 +23,7 @@ This file is the specification the code follows (SQL `docs/96_auto_roster.sql`, 
 | D6 | Weekly-pattern rest days | **Preference** (setting `RosterPatternRestDays = Preference`): preferred for the weekday rest; fairness and the 6/5 rule win. `Unavailable` makes them fixed rest days. Working on a pattern rest day is reported (info `PATTERN_REST_WORKED`). |
 | D7 | Consecutive working days | Hard cap `RosterMaxConsecutiveWorkDays = 7`; preferred ≤ `RosterPreferredMaxConsecutiveWorkDays = 6`. Leave days, holidays off and rest days break a run. |
 | D8 | Staffing | Optional minimum/target on duty per branch per weekday, optionally per shift (`attendance.STAFFING_REQUIREMENT`). Without any, rest days are spread so the number on duty is level across the week. **Rest days beat staffing**: nobody loses a rest day to cover; a day below the minimum is flagged `SHORT_STAFFED`. |
+| D16 | Shifts to cover | **Every shift the branch runs is covered every day** (morning and evening), not only a total on duty. Which shifts: the branch's stored per-shift staffing rows (a minimum of 0 = "need not be covered"); without any, the shifts it runs, found from its roster (§2.6, `ShiftCoverDetector`), each with a minimum of 1. Rest days are spread so every day holds enough people for all its shifts, and a shift still short takes someone from a shift that can spare them (reason `WORK_SHIFT_COVER`). Rest days still beat staffing: a shift nobody can cover is flagged `SHIFT_UNCOVERED`. |
 | D9 | Weekend fairness | Saturday and Sunday counted separately with a fair-share **owed** balance recomputed from real rows (26 weeks, `RosterFairnessLookbackWeeks`) plus the plan so far. Nothing stored. |
 | D10 | Never touched | Paid days; days before today (Beirut) in **any** month state; days with an attendance record; pinned days; rows inside a leave; facts outside the target month. The whole branch-month is refused while a roster approval is waiting. |
 | D11 | Modes | `FillEmpty` (default on the first run: only empty days), `ReplanAuto` (default afterwards: empty + days still equal to what the generator wrote; manual edits survive), `ReplanAll` (everything except pinned/locked/leave; the drawer asks for confirmation). |
@@ -111,7 +112,8 @@ for each week w in window:
   2 slots: target rests per day by water-filling Σ need over the week's days:
         give the next slot to the day with the highest (onDuty(d) − slots(d) − min(d)) among days
         where some person with need can rest; ties → fewer slots, then calendar order.
-     onDuty(d) = staff who would work d if no more rests were placed; min(d) from staffing (0 if none).
+     onDuty(d) = staff who would work d if no more rests were placed; min(d) from staffing (0 if none),
+     at least Σ the minimums of the shifts d must cover (D16); target(d) likewise Σ their targets.
   3 forced: a person all of whose options contain a weekend day takes it (consumes the slot).
   4 weekend (Saturday first in even weeks, Sunday first in odd weeks), for each weekend day x:
         eligible = need left > 0, x not already chosen, and some remaining option ⊇ (chosen ∪ {x})
@@ -122,6 +124,7 @@ for each week w in window:
   5 weekdays: people with need left, most constrained (fewest options) first, choose the option with
      the lowest cost:
         Σ load(d) above target for chosen days            (keeps on-duty level / ≥ min)
+        + per person the shift this person starts on (§2.6) would fall below its minimum (D16)
         − pair bonus (5-day week, adjacent rest days)       RosterPairRestDays
         − pattern bonus (pattern rest day, Preference)
         − stability bonus (equals the current AUTO value)
@@ -129,7 +132,9 @@ for each week w in window:
         + penalty for a large run left at Sunday
      reasons: REST_LEVEL | REST_PAIR | REST_PATTERN | REST_CONSECUTIVE
   6 repair: a day below min(d) → move one rest of someone resting that day to another day of one of
-     their options that stays ≥ min; else warning SHORT_STAFFED (rest days are kept).
+     their options that stays ≥ min; else warning SHORT_STAFFED (rest days are kept). Days of the
+     target month only: a ghost day is never saved, so a repair that read it would move a saved rest
+     at every regenerate.
   7 ledger: add the week's Saturday/Sunday results (facts and plan) to the owed balances.
 ```
 
@@ -138,11 +143,34 @@ pool(d) = staff employed on d, with a row on d, not on leave, not holiday off. F
 `rested(d) = |{e ∈ pool : rest row}|`; each e in pool earns `rested(d)/|pool|` and is debited 1 if it
 rested. `owed(e,x) = earned − rested`. Rest rows on leave days are ignored.
 
-### 2.6 Shifts for working days
+### 2.6 Shifts for working days, and the shifts to cover (D16)
 
-Pattern shift for that weekday (active) → else the employee's most frequent shift in the 4 weeks
-before the window → else the drawer's default shift → else the first active shift. Overnight shifts
-belong to their start day. Inactive shifts are never written.
+**Start shift** of a working day: pattern shift for that weekday (active) → else the employee's most
+frequent shift in the 4 weeks before the window → else the drawer's default shift → else the first
+active shift. Overnight shifts belong to their start day. Inactive shifts are never written.
+
+**Shifts to cover** (`PlannerInput.ShiftCover`): the branch's stored per-shift staffing rows when it has
+any; otherwise found by `ShiftCoverDetector` — an active shift worked in the branch on at least a quarter
+of the days the branch worked in the 8 weeks before the window (and on 4 days at least), or named by the
+weekly patterns of the staff on rotation on 2 weekdays or more — each with minimum 1, every day. A closed
+holiday needs none; an open one (cover > 0) needs every shift its cover allows.
+
+**Covering them**, day by day, oldest first (only working days the run decides move — never a fact, a
+draft edit or a leave day's row):
+1. someone who worked a shift to cover yesterday that was not their own (moved, or set by hand) stays on
+   it when going back would be a turnaround under `RosterMinHoursBetweenShifts`, if their shift can spare
+   them (the evening's cover does not start at seven the next morning);
+2. the shift furthest below its minimum takes the cheapest person from a shift above its own minimum or a
+   shift nobody has to cover;
+3. then a shift below its target, from a shift above its own target (or minimum), never into a turnaround.
+
+Move cost, largest first: 50 turnaround (the day before, or the day after when the person could not stay
+on the shift then); 20 an evening, one day off, then a morning under `RosterMinWeeklyRestHours`; 10 leaving
+a shift nobody has to cover; 8 leaving the shift the generator saved there (−8 going back to it: a
+regenerate moves the same people); 4 leaving the weekly pattern's shift, and 4 staying on the shift the
+next day too; 3 per day already worked off one's own shift this month (moves are shared); 2 a shift not
+worked in the last 8 weeks. Ties turn with the day. A ghost day is the next month's: it never decides who
+covers, and on the first one after the month a cover from the last day carries on.
 
 ### 2.7 Validator (`RosterPlanValidator`, also run by the commit on the submitted cells)
 
@@ -155,7 +183,8 @@ belong to their start day. Inactive shifts are never written.
 | `HOLIDAY_HIDDEN_BY_REST` | warning | a rest fact on a holiday |
 | `RHYTHM_SHORT` / `RHYTHM_OVER` | warning / info | rests in a week ≠ quota |
 | `REST_ABSORBED_BY_LEAVE` | info | rest could not be placed outside a leave |
-| `SHORT_STAFFED` | warning | on duty below the minimum (day or shift) |
+| `SHORT_STAFFED` | warning | on duty below the minimum (day, or a shift that has somebody) |
+| `SHIFT_UNCOVERED` | warning (info on an open holiday) | a shift to cover (D16) with nobody on it |
 | `TURNAROUND` | warning | < min hours between two shifts |
 | `WEEKLY_REST_HOURS` | warning | longest weekly rest < min hours |
 | `PATTERN_REST_WORKED` | info | working on a weekly-pattern rest day |
@@ -166,7 +195,7 @@ belong to their start day. Inactive shifts are never written.
 For every target-month cell (never ghosts): desired state vs the current row →
 `insert | update | delete | unchanged | kept` (kept = fact). Counters: per employee work days, rest
 days, Saturdays off, Sundays off, owed Sat/Sun, and the week strip (type, rests, ok); per day on
-duty vs min/target.
+duty vs min/target, and on each shift to cover vs its min/target.
 
 ---
 
@@ -318,7 +347,7 @@ AutoRosterPreview { branchId, monthDate, windowFrom, windowTo,
   rhythm: [{ employeeId, anchorWeekStart, anchorWorkDays, isNew }],
   perEmployee: [{ employeeId, workDays, restDays, saturdaysOff, sundaysOff, owedSaturday, owedSunday,
                   weeks: [{ weekStart, workDays (6|5), rests, quota, ok }] }],
-  perDay: [{ date, onDuty, min?, target? }],
+  perDay: [{ date, onDuty, min?, target?, shifts: [{ shiftId, onDuty, min, target? }] }],
   issues: [{ severity ("error"|"warning"|"info"), code, employeeId?, date?, message }],
   summary: { inserts, updates, deletes, unchanged, kept } }
 
@@ -329,7 +358,8 @@ AutoRosterCommitResult { runId, rowsInserted, rowsUpdated, rowsDeleted }
 
 AutoRosterSetup { branchId, monthDate, settings: {…keys of §3.2 as camelCase…},
   staff: [{ employeeId, fullName, position, onRotation, anchorWeekStart?, anchorWorkDays?, firstWeekWorkDays }],
-  staffing: [StaffingRequirementDto], holidays: [{ date, name, isPaid }],
+  staffing: [StaffingRequirementDto], shiftCover: [StaffingRequirementDto] (D16, as the planner reads it),
+  shiftCoverDetected (true = found from the roster, nothing stored), holidays: [{ date, name, isPaid }],
   shifts: [{ shiftId, name }] (active), lastParams?: AutoRosterRequest, monthStatus?, openRequestId? }
 RosterCellInfo { employeeId, workDate, isPinned, isAuto, reasonCode? }
 StaffingRequirementDto { dayOfWeek? (1..7), shiftId?, minOnDuty, targetOnDuty? }
@@ -347,8 +377,9 @@ New refusal sentences mapped in `WorkflowSqlErrors.MapMessage`: 409 for `"The ro
   (tooltip) on "All branches" or while the month is read-only.
 - `AutoRosterDrawer`: month and branch (from the page), mode (FillEmpty / ReplanAuto / ReplanAll with
   confirmation), rhythm start, default shift (active shifts), staff list with *On rotation* and *This
-  month's first week: 6 / 5* (flip), holiday cover per holiday, minimum/target on duty per weekday
-  (saved per branch). **Preview**.
+  month's first week: 6 / 5* (flip), holiday cover per holiday, **shifts to cover every day** (tick,
+  minimum, target per shift — prefilled with what was found) and minimum/target on duty per weekday
+  (both saved per branch). **Preview**.
 - Draft overlay in the same `roster-table`: `draft.get(key) ?? lookup.get(key)`; dashed outline for
   planned days, a lock glyph on locked days, holiday shading, a border before every Monday.
 - `AutoRosterPreviewCard` (sticky above the grid): summary counts, issues (click → scroll to the day),
@@ -356,8 +387,8 @@ New refusal sentences mapped in `WorkflowSqlErrors.MapMessage`: 409 for `"The ro
 - During preview the existing drag-select + Set-day dialog edit the draft (no server call); the dialog
   gains **Keep when regenerating** (pin).
 - Counters: per employee Work / Rest / Sat off / Sun off and a 6·5 week strip (red when broken);
-  footer row with on duty per day against the minimum. Pure helpers in `rosterCounters.ts`
-  (`npm test`).
+  footer row with on duty per day against the minimum, and while a draft is open one row per shift to
+  cover (red when short). Pure helpers in `rosterCounters.ts` (`npm test`).
 - A working row under leave is the normal state now (shown as leave, no conflict outline).
 - i18n: `attendance.roster.auto.*` in `en.json` and `ar.json` (Arabic plurals), issue and reason codes
   translated.
@@ -374,7 +405,11 @@ rows and moves rest days); leave (working rows, never rest inside, absorbed rest
 staffing (minimum met when possible, SHORT_STAFFED otherwise, rest kept); consecutive cap across
 weeks and months, pinned-Monday joint weekend case; modes/pins/locks; stability (regenerate = 0
 changes); transfer mid-week; hire mid-week; small branches (2, 3, 4 people); determinism under input
-shuffling; a seeded property loop (≥ 300 scenarios) where every hard rule holds or is reported.
+shuffling; shift cover (found from the roster or patterns, stored rows win, a morning person covers
+the evening on its person's days off without a turnaround, moves shared, targets, holidays, drafts never
+moved, the commit reports an emptied shift, regenerate = 0 changes); a seeded property loop (≥ 300
+scenarios) where every hard rule holds or is reported — including: no shift short while someone the
+run decides sits on a shift that could spare them.
 Controller: preview never notifies; commit notifies once on success, never on refusal; error issues
 → 400; MapMessage 409/403. Web: `rosterCounters` tests.
 
@@ -390,6 +425,10 @@ Departures (kept on purpose):
 - Stability holds by construction: ReplanAuto keeps every saved week that still fits and changes as
   few days as possible in one that does not. ReplanAll plans from scratch (so a changed setting or
   pattern can take effect).
+
+- D16's repair works on the target month's days only, and the turnaround check never reads a ghost
+  day: both made a regenerate move people. A shift that changes only because the day before did
+  (someone stays on a covered night) follows that day's change.
 
 Open:
 - The commit's rhythm staleness check (`expected*` in @RhythmJson) is in the SQL but the API does

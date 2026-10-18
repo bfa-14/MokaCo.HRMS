@@ -71,7 +71,7 @@ public class RosterPlannerStaffingTests
     }
 
     [Fact]
-    public void A_per_shift_minimum_is_checked_on_that_shift()
+    public void A_per_shift_minimum_is_met_by_moving_someone_onto_that_shift()
     {
         var world = new RosterWorld().WithStaff(3);
         foreach (var e in new[] { 1, 2 })
@@ -80,9 +80,31 @@ public class RosterPlannerStaffingTests
         world.Min(2, shiftId: RosterWorld.Evening);
         var p = world.Plan(Dec).Preview;
 
+        // The two evening people keep their evenings; on their rest days the third one covers it.
         Assert.All(p.Cells.Where(c => c.EmployeeId <= 2 && c.State == "work" && c.Origin == "planned"), c => Assert.Equal(RosterWorld.Evening, c.ShiftId));
         var dayOff = p.Cells.First(c => c.EmployeeId == 1 && c.State == "rest" && c.WorkDate.Month == 12).WorkDate;
+        var cover = p.Cells.Single(c => c.EmployeeId == 3 && c.WorkDate == dayOff);
+        Assert.Equal(("work", RosterWorld.Evening), (cover.State, cover.ShiftId));
+        Assert.Equal("WORK_SHIFT_COVER", cover.ReasonCode);
+        Assert.All(p.PerDay, d => Assert.True(d.Shifts.Single(s => s.ShiftId == RosterWorld.Evening).OnDuty >= 2, $"{d.Date}"));
+        Assert.Empty(p.Issues.WithCode("SHORT_STAFFED"));
+        Assert.Empty(p.Issues.WithCode("SHIFT_UNCOVERED"));
+    }
+
+    [Fact]
+    public void A_per_shift_minimum_nobody_can_meet_is_reported_on_that_shift()
+    {
+        var world = new RosterWorld().WithStaff(2);
+        foreach (var e in new[] { 1, 2 })
+            for (byte dow = 1; dow <= 7; dow++)
+                world.Patterns.Add(new AutoRosterPatternRow { EmployeeId = e, DayOfWeek = dow, ShiftId = RosterWorld.Evening });
+        world.Min(2, shiftId: RosterWorld.Evening);
+        var p = world.Plan(Dec).Preview;
+
+        var dayOff = p.Cells.First(c => c.EmployeeId == 1 && c.State == "rest" && c.WorkDate.Month == 12).WorkDate;
         Assert.Contains(p.Issues, i => i.Code == "SHORT_STAFFED" && i.Date == dayOff && i.Message.Contains("Evening"));
+        Assert.All(p.Cells.Where(c => c.State == "rest" && c.WorkDate.Month == 12), c =>
+            Assert.DoesNotContain(p.Cells, o => o.EmployeeId != c.EmployeeId && o.WorkDate == c.WorkDate && o.State == "rest"));   // never both off: rests are spread
     }
 
     [Theory]

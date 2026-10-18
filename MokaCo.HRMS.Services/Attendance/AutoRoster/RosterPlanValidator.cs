@@ -35,6 +35,7 @@ public static class RosterPlanValidator
     public const string RhythmOver = "RHYTHM_OVER";
     public const string RestAbsorbedByLeave = "REST_ABSORBED_BY_LEAVE";
     public const string ShortStaffed = "SHORT_STAFFED";
+    public const string ShiftUncovered = "SHIFT_UNCOVERED";
     public const string Turnaround = "TURNAROUND";
     public const string WeeklyRestHours = "WEEKLY_REST_HOURS";
     public const string PatternRestWorked = "PATTERN_REST_WORKED";
@@ -377,7 +378,7 @@ public static class RosterPlanValidator
     private static ShiftInfo? ShiftOf(PlannerInput input, GridCell c)
         => c.ShiftId is { } id && input.Shifts.TryGetValue(id, out var s) ? s : null;
 
-    /* ---- staffing (D8): rest days beat staffing, so this is a warning ---- */
+    /* ---- staffing (D8) and the shifts to cover (D16): rest days beat staffing, so these are warnings ---- */
 
     private static void CheckStaffing(PlannerInput input, RosterGrid grid, List<AutoRosterIssue> issues)
     {
@@ -394,17 +395,29 @@ public static class RosterPlanValidator
             if (min is { } m && onDuty < m)
                 issues.Add(Issue(Warning, ShortStaffed, null, date, $"{onDuty} on duty; the minimum is {m}."));
 
-            foreach (var rule in input.ShiftRulesFor(date))
+            // A shift with nobody on it is SHIFT_UNCOVERED; one with somebody but fewer than its minimum
+            // is SHORT_STAFFED. On an open public holiday the cover is the manager's choice, so a shift
+            // it leaves empty is only an info, and a thin one is not reported.
+            var holiday = input.Holidays.ContainsKey(date);
+            foreach (var rule in input.CoverRulesFor(date))
             {
-                var onShift = grid.CellsOn(date).Count(c => c.InBranch && c.CountsAsWorkForRun && c.ShiftId == rule.ShiftId);
-                if (onShift < rule.MinOnDuty)
-                {
-                    var name = input.Shifts.TryGetValue(rule.ShiftId!.Value, out var s) ? s.Name : $"shift {rule.ShiftId}";
+                if (rule.MinOnDuty <= 0)
+                    continue;
+                var onShift = OnShift(grid, date, rule.ShiftId!.Value);
+                var name = input.Shifts.TryGetValue(rule.ShiftId!.Value, out var s) ? s.Name : $"shift {rule.ShiftId}";
+                if (onShift == 0)
+                    issues.Add(holiday
+                        ? Issue(Info, ShiftUncovered, null, date, $"Nobody is on {name} on {HolidayName(input, date)}; raise its cover to cover every shift.")
+                        : Issue(Warning, ShiftUncovered, null, date, $"Nobody is on {name}; it needs {rule.MinOnDuty}."));
+                else if (!holiday && onShift < rule.MinOnDuty)
                     issues.Add(Issue(Warning, ShortStaffed, null, date, $"{onShift} on {name}; the minimum is {rule.MinOnDuty}."));
-                }
             }
         }
     }
+
+    /// <summary>Staff working a given shift in the branch that day (a full-day leave is not on duty).</summary>
+    public static int OnShift(RosterGrid grid, DateOnly date, int shiftId)
+        => grid.CellsOn(date).Count(c => c.InBranch && c.CountsAsWorkForRun && c.ShiftId == shiftId);
 
     /* ---- helpers ---- */
 

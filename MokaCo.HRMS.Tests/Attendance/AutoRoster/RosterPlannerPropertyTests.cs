@@ -48,7 +48,9 @@ public class RosterPlannerPropertyTests
         var regenerateMode = scenario.Mode == "FillEmpty" ? "FillEmpty" : "ReplanAuto";
         var again = world.Plan(scenario.Month, regenerateMode, scenario.Configure).Preview;
         Assert.True(again.Changes() == 0,
-            $"seed {seed}: regenerate gave {again.Summary.Inserts} inserts, {again.Summary.Updates} updates, {again.Summary.Deletes} deletes");
+            $"seed {seed}: regenerate gave {again.Summary.Inserts} inserts, {again.Summary.Updates} updates, {again.Summary.Deletes} deletes: "
+            + string.Join("; ", again.Cells.Where(c => c.Change is "insert" or "update" or "delete")
+                .Select(c => $"{c.EmployeeId} {c.WorkDate:yyyy-MM-dd} {c.Change} {(c.Expected.IsRestDay == true ? "rest" : c.Expected.ShiftId?.ToString() ?? "none")}->{(c.State == "work" ? c.ShiftId?.ToString() : c.State)} {c.Origin} {c.ReasonCode} {c.ReasonArgs}")));
 
         // And once today has moved on: the days before it become facts, everything saved still fits.
         var lostGhostWeeks = run.Preview.Cells
@@ -57,11 +59,20 @@ public class RosterPlannerPropertyTests
             .ToList();
         world.Today = world.Today.AddDays(1 + new Random(seed * 17).Next(21));
         var later = world.Plan(scenario.Month, regenerateMode, scenario.Configure).Preview;
-        foreach (var c in later.Cells.Where(c => c.Change is "insert" or "update" or "delete"))
+        // A shift that only changed because the day before did follows that change (D16: who covers a
+        // shift depends on the shifts worked the day before — someone who covered a night stays on
+        // nights while going back would be a turnaround, and the next cover is chosen around them).
+        var changedDays = new HashSet<DateOnly>();
+        foreach (var c in later.Cells.Where(c => c.Change is "insert" or "update" or "delete").OrderBy(c => c.WorkDate))
         {
             var week = RosterCalendar.WeekStart(c.WorkDate);
-            Assert.True(lostGhostWeeks.Any(g => g.Week == week && g.WorkDate < world.Today),
-                $"seed {seed}: {c.EmployeeId} {c.WorkDate:yyyy-MM-dd} {c.Change} after today moved to {world.Today:yyyy-MM-dd}");
+            var shiftOnly = c.Change == "update" && c.State == "work" && c.Expected.IsRestDay == false;
+            var followsDayBefore = shiftOnly && changedDays.Contains(c.WorkDate.AddDays(-1));
+            changedDays.Add(c.WorkDate);
+            Assert.True(followsDayBefore || lostGhostWeeks.Any(g => g.Week == week && g.WorkDate < world.Today),
+                $"seed {seed}: {c.EmployeeId} {c.WorkDate:yyyy-MM-dd} {c.Change} "
+                + $"{(c.Expected.IsRestDay == true ? "rest" : c.Expected.ShiftId?.ToString() ?? "none")}->{(c.State == "work" ? c.ShiftId?.ToString() : c.State)} "
+                + $"{c.Origin} {c.ReasonCode} {c.ReasonArgs} after today moved to {world.Today:yyyy-MM-dd}");
         }
     }
 
@@ -284,6 +295,7 @@ public class RosterPlannerPropertyTests
             RunsWithinTheCapOrReported();
             WeeksOnQuotaOrReported();
             StaffingOrReported();
+            ShiftsCoveredOrReported();
             SummaryAndGhosts();
         }
 
@@ -530,6 +542,47 @@ public class RosterPlannerPropertyTests
                 var (min, _) = _in.StaffingFor(d);
                 if (min is { } m && onDuty < m)
                     Assert.True(Has("SHORT_STAFFED", null, d, d), $"{d}: {onDuty} on duty for a minimum of {m}, unreported");
+            }
+        }
+
+        /// <summary>
+        /// D16: every shift a day must cover has its minimum on it, or the preview names that shift as
+        /// short that day (an open holiday's thin cover is the manager's choice and needs no report) —
+        /// and a shift is never left short while someone the run decides (a planned or holiday-cover
+        /// working day) sits on a shift that could spare them.
+        /// </summary>
+        private void ShiftsCoveredOrReported()
+        {
+            if (_in.MonthLocked)
+                return;
+            foreach (var d in RosterCalendar.Days(_in.MonthStart, _in.MonthEnd).Where(d => d >= _in.Today))
+            {
+                var rules = _in.CoverRulesFor(d).Where(r => r.MinOnDuty > 0).ToList();
+                var working = _p.Cells.Where(c => c.WorkDate == d && c.State == "work" && _in.LeaveOn(c.EmployeeId, d) != LeaveKind.Full).ToList();
+                int On(int shift) => working.Count(c => c.ShiftId == shift);
+                bool Spares(int shift) => rules.FirstOrDefault(r => r.ShiftId == shift) is not { } rule || On(shift) > rule.MinOnDuty;
+
+                var counted = _p.PerDay.Single(x => x.Date == d).Shifts.Where(s => s.Min > 0).Select(s => (s.ShiftId, s.OnDuty, s.Min));
+                Assert.Equal(rules.Select(r => (r.ShiftId!.Value, On(r.ShiftId!.Value), r.MinOnDuty)), counted);
+
+                var holiday = _in.Holidays.ContainsKey(d);
+                foreach (var rule in rules)
+                {
+                    var shift = rule.ShiftId!.Value;
+                    if (On(shift) >= rule.MinOnDuty)
+                        continue;
+                    var name = _in.Shifts[shift].Name;
+                    Assert.True(
+                        (holiday && On(shift) > 0)
+                        || _p.Issues.Any(i => i.Date == d && i.Code is "SHIFT_UNCOVERED" or "SHORT_STAFFED" && i.Message.Contains(name)),
+                        $"{d}: {On(shift)} on {name} for a minimum of {rule.MinOnDuty}, unreported");
+
+                    var couldCover = working
+                        .Where(c => c.Origin is "planned" or "holiday" && c.ShiftId is { } from && from != shift && Spares(from))
+                        .Select(c => c.EmployeeId)
+                        .ToList();
+                    Assert.True(couldCover.Count == 0, $"{d}: {name} short while {string.Join(", ", couldCover)} could have covered it");
+                }
             }
         }
 

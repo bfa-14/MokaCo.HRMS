@@ -461,6 +461,8 @@ public class RosterPlannerModesTests
         world.Patterns.Add(new AutoRosterPatternRow { EmployeeId = 1, DayOfWeek = 3, ShiftId = RosterWorld.Retired });   // inactive: ignored
         for (var d = new DateOnly(2026, 11, 2); d < new DateOnly(2026, 11, 30); d = d.AddDays(1))
             world.Work(2, d, d.DayOfWeek == DayOfWeek.Monday ? RosterWorld.Morning : RosterWorld.Evening);
+        // Where each person STARTS (§2.6) — no shift to cover (D16), so nobody is moved off it.
+        world.Min(0, shiftId: RosterWorld.Evening);
 
         var p = world.Plan(Dec, "FillEmpty", r => r.DefaultShiftId = RosterWorld.Morning).Preview;
         var tue = p.Cells.First(c => c.EmployeeId == 1 && c.WorkDate.DayOfWeek == DayOfWeek.Tuesday && c.State == "work" && c.WorkDate.Month == 12);

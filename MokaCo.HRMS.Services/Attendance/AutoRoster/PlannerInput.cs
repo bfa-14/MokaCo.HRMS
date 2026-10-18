@@ -176,6 +176,22 @@ public sealed class PlannerInput
     public IReadOnlyDictionary<EmpDay, CellMeta> Cells { get; init; } = FrozenDictionary<EmpDay, CellMeta>.Empty;
     public IReadOnlyList<StaffingRule> Staffing { get; init; } = [];
 
+    /// <summary>
+    /// D16 — THE SHIFTS EVERY DAY MUST COVER, as the planner and the validator read them: the branch's
+    /// stored per-shift staffing rows when it has any (a row with minimum 0 is the manager's "this shift
+    /// need not be covered"), otherwise the shifts the branch actually runs (<see cref="ShiftCoverDetector"/>),
+    /// each with a minimum of one. So a branch that works mornings and evenings has both covered every
+    /// day without anyone setting it up; the drawer shows what was found and the manager can change it.
+    /// </summary>
+    public IReadOnlyList<StaffingRule> ShiftCover => _shiftCover ??= ShiftCoverDetected
+        ? ShiftCoverDetector.Detect(this)
+        : Staffing.Where(r => r.ShiftId is not null).ToList();
+
+    private IReadOnlyList<StaffingRule>? _shiftCover;
+
+    /// <summary>True when <see cref="ShiftCover"/> was found from the branch's roster, not stored.</summary>
+    public bool ShiftCoverDetected => !Staffing.Any(r => r.ShiftId is not null);
+
     /// <summary>Cover per holiday from the drawer; a holiday not here is closed.</summary>
     public IReadOnlyDictionary<DateOnly, int> HolidayCover { get; init; } = FrozenDictionary<DateOnly, int>.Empty;
 
@@ -241,17 +257,40 @@ public sealed class PlannerInput
         return rule is null ? (null, null) : (rule.MinOnDuty, rule.TargetOnDuty);
     }
 
-    /// <summary>The staffing rows with a shift that apply to a day (a weekday row beats an every-day row for the same shift).</summary>
+    /// <summary>The per-shift rules that apply to a day that is not a public holiday (a weekday row beats an every-day row for the same shift).</summary>
     public IEnumerable<StaffingRule> ShiftRulesFor(DateOnly date)
-    {
-        if (Holidays.ContainsKey(date))
-            yield break;
+        => Holidays.ContainsKey(date) ? [] : CoverRules(date);
 
-        foreach (var shiftId in Staffing.Where(r => r.ShiftId is not null).Select(r => r.ShiftId!.Value).Distinct().Order())
+    /// <summary>
+    /// The shifts to cover on a day, with their minimum and target (D16), active shifts only, in the
+    /// order they start. A public holiday of the month follows its cover: closed (cover 0) needs
+    /// nobody, an open one needs every shift the rules name.
+    /// </summary>
+    public IReadOnlyList<StaffingRule> CoverRulesFor(DateOnly date)
+    {
+        if (Holidays.ContainsKey(date) && (!InMonth(date) || (HolidayCover.TryGetValue(date, out var cover) ? cover : 0) == 0))
+            return [];
+        return CoverRules(date);
+    }
+
+    /// <summary>The people a day's shift rules need together: Σ minimum (0 on a public holiday — its cover is its minimum).</summary>
+    public int CoverMinFor(DateOnly date) => ShiftRulesFor(date).Sum(r => r.MinOnDuty);
+
+    private List<StaffingRule> CoverRules(DateOnly date)
+    {
+        var dow = RosterCalendar.IsoDayOfWeek(date);
+        var rules = new List<StaffingRule>();
+        foreach (var shiftId in ShiftCover.Select(r => r.ShiftId!.Value).Distinct())
         {
-            if (RuleFor(date, shiftId) is { } rule)
-                yield return rule;
+            var rule = ShiftCover.FirstOrDefault(r => r.ShiftId == shiftId && r.DayOfWeek == dow)
+                ?? ShiftCover.FirstOrDefault(r => r.ShiftId == shiftId && r.DayOfWeek is null);
+            if (rule is not null && IsActiveShift(shiftId) && (rule.MinOnDuty > 0 || rule.TargetOnDuty > 0))
+                rules.Add(rule);
         }
+        return rules
+            .OrderBy(r => Shifts[r.ShiftId!.Value].StartTime)
+            .ThenBy(r => r.ShiftId)
+            .ToList();
     }
 
     private StaffingRule? RuleFor(DateOnly date, int? shiftId)

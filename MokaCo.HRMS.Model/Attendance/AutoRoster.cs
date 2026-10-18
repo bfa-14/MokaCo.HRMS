@@ -229,6 +229,18 @@ public class AutoRosterDayCounters
     public int? Min { get; set; }
 
     public int? Target { get; set; }
+
+    /// <summary>D16: each shift this day must cover, in the order they start — none on a closed holiday.</summary>
+    public List<AutoRosterShiftCounter> Shifts { get; set; } = new();
+}
+
+/// <summary>On duty on one shift to cover, against its minimum and target.</summary>
+public class AutoRosterShiftCounter
+{
+    public int ShiftId { get; set; }
+    public int OnDuty { get; set; }
+    public int Min { get; set; }
+    public int? Target { get; set; }
 }
 
 /// <summary>
@@ -330,6 +342,17 @@ public class AutoRosterSetup
     public AutoRosterSettings Settings { get; set; } = new();
     public List<AutoRosterSetupStaff> Staff { get; set; } = new();
     public List<StaffingRequirementDto> Staffing { get; set; } = new();
+
+    /// <summary>
+    /// D16: the shifts every day must cover, as the planner will read them — the branch's stored
+    /// per-shift rows, or, when it has none, the shifts it runs (found from the last eight weeks), each
+    /// with a minimum of one. Saving the drawer's shift rows makes them the branch's own.
+    /// </summary>
+    public List<StaffingRequirementDto> ShiftCover { get; set; } = new();
+
+    /// <summary>True when <see cref="ShiftCover"/> was found, not stored.</summary>
+    public bool ShiftCoverDetected { get; set; }
+
     public List<AutoRosterSetupHoliday> Holidays { get; set; } = new();
 
     /// <summary>Active shifts only — an inactive shift is never written.</summary>
