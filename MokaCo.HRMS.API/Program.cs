@@ -21,6 +21,7 @@ using MokaCo.HRMS.Repository.Payroll;
 using MokaCo.HRMS.Repository.Booking;
 using MokaCo.HRMS.Services.Auth;
 using MokaCo.HRMS.Services.Security;
+using MokaCo.HRMS.Services.Security.Gate;
 using MokaCo.HRMS.Services.Core;
 using MokaCo.HRMS.Services.HR;
 using MokaCo.HRMS.Services.Attendance;
@@ -72,6 +73,11 @@ var mpgsOptions = MpgsOptions.FromSettings(key => builder.Configuration[key]);
 var depositTiming = builder.Configuration.GetSection(OnlineDepositOptions.Section).Get<OnlineDepositOptions>() ?? new OnlineDepositOptions();
 depositTiming.Validate();
 
+// GOOGLE SIGN-IN GATE (docs/GOOGLE_SIGNIN_GATE.md). Google:MetadataAddress is optional — Google's own
+// discovery document by default; tests point it at a local fake. Anything but https (plain http only
+// on loopback) stops the start here, naming the key.
+var googleMetadataAddress = GoogleTokenValidator.ResolveMetadataAddress(builder.Configuration[GoogleTokenValidator.MetadataAddressKey]);
+
 // --- DI: infrastructure ---
 builder.Services.AddSingleton<IDbConnectionFactory>(new SqlConnectionFactory(connectionString));
 builder.Services.AddSingleton(jwtOptions);
@@ -82,6 +88,7 @@ builder.Services.AddScoped<IUserSignatureRepository, UserSignatureRepository>();
 builder.Services.AddScoped<IRoleRepository, RoleRepository>();
 builder.Services.AddScoped<IPermissionRepository, PermissionRepository>();
 builder.Services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
+builder.Services.AddScoped<IGateRepository, GateRepository>();
 
 // --- DI: repositories (Core) ---
 builder.Services.AddScoped<ICurrencyRepository, CurrencyRepository>();
@@ -150,6 +157,17 @@ builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<IUserSignatureService, UserSignatureService>();
+
+// The Google sign-in gate. The STATE is a singleton and must stay one: it is the 20-second cache every
+// gate check reads — nginx asks for every request — and a scoped one would read the database each time.
+// The validator is a singleton for the same reason: it holds Google's signing keys between sign-ins.
+builder.Services.AddScoped<IGateService, GateService>();
+builder.Services.AddSingleton<IGateState, GateState>();
+builder.Services.AddHttpClient(GoogleTokenValidator.HttpClientName, client => client.Timeout = GoogleTokenValidator.HttpTimeout);
+builder.Services.AddSingleton<IGoogleTokenValidator>(sp => new GoogleTokenValidator(
+    googleMetadataAddress,
+    sp.GetRequiredService<IHttpClientFactory>(),
+    sp.GetRequiredService<ILogger<GoogleTokenValidator>>()));
 
 // --- DI: services (Core) ---
 builder.Services.AddScoped<ICurrencyService, CurrencyService>();
@@ -341,6 +359,8 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 //     ZKTeco protocol and cannot send a bearer token; they are gated by serial + rate limiter;
 //   - AttendanceIngestion punch ([AllowAnonymous]) — [DeviceApiKey] is an action FILTER, not an
 //     authentication scheme, so the fallback would demand a JWT the device does not have;
+//   - GateController ([AllowAnonymous] on the class) — the Google sign-in gate is in front of the HRMS
+//     login, and nginx's per-request check carries no token;
 //   - the Development-only OpenAPI/Scalar endpoints.
 builder.Services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
 builder.Services.AddAuthorization(options =>
@@ -376,9 +396,11 @@ builder.Services.AddRateLimiter(options =>
     // value, and the public booking endpoints are talked to by browsers, where "try later" is 429
     // and 503 reads as "the site is down". This runs after the middleware has applied the default,
     // so the assignment wins; the terminals keep the 503 their retry logic already understands.
+    // The Google sign-in gate's page is a browser too.
     options.OnRejected = (context, _) =>
     {
-        if (context.HttpContext.Request.Path.StartsWithSegments("/api/public/booking"))
+        var path = context.HttpContext.Request.Path;
+        if (path.StartsWithSegments("/api/public/booking") || path.StartsWithSegments("/api/gate"))
             context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
 
         return ValueTask.CompletedTask;
@@ -410,6 +432,17 @@ builder.Services.AddRateLimiter(options =>
         RateLimitPartition.GetFixedWindowLimiter(ClientPartition(context), _ => new FixedWindowRateLimiterOptions
         {
             PermitLimit = 5,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0
+        }));
+
+    // The Google sign-in (POST api/gate/google): a person presses the button once; ten in a minute from
+    // one address is somebody trying tokens. The per-request check is NOT limited — nginx asks it for
+    // every file of every page.
+    options.AddPolicy(GateController.SignInRateLimitPolicy, context =>
+        RateLimitPartition.GetFixedWindowLimiter(ClientPartition(context), _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 10,
             Window = TimeSpan.FromMinutes(1),
             QueueLimit = 0
         }));
@@ -544,9 +577,10 @@ if (app.Environment.IsDevelopment())
 // the serial and every punch travel in clear text, and the serial is the only credential this
 // protocol has.
 // /iclock is exempt because the terminals speak plain HTTP on the LAN and do not follow 307s; every
-// other endpoint keeps the redirect.
+// other endpoint keeps the redirect. So is the gate check: nginx asks it over plain HTTP on loopback,
+// and auth_request treats any answer but 2xx, 401 and 403 as an error for the visitor.
 app.UseWhen(
-    ctx => !ctx.Request.Path.StartsWithSegments("/iclock"),
+    ctx => !ctx.Request.Path.StartsWithSegments("/iclock") && !ctx.Request.Path.StartsWithSegments("/api/gate/check"),
     branch => branch.UseHttpsRedirection());
 app.UseCors(CorsPolicy);
 

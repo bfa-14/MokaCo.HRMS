@@ -157,3 +157,44 @@ Warns when `sites-enabled/mokaco-api` exists (it would expose the whole API with
 2. "to production": merge, deploy the API and web, apply 97 on `MokaCo_HRMS`, then
    `sudo bash ~/src/MokaCo.HRMS/deploy/enable-google-gate.sh --all`. Nothing changes until the owner turns the
    switch on in production's Settings.
+
+## 7. As built — where the code is stricter than the sections above
+
+Review found ways to lock yourself out or keep an old address passing; these close them.
+
+- **The cookie is tied to the address and the client ID.** It carries `en` (normalised email) and `aud`
+  (client ID) as well. It passes only while (Kind, PersonId, `en`) is in the allowed set and `aud` is the
+  current client ID. So correcting an employee's Gmail, or editing an extra address, ends the old cookie
+  within the 20 s cache, with no admin action. `usp_Gate_GetState` RS2 is `Kind, PersonId, EmailNorm` and
+  the `usp_Gate_SignIn` row has a fifth column `EmailNorm` (Allowed only).
+- **More lock-out guards (409):** switching off, re-addressing or removing the extra address this browser
+  passes with; blocking the employee this browser passes as; changing the client ID while the gate is on;
+  turning on with a client ID that is not saved yet. The turn-on guard checks the cookie against the shorter
+  of the current and requested days.
+  Not guarded: an admin who changes **their own** employee Gmail on the Employee form to one they cannot
+  sign in with. Recovery: another admin, or `deploy/google-gate-emergency-off.sh`.
+- `PUT /api/settings/{key}` also refuses any key that is not plain ASCII (`"That is not a setting key."`):
+  SQL Server would turn a look-alike letter into the gate key.
+- **Exempt paths are exact:** `/health` and `/api/attendance/punch` match exactly; the query string is
+  ignored; `#`, spaces, control and non-ASCII characters are never exempt.
+- A failed state read is retried after 5 s (not on every request). The validator waits up to 3 s for
+  Google's refreshed keys.
+- **SQL details:** a blank Days or Epoch counts as missing; the extra-address check refuses `a@.com` and
+  `a@b.`; blocking a deleted employee gives "Employee not found."; a refused sign-in returns NULL
+  Kind/PersonId/DisplayName (the log still names the employee); SaveSettings and SignOutEveryone recreate
+  rows deleted by hand.
+- **Web:** `isGateResponse` is in `src/api/gateResponse.ts`; `restoreSession` and the live socket handle the
+  gate too (a gated 401 never clears the HRMS tokens); a 10 s guard stops repeat reloads; the gate page has
+  `strings.js` and `favicon.png` and loads its files with `?v=1`; Test sign-in uses the saved client ID; the
+  in-app how-to includes publishing the Google app.
+- **nginx script:**
+  - More preconditions: the API must say it has read its settings (refuses before 97 is applied), the API
+    location must be in an HTTPS block, `--test` needs the test switch, the gate page must exist in each web
+    root, and `sites-enabled` must hold links.
+  - The snippet adds `location ^~ /gate/` (404 for a missing file) and a `Cache-Control` map (`no-cache` on
+    the app's HTML and `/gate/*`, so a cached app page cannot skip the gate). `/api/gate/` sends
+    `X-Forwarded-For $remote_addr` (the shared `$mokaco_client_ip` trusts a client-sent `CF-Connecting-IP`).
+  - `--off` also cleans `mokaco.before-env-switch`; `--test` removes a line an earlier `--all` left in
+    `mokaco-test`. Smoke tests roll everything back on failure. Emergency-off exits 1 when 97 is missing.
+- **Operations to remember:** `--test` needs `mokaco-api-test` running; apply 97 again after every
+  `refresh-test-db.sh`; run `--off` before deploying a build without the gate.

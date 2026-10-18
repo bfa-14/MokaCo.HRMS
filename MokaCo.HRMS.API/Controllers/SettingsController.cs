@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Model.Core;
 using MokaCo.HRMS.Services.Core;
+using MokaCo.HRMS.Services.Security.Gate;
 
 namespace MokaCo.HRMS.Api.Controllers;
 
@@ -65,11 +66,25 @@ public class SettingsController : ControllerBase
         });
     }
 
-    /// <summary>Changes one setting. The caller is recorded, because some of these change what people are paid.</summary>
+    /// <summary>
+    /// Changes one setting. The caller is recorded, because some of these change what people are paid.
+    ///
+    /// NOT the four Google* keys of the sign-in gate (docs/GOOGLE_SIGNIN_GATE.md G5): they change only
+    /// through PUT api/access/settings, which refuses to turn the gate on for a caller who has not
+    /// passed it — this path would let anyone with SETTING_MANAGE lock everybody out, themselves included.
+    ///
+    /// AND ONLY A PLAIN KEY: the procedure takes it as VARCHAR(60), where a look-alike letter becomes its
+    /// plain one and the rest of a long key is cut off — "GoogleSİgnInRequired" would land on the gate's row.
+    /// </summary>
     [HttpPut("{key}")]
     [HasPermission("SETTING_MANAGE")]
     public async Task<IActionResult> Upsert(string key, [FromBody] SettingUpsertRequest request)
     {
+        if (!GateSettingKeys.IsPlainKey(key))
+            return BadRequest(new { error = "That is not a setting key." });
+        if (GateSettingKeys.IsGateKey(key))
+            return BadRequest(new { error = "Change this on Settings → Google sign-in." });
+
         await _settings.UpsertAsync(key, request, CurrentUserId);
         // Settings are read by every module — the standard working day, the expense threshold, the
         // signature grace. Which one changed is not known here, so every topic is signalled.

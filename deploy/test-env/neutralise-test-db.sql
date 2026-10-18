@@ -9,6 +9,8 @@
        The Pull now / Clear buttons ignore MachinePullEnabled and IsActive: only an empty PullIp
        stops them (MachinePullService);
      * accept website bookings: a MISSING BookingWebsiteEnabled row means ON (PublicBookingGate).
+   It also turns the copy's Google sign-in gate off (docs/97_google_signin_gate.sql): production's
+   switch would otherwise come along, and the test copy's gate is turned on by hand when it is tried.
 
    Run it after every restore and BEFORE mokaco-api-test starts; refresh-test-db.sh does both.
    Refuses to run in any database but MokaCo_HRMS_Test. Idempotent.
@@ -39,7 +41,8 @@ JOIN (VALUES
     ('BookingWebsiteEnabled', N'0'),
     ('BookingCorsOrigins',    N''),
     ('BookingApiKey',         N''),
-    ('BookingNotifyEmail',    N'')
+    ('BookingNotifyEmail',    N''),
+    ('GoogleSignInRequired',  N'0')     -- the gate; a missing row is off as well
 ) v (K, V) ON v.K = s.SettingKey;
 
 IF NOT EXISTS (SELECT 1 FROM core.SETTING WHERE SettingKey = 'BookingWebsiteEnabled')
@@ -70,7 +73,7 @@ COMMIT;
 SELECT SettingKey, SettingValue
 FROM core.SETTING
 WHERE SettingKey IN ('SmtpHost', 'WhatsAppEnabled', 'MachinePullEnabled', 'BookingWebsiteEnabled',
-                     'BookingCorsOrigins', 'BookingApiKey', 'BookingNotifyEmail')
+                     'BookingCorsOrigins', 'BookingApiKey', 'BookingNotifyEmail', 'GoogleSignInRequired')
 ORDER BY SettingKey;
 
 SELECT (SELECT COUNT(*) FROM core.EMAIL_OUTBOX WHERE [Status] = 'Pending')  AS PendingOutbox,
