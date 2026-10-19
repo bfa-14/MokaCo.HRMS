@@ -42,6 +42,9 @@ JOIN (VALUES
     ('BookingCorsOrigins',    N''),
     ('BookingApiKey',         N''),
     ('BookingNotifyEmail',    N''),
+    ('BookingSmtpHost',       N''),     -- QA3: booking mail now has its own account (script 104);
+    ('BookingSmtpUser',       N''),     --   blank it too, or a test status change on a copied
+    ('BookingSmtpPassword',   N''),     --   booking mails the real guest from the real mailbox
     ('GoogleSignInRequired',  N'0')     -- the gate; a missing row is off as well
 ) v (K, V) ON v.K = s.SettingKey;
 
@@ -73,7 +76,8 @@ COMMIT;
 SELECT SettingKey, SettingValue
 FROM core.SETTING
 WHERE SettingKey IN ('SmtpHost', 'WhatsAppEnabled', 'MachinePullEnabled', 'BookingWebsiteEnabled',
-                     'BookingCorsOrigins', 'BookingApiKey', 'BookingNotifyEmail', 'GoogleSignInRequired')
+                     'BookingCorsOrigins', 'BookingApiKey', 'BookingNotifyEmail', 'BookingSmtpHost',
+                     'GoogleSignInRequired')
 ORDER BY SettingKey;
 
 SELECT (SELECT COUNT(*) FROM core.EMAIL_OUTBOX WHERE [Status] = 'Pending')  AS PendingOutbox,
