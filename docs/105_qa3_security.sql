@@ -41,20 +41,30 @@
             the rows of those reads with it; reads of ONE employee use script 98's
             hr.usp_Scope_CallerSees ([InCallerScope]).
 
+   Unit B handoff: attendance.usp_RawLog_GetUnresolved (the Unresolved PINs list) leaves out the punches HR set
+          aside (RAW_DEVICE_LOG.DismissedUtc, script 100). Redefined behind a CON-7 guard (the live version must
+          take and return nothing this one lacks) and only once 100 is applied; until then it is skipped with a
+          message, and running 105 again after 100 applies it.
+
    Prerequisites: script 87 (hr.fn_CallerScope); the base security tables with the columns the API
    already uses. Adds security.REFRESH_TOKEN.ReplacedByHash if a database lacks it (the base rotation
    writes it). No data is changed; existing sessions stay valid until their account's sessions are
    ended (a token issued before this script carries no stamp, which matches an account that has none).
 
-   Apply BEFORE deploying the API built with these fixes: that API calls the new procedures.
-   Re-runnable. QUOTED_IDENTIFIER ON. Every refusal is RAISERROR(msg,16,1) + RETURN 1.
+   Apply BEFORE deploying the API built with these fixes: that API calls the new procedures. Script 100 is not
+   required (see the unit B handoff above). Re-runnable. QUOTED_IDENTIFIER ON. A refusal is RAISERROR(msg,16,1) +
+   RETURN 1, except where the base contract answers with NO ROW (the two token procedures, as the base rotation).
    ============================================================================ */
 SET QUOTED_IDENTIFIER ON;
 SET ANSI_NULLS ON;
 GO
 
+/* sqlcmd -b stops at the first RAISERROR; SET NOEXEC ON stops the rest in a tool that does not (pattern of 100) */
 IF OBJECT_ID('hr.fn_CallerScope') IS NULL
+BEGIN
     RAISERROR('105_qa3_security.sql needs script 87 (hr.fn_CallerScope). Apply 87 first.', 16, 1);
+    SET NOEXEC ON;
+END
 GO
 
 IF COL_LENGTH('security.[USER]', 'IsActive') IS NULL OR COL_LENGTH('security.[USER]', 'PasswordHash') IS NULL
@@ -62,7 +72,10 @@ IF COL_LENGTH('security.[USER]', 'IsActive') IS NULL OR COL_LENGTH('security.[US
    OR COL_LENGTH('security.REFRESH_TOKEN', 'UserId') IS NULL OR COL_LENGTH('security.REFRESH_TOKEN', 'TokenHash') IS NULL
    OR COL_LENGTH('security.REFRESH_TOKEN', 'ExpiresAt') IS NULL OR COL_LENGTH('security.REFRESH_TOKEN', 'CreatedByIp') IS NULL
    OR COL_LENGTH('security.REFRESH_TOKEN', 'RevokedAt') IS NULL
+BEGIN
     RAISERROR('105_qa3_security.sql: security.[USER] (IsActive, PasswordHash, FailedLoginAttempts, LockoutEnd) or security.REFRESH_TOKEN (UserId, TokenHash, ExpiresAt, CreatedByIp, RevokedAt) is not as the API uses it. Nothing changed.', 16, 1);
+    SET NOEXEC ON;
+END
 GO
 
 /* ------------------------- SEC-5: the stamp ------------------------- */
@@ -284,5 +297,59 @@ BEGIN
 END;
 GO
 
+/* ------------------------- unit B handoff: Unresolved PINs leaves out what HR set aside ------------------------- */
+/* Script 100 lets HR set aside the punches of a PIN that belongs to nobody (RAW_DEVICE_LOG.DismissedUtc); the
+   quarantine view leaves them out, the Unresolved PINs list (usp_RawLog_GetUnresolved) did not. Skipped until 100
+   is applied: run this script again afterwards.
+   CON-7 GUARD: the repo's copy of usp_RawLog_GetUnresolved is the genesis one (attendance_full_v3.sql), which
+   production may have outgrown. It is redefined only if the live one takes no parameter and returns no column
+   that this version lacks; otherwise the script stops here, naming them, and nothing is overwritten. This version
+   returns every column of the RawLog model the API reads it into (the genesis copy left three out), so a live one
+   that already returns them passes. */
+DECLARE @extra NVARCHAR(MAX);
+IF COL_LENGTH('attendance.RAW_DEVICE_LOG', 'DismissedUtc') IS NULL
+    PRINT 'QA3 security (105): usp_RawLog_GetUnresolved NOT changed - attendance.RAW_DEVICE_LOG.DismissedUtc is missing (script 100). Apply 100, then run 105 again.';
+ELSE
+BEGIN
+    IF OBJECT_ID('attendance.usp_RawLog_GetUnresolved', 'P') IS NOT NULL
+        SELECT @extra = STRING_AGG(x.what, N', ')
+        FROM (SELECT what = CONCAT(N'parameter ', p.name)
+              FROM sys.parameters p
+              WHERE p.object_id = OBJECT_ID('attendance.usp_RawLog_GetUnresolved') AND p.name NOT IN (N'@FromDate', N'@ToDate')
+              UNION ALL
+              SELECT CASE WHEN d.error_number IS NOT NULL THEN CONCAT(N'a result that cannot be described (', d.error_message, N')')
+                          ELSE CONCAT(N'column ', d.name) END
+              FROM sys.dm_exec_describe_first_result_set_for_object(OBJECT_ID('attendance.usp_RawLog_GetUnresolved'), 0) d
+              WHERE d.error_number IS NOT NULL
+                 OR d.name NOT IN (N'RawLogId', N'DeviceId', N'SerialNumber', N'EnrollPin', N'PunchTimeUtc', N'PunchType',
+                                   N'Source', N'DedupHash', N'IsProcessed', N'ImportBatchId', N'CreatedUtc')) x;
+
+    IF @extra IS NOT NULL
+        RAISERROR('105_qa3_security.sql: the live attendance.usp_RawLog_GetUnresolved has %s, which this script''s version lacks - it is newer than the repo (CON-7). NOT redefined: add "AND r.DismissedUtc IS NULL" to the live one by hand.', 16, 1, @extra);
+    ELSE
+    BEGIN
+        EXEC (N'CREATE OR ALTER PROCEDURE attendance.usp_RawLog_GetUnresolved
+    @FromDate DATE = NULL, @ToDate DATE = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    /* the punches of PINs that belong to nobody, still waiting: QA3 leaves out those HR set aside (script 100) */
+    SELECT r.RawLogId, r.DeviceId, d.SerialNumber, r.EnrollPin,
+           r.PunchTimeUtc, r.PunchType, r.[Source], r.DedupHash, r.IsProcessed, r.ImportBatchId, r.CreatedUtc
+    FROM attendance.RAW_DEVICE_LOG r
+    JOIN attendance.DEVICE d ON d.DeviceId = r.DeviceId
+    WHERE r.EmployeeId IS NULL
+      AND r.DismissedUtc IS NULL
+      AND (@FromDate IS NULL OR CAST(r.PunchTimeUtc AS DATE) >= @FromDate)
+      AND (@ToDate   IS NULL OR CAST(r.PunchTimeUtc AS DATE) <= @ToDate)
+    ORDER BY r.PunchTimeUtc DESC;
+END;');
+        PRINT 'QA3 security (105): usp_RawLog_GetUnresolved leaves out the punches HR set aside';
+    END
+END
+GO
+
 PRINT 'QA3 security (105): SEC-5 session ending, signature attempts, ATT-16 caller scope in place';
+GO
+SET NOEXEC OFF;
 GO
