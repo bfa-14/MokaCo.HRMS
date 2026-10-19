@@ -123,13 +123,11 @@ public class EmployeeLifecycleTests
         Assert.Equal(new[] { "Admin", "hr", "Owner" }, PickLists.Roles(roles).Select(r => r.Name));
     }
 
-    /* ---- the gates: signed-in only, the procedure (or nothing sensitive) decides the rest ---- */
+    /* ---- the gates: signed-in only, the procedure decides the rest; the pick-lists are the chain builder's ---- */
 
     public static IEnumerable<object[]> SignedInOnlyActions() => new[]
     {
         new object[] { typeof(EmployeesController), nameof(EmployeesController.GetSwapCounterparts), "{id:int}/swap-counterparts" },
-        new object[] { typeof(UsersController), nameof(UsersController.GetNames), "names" },
-        new object[] { typeof(RolesController), nameof(RolesController.GetNames), "names" },
     };
 
     [Theory]
@@ -142,6 +140,18 @@ public class EmployeeLifecycleTests
         Assert.Equal(template, get!.Template);
         Assert.NotNull(method.GetCustomAttribute<AuthorizeAttribute>());
         Assert.Null(method.GetCustomAttribute<HasPermissionAttribute>());
+        Assert.Null(method.GetCustomAttribute<Microsoft.AspNetCore.Authorization.AllowAnonymousAttribute>());
+    }
+
+    /// <summary>The user and role pick-lists: WORKFLOW_CONFIGURE, as the chain builder's other reads - usernames are not for every signed-in user.</summary>
+    [Theory]
+    [InlineData(typeof(UsersController))]
+    [InlineData(typeof(RolesController))]
+    public void The_pick_lists_are_for_the_chain_builder(Type controller)
+    {
+        var method = controller.GetMethod("GetNames")!;
+        Assert.Equal("names", method.GetCustomAttribute<HttpGetAttribute>()!.Template);
+        Assert.Equal("perm:WORKFLOW_CONFIGURE", method.GetCustomAttribute<HasPermissionAttribute>()!.Policy);
         Assert.Null(method.GetCustomAttribute<Microsoft.AspNetCore.Authorization.AllowAnonymousAttribute>());
     }
 

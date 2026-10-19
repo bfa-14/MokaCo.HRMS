@@ -31,11 +31,11 @@ public class RolesController : ControllerBase
     public async Task<IActionResult> GetRoles() => Ok(await _roles.GetAllAsync());
 
     /// <summary>
-    /// Every role as a pick-list — id and name only. Signed-in users only, no permission: the chain builder
-    /// (WORKFLOW_CONFIGURE) names a role approver from it, and its holder need not hold ROLE_MANAGE.
+    /// Every role as a pick-list — id and name only. For the chain builder, which names a role approver from it:
+    /// WORKFLOW_CONFIGURE, as its other reads (OrgController), not ROLE_MANAGE, which its holder need not have.
     /// </summary>
     [HttpGet("names")]
-    [Authorize]
+    [HasPermission("WORKFLOW_CONFIGURE")]
     public async Task<IActionResult> GetNames() => Ok(PickLists.Roles(await _roles.GetAllAsync()));
 
     [HttpGet("permissions")]

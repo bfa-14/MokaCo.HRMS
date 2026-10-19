@@ -33,12 +33,13 @@ public class UsersController : ControllerBase
     public async Task<IActionResult> GetAll() => Ok(await _users.GetAllAsync());
 
     /// <summary>
-    /// The ACTIVE accounts as a pick-list — id, username and the linked employee's name, nothing else. Signed-in users
-    /// only, no permission: the chain builder (WORKFLOW_CONFIGURE) picks a "specific user" approver from it, and its
-    /// holder need not hold USER_MANAGE. The full list above (last sign-in, roles) stays behind USER_MANAGE.
+    /// The ACTIVE accounts as a pick-list — id, username and the linked employee's name, nothing else. For the chain
+    /// builder, which picks a "specific user" approver from it: WORKFLOW_CONFIGURE, as its other reads (OrgController),
+    /// not USER_MANAGE, which its holder need not have. Not every signed-in user: usernames are half of a sign-in (QA3).
+    /// The full list above (last sign-in, roles) stays behind USER_MANAGE.
     /// </summary>
     [HttpGet("names")]
-    [Authorize]
+    [HasPermission("WORKFLOW_CONFIGURE")]
     public async Task<IActionResult> GetNames() => Ok(PickLists.Users(await _users.GetAllAsync()));
 
     /// <summary>Accounts not yet linked to any employee — feeds the employee-accounts link picker.</summary>
