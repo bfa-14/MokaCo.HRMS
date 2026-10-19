@@ -72,6 +72,12 @@ public class AuthService : IAuthService
         return await IssueTokensAsync(user, ip);
     }
 
+    /// <summary>
+    /// A refresh token for a new pair. The rotation (security.usp_RefreshToken_RotateChecked, script 105)
+    /// refuses a revoked, expired or unknown token and a disabled account, and returns the account's
+    /// session stamp read in the same transaction: the new access token carries THAT stamp, never one
+    /// read afterwards, or a refresh that raced a password change could leave with a token that passes.
+    /// </summary>
     public async Task<AuthResult> RefreshAsync(string rawRefreshToken, string? ip)
     {
         var oldHash = _jwt.HashRefreshToken(rawRefreshToken);
@@ -85,6 +91,7 @@ public class AuthService : IAuthService
         var user = await _users.GetByIdAsync(rotated.UserId);
         if (user is null || !user.IsActive)
             return AuthResult.Fail("Account is disabled.");
+        user.SessionStamp = rotated.SessionStamp;
 
         var perms = (await _users.GetPermissionsAsync(user.UserId)).Select(p => p.Code);
         var (access, accessExp) = _jwt.CreateAccessToken(user, perms);
@@ -120,12 +127,22 @@ public class AuthService : IAuthService
         };
     }
 
+    /// <summary>
+    /// The refresh token first, and only while the account is active with the password hash just
+    /// checked (security.usp_RefreshToken_Issue): a password changed or an account disabled during the
+    /// few hundred milliseconds of the check gets no session. Then the access token, with the stamp
+    /// the issue read.
+    /// </summary>
     private async Task<AuthResult> IssueTokensAsync(User user, string? ip)
     {
+        var (raw, hash) = _jwt.CreateRefreshToken();
+        var issued = await _tokens.IssueAsync(user.UserId, user.PasswordHash, hash, DateTime.UtcNow.AddDays(_opt.RefreshTokenDays), ip);
+        if (issued is null)
+            return AuthResult.Fail(InvalidCredentials);
+        user.SessionStamp = issued.SessionStamp;
+
         var perms = (await _users.GetPermissionsAsync(user.UserId)).Select(p => p.Code);
         var (access, accessExp) = _jwt.CreateAccessToken(user, perms);
-        var (raw, hash) = _jwt.CreateRefreshToken();
-        await _tokens.CreateAsync(user.UserId, hash, DateTime.UtcNow.AddDays(_opt.RefreshTokenDays), ip);
 
         return AuthResult.Ok(new TokenResponse
         {

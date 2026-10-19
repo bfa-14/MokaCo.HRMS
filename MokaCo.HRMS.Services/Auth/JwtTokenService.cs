@@ -13,6 +13,13 @@ namespace MokaCo.HRMS.Services.Auth;
 /// </summary>
 public class JwtTokenService : IJwtTokenService
 {
+    /// <summary>
+    /// The account's session stamp when the token was issued (QA3 SEC-5). Absent while the account has
+    /// none. A token whose stamp is no longer the account's is refused (SessionGuard): that is how a
+    /// password change or a disable ends the access tokens already handed out.
+    /// </summary>
+    public const string SessionStampClaim = "sstamp";
+
     private readonly JwtOptions _opt;
     public JwtTokenService(JwtOptions opt) => _opt = opt;
 
@@ -26,6 +33,8 @@ public class JwtTokenService : IJwtTokenService
             new(JwtRegisteredClaimNames.UniqueName, user.Username),
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
         };
+        if (user.SessionStamp is Guid stamp)
+            claims.Add(new Claim(SessionStampClaim, stamp.ToString("N")));
         // one "perm" claim per permission -> checked by the authorization policy
         foreach (var p in permissions)
             claims.Add(new Claim("perm", p));

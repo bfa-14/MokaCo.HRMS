@@ -42,7 +42,8 @@ public class LoginTimingTests
             Hasher.Setup(h => h.Verify("pw", RealHash)).Returns(passwordOk);
             Jwt.Setup(j => j.CreateAccessToken(It.IsAny<User>(), It.IsAny<IEnumerable<string>>())).Returns(("access", DateTime.UtcNow.AddMinutes(15)));
             Jwt.Setup(j => j.CreateRefreshToken()).Returns(("raw", "hash"));
-            Tokens.Setup(t => t.CreateAsync(It.IsAny<int>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<string?>())).Returns(Task.CompletedTask);
+            Tokens.Setup(t => t.IssueAsync(It.IsAny<int>(), RealHash, It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<string?>()))
+                  .ReturnsAsync(new IssuedRefreshToken { RefreshTokenId = 1, UserId = 7 });
             Service = new AuthService(Users.Object, Tokens.Object, Hasher.Object, Jwt.Object, new JwtOptions());
         }
 
@@ -86,7 +87,7 @@ public class LoginTimingTests
 
         var right = new Harness(Sara(active: false), passwordOk: true);
         Assert.Equal(AuthService.Disabled, (await right.Login()).Error);
-        right.Tokens.Verify(t => t.CreateAsync(It.IsAny<int>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<string?>()), Times.Never());
+        right.Tokens.Verify(t => t.IssueAsync(It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<DateTime>(), It.IsAny<string?>()), Times.Never());
     }
 
     [Fact]

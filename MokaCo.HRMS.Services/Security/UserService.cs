@@ -10,10 +10,11 @@ public class UserService : IUserService
 {
     private readonly IUserRepository _users;
     private readonly IPasswordHasher _hasher;
+    private readonly ISessionGuard _sessions;
 
-    public UserService(IUserRepository users, IPasswordHasher hasher)
+    public UserService(IUserRepository users, IPasswordHasher hasher, ISessionGuard sessions)
     {
-        _users = users; _hasher = hasher;
+        _users = users; _hasher = hasher; _sessions = sessions;
     }
 
     public Task<IEnumerable<UserListItem>> GetAllAsync() => _users.GetAllAsync();
@@ -29,8 +30,24 @@ public class UserService : IUserService
         return userId;
     }
 
-    public Task SetActiveAsync(int userId, bool isActive, int modifiedBy)
-        => _users.SetActiveAsync(userId, isActive, modifiedBy).ContinueWith(_ => { });
+    /// <summary>
+    /// Disabling ENDS THE ACCOUNT'S SESSIONS (QA3 SEC-5): its refresh tokens are revoked — before, they
+    /// worked again the moment the account was re-enabled — and its access tokens stop at the next
+    /// request. Enabling ends nothing: the person signs in again.
+    /// </summary>
+    public async Task SetActiveAsync(int userId, bool isActive, int modifiedBy)
+    {
+        var rows = await _users.SetActiveAsync(userId, isActive, modifiedBy);
+        if (rows == 1 && !isActive)
+            await EndSessionsAsync(userId);
+    }
+
+    /// <summary>security.usp_User_EndSessions, then this process stops trusting its cached reading of the account.</summary>
+    private async Task EndSessionsAsync(int userId)
+    {
+        await _users.EndSessionsAsync(userId);
+        _sessions.Forget(userId);
+    }
 
     /// <summary>
     /// Self-service password change. The order is deliberate: the current password is verified
@@ -40,10 +57,10 @@ public class UserService : IUserService
     /// here logs in exactly like one set anywhere else, and a later change of Argon2 cost applies to
     /// all three at once.
     ///
-    /// Nothing is revoked on success. The access token is a signed JWT that says who the caller is
-    /// and what they may do; it makes no claim about their password, so changing the password cannot
-    /// make it untrue. Forcing a re-login would only be meaningful if the token were derived from
-    /// the password — it is not — so the user stays where they are.
+    /// A CHANGED PASSWORD ENDS EVERY SESSION OF THE ACCOUNT (QA3 SEC-5), this one included: the refresh
+    /// tokens are revoked and the access tokens stop at the next request, so whoever held the account
+    /// with the old password — the usual reason to change it — is out. (Before, nothing was revoked: a
+    /// stolen refresh token kept rotating for ever.) The person signs in again with the new password.
     /// </summary>
     public async Task<ChangePasswordResult> ChangePasswordAsync(int userId, ChangePasswordRequest request)
     {
@@ -60,10 +77,11 @@ public class UserService : IUserService
 
         var hash = _hasher.Hash(request.NewPassword);
         var rows = await _users.ChangePasswordAsync(userId, hash);
+        if (rows != 1)
+            return ChangePasswordResult.Fail("The password could not be changed. Please try again.");
 
-        return rows == 1
-            ? ChangePasswordResult.Ok()
-            : ChangePasswordResult.Fail("The password could not be changed. Please try again.");
+        await EndSessionsAsync(userId);
+        return ChangePasswordResult.Ok();
     }
 
     /// <summary>The new-password policy, in one place. Null means it passes.</summary>

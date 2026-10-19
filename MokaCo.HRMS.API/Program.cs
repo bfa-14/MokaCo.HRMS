@@ -165,6 +165,8 @@ builder.Services.AddSingleton<IPasswordHasher, Argon2PasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IUserService, UserService>();
+// QA3 SEC-5: a singleton, because it is the per-user cache every authenticated request is checked against.
+builder.Services.AddSingleton<ISessionGuard, SessionGuard>();
 builder.Services.AddScoped<IUserSignatureService, UserSignatureService>();
 
 // The Google sign-in gate. The STATE is a singleton and must stay one: it is the 20-second cache every
@@ -350,7 +352,12 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                     context.Token = accessToken;
 
                 return Task.CompletedTask;
-            }
+            },
+
+            // A GOOD SIGNATURE IS NOT ENOUGH (QA3 SEC-5): a token issued before its account's sessions
+            // were ended (a password change, a disable) is refused here, at most SessionGuard.CacheFor
+            // after a change made elsewhere and at once after one made through this API.
+            OnTokenValidated = SessionCheck.OnTokenValidated
         };
     });
 

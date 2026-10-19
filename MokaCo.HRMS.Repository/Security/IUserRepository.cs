@@ -14,6 +14,13 @@ public interface IUserRepository
     /// API — the procedure neither verifies nor computes one. Returns rows affected.
     /// </summary>
     Task<int> ChangePasswordAsync(int userId, string newPasswordHash);
+
+    /// <summary>
+    /// security.usp_User_EndSessions (script 105, QA3 SEC-5): a new session stamp, so every access token
+    /// issued so far is refused, and every refresh token revoked — one transaction. Returns how many
+    /// refresh tokens were still live. Refuses an unknown user ("User not found.").
+    /// </summary>
+    Task<int> EndSessionsAsync(int userId);
     // inline CRUD
     Task<IEnumerable<UserListItem>> GetAllAsync();
     /// <summary>Accounts not yet claimed by any employee — feeds the "link account" picker.</summary>
