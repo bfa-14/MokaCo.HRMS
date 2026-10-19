@@ -31,6 +31,7 @@ public class NightlyAttendanceJob : IJob
     private readonly IOvertimeService _overtime;
     private readonly IRequestService _requests;
     private readonly ILeaveYearService _leaveYear;
+    private readonly IRosterService _roster;
     private readonly ILogger<NightlyAttendanceJob> _logger;
 
     public NightlyAttendanceJob(
@@ -39,9 +40,11 @@ public class NightlyAttendanceJob : IJob
         IOvertimeService overtime,
         IRequestService requests,
         ILeaveYearService leaveYear,
+        IRosterService roster,
         ILogger<NightlyAttendanceJob> logger)
     {
         _leaveYear = leaveYear;
+        _roster = roster;
         _attendance = attendance;
         _exitPermissions = exitPermissions;
         _overtime = overtime;
@@ -93,6 +96,17 @@ public class NightlyAttendanceJob : IJob
         _logger.LogInformation(
             "Nightly attendance: processed {Days} employee-day(s), marked {Absentees} absentee(s) for {Yesterday:yyyy-MM-dd}, reclassified {Leave} day(s) as approved leave in {Period}, applied {Applied} exit permission(s) and stamped {Overtime} overtime request(s) to attendance.",
             processed.EmployeeDaysProcessed, absentees.AbsenteesMarked, yesterday, leave.DaysMarkedAsLeave, period, applied.PermissionsApplied, overtimeStamped.Stamped);
+
+        /* QA3 ROS-2 (unit C): THE ROSTER SAFETY NET. Approving a roster month re-derives its days at once (RequestService);
+           this catches what that missed - an approval whose re-derivation failed, one closed by another path, a month
+           approved again, or one no longer approved - by the month's RederivedAt marker. After the reconciler, which may
+           just have activated a month. Idempotent: an ordinary night finds nothing. */
+        var rosterMonths = await _roster.RederivePendingMonthsAsync();
+        if (rosterMonths.MonthsRederived > 0 || rosterMonths.MonthsFailed > 0)
+            _logger.Log(rosterMonths.MonthsFailed > 0 ? LogLevel.Error : LogLevel.Information,
+                "Roster safety net: {Done} approved roster month(s) derived again from their roster, {Failed} failed{FirstError}.",
+                rosterMonths.MonthsRederived, rosterMonths.MonthsFailed,
+                rosterMonths.FirstError is null ? string.Empty : $" (first: {rosterMonths.FirstError})");
 
         if (reconciled.Repaired.Count > 0)
         {

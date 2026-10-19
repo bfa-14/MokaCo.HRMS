@@ -92,11 +92,24 @@ public class AttendanceController : ControllerBase
     /// `month` is the month's FIRST DAY ('yyyy-MM-01'), the same value the ROSTER_APPROVAL create
     /// takes; both ends normalise it, so the banner and the request cannot be talking about
     /// different things.
+    ///
+    /// QA3 (ROS-14): read through the roster service with the CALLER — a branch they do not manage is a 403 unless
+    /// they hold EMP_VIEW_ALL (the same rule as every roster write).
     /// </summary>
     [HttpGet("roster-month")]
     [HasPermission("ATTENDANCE_VIEW")]
-    public async Task<IActionResult> GetRosterMonth([FromQuery] int branchId, [FromQuery] DateTime month)
-        => Ok(await _attendance.GetRosterMonthAsync(branchId, month));
+    public async Task<IActionResult> GetRosterMonth([FromQuery] int branchId, [FromQuery] DateTime month,
+        [FromServices] IRosterService roster)
+    {
+        try
+        {
+            return Ok(await roster.GetMonthAsync(branchId, month, CurrentUserId));
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
 
     /// <summary>
     /// Clears one branch-month of roster: every assignment row of the branch's employees in that
