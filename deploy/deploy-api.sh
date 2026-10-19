@@ -55,9 +55,15 @@ if [[ -n "$others" ]]; then
   die "nginx already serves other sites on this shared box: $others
      Adding a default_server for the API would fight with them. Show this to Reda before continuing."
 fi
-if sudo ss -tlnp | grep -q ":$PORT "; then
-  sudo ss -tlnp | grep ":$PORT " | grep -q "$SVC\|MokaCo" \
-    || die "something other than $SVC is already listening on port $PORT: $(sudo ss -tlnp | grep ":$PORT ")"
+# On a redeploy the port is held by this service itself. Its process is "dotnet", so ss never shows
+# the service's name: compare the listener's PID with the service's main PID instead.
+listening=$(sudo ss -tlnp | grep ":$PORT " || true)
+if [[ -n "$listening" ]]; then
+  main_pid=$(systemctl show -p MainPID --value "$SVC" 2>/dev/null || true)
+  pids=$(grep -o 'pid=[0-9]*' <<< "$listening" | cut -d= -f2 | sort -u || true)
+  [[ -n "$pids" && "$pids" == "${main_pid:-0}" ]] \
+    || die "something other than $SVC (main PID ${main_pid:-none}) is already listening on port $PORT: $listening"
+  echo "    port $PORT: held by $SVC itself (PID $main_pid); it is restarted below"
 fi
 
 # =============================================================================
