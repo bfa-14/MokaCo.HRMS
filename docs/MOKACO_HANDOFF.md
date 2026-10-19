@@ -143,7 +143,9 @@ API-level configuration (not in the database): `ConnectionStrings:MokaCo`, `Jwt:
 
 ### 7.1 Employees and organisation
 
-Employees belong to a branch, a department and a position, and carry a **seniority tier** (`APPROVAL_TIER`, **1 = head** of the hierarchy, 9 = lowest; the direction was flipped deliberately — decision D6). Tiers drive approval chains and salary bands: a tier may define `MinBasicSalary` / `MaxBasicSalary`, and a trigger on `SALARY_COMPONENT` refuses a basic salary outside the employee's band.
+Employees belong to a branch, a department and a position, and carry a **seniority tier** (`APPROVAL_TIER`, **1 = head** of the hierarchy, 9 = lowest; the direction was flipped deliberately — decision D6). Tiers drive approval chains and salary bands: a tier may define `MinBasicSalary` / `MaxBasicSalary`, and a trigger on `SALARY_COMPONENT` refuses a basic salary outside the employee's band. **An employee saved without a tier gets the lowest tier**, never tier 1 (script 106; the form requires one).
+
+**Leaving** (script 106): access ends the day after the termination date. The nightly job disables the login (not for a rehire on another record, nor the last account that can manage users), vacates the branch-manager post and frees the device PINs, and logs each effect in `hr.EMPLOYEE_TERMINATION_EFFECT` with the open requests still waiting on the person (listed, not cancelled). Attendance, rosters and payroll count only hire date … termination date. **Remove** (soft delete) is refused until the person has left, every month they worked is in a locked primary run and nothing is open; a removed employee with activity in a period is still paid. A branch with active people cannot be deactivated.
 
 - Creating an employee **requires phone and e-mail** (notifications depend on them). Editing an older employee without them only warns.
 - **Branch transfers are dated.** Changing the branch asks for an effective date and writes `EMPLOYEE_BRANCH_HISTORY`; `EMPLOYEE.BranchId` always means "the branch today" and a future-dated transfer becomes current on its day via a nightly job (`usp_EmployeeBranch_ApplyDue`). A transfer is refused before the hire date, before a later transfer already on file, or inside a period already paid for that employee. Everything that reports by branch resolves the branch **as of the work date**.
@@ -164,7 +166,7 @@ EffectiveIn        = max(FirstIn, ShiftStart)                  -- early arrival 
 LateMinutes        = FirstIn − ShiftStart, when ≥ tolerance; else 0
 EarlyExitMinutes   = ShiftEnd − LastOut, when ≥ tolerance; else 0
 MidDayGapMinutes   = max(0, Σ mid-day gaps − Break)
-ExitActualMinutes  = MidDayGapMinutes + EarlyExitMinutes
+ExitActualMinutes  = MidDayGapMinutes                         -- the early exit is judged on its own, as EarlyExitMinutes
 ExitApprovedMinutes= Σ approved exit-permission minutes for that employee/date (recomputed every run)
 OvertimeMinutes    = max(0, LastOut − ShiftEnd)                -- payable = min(approved, detected)
 WorkedMinutes      = (min(LastOut, ShiftEnd) − EffectiveIn) − Break − MidDayGapMinutes
@@ -181,6 +183,8 @@ Status precedence for a day: **approved leave → public holiday → rostered re
 **Exit permissions** (leaving during the shift) are approved through the workflow with a time window. The approved window covers the matching late arrival or early departure, so only the uncovered part becomes an anomaly; remaining approved minutes cover mid-day gaps. Several permissions on one day are allowed. At period close, used permission minutes are converted to leave (`ExitLeaveBasis` decides *actual* vs *approved* minutes), **once per day**; minutes beyond the remaining leave balance become an unpaid-leave deduction instead of a negative balance.
 
 **Corrections** are manual records or punch fixes by permission; they survive reprocessing and are refused on a period already paid for that employee ("This period is paid — raise a payroll adjustment instead").
+
+**Shifts are versioned** (script 100): a shift that has been worked keeps its times, break and overnight flag; HR creates a new shift instead, so past days are never re-judged. Holiday and transfer recomputes stop at today. Approving a roster month re-derives its completed days (script 102); HR also has "Re-derive month", and a nightly net catches what was missed.
 
 **Rosters.** Monthly, per branch: shifts (with overnight support), rest days, copy-from-previous-period (copies the most frequent shift per weekday and never rosters a working shift on a public holiday), apply pattern, gaps report. A month is submitted as a `ROSTER_APPROVAL` workflow request (one open request per branch and month; re-submission after rejection; a change after approval supersedes the old request). When the last approver signs, `usp_Request_ApplyApprovalEffects` sets the month to Approved and stamps `AppliedAt` — without this the shifts are never used (a real blocker: a whole month was processed as "unrostered"). After approval, past days and days with recorded attendance are locked; future days may be changed by permission holders, which flags `ChangedSinceApproval` and asks for re-submission. A roster may be cleared only while Draft/Rejected and with no processed attendance.
 
@@ -207,23 +211,27 @@ The engine is generic; each request type adds a payload table and a `_Decide` pr
 
 **Chains** are versioned definitions with ordered steps. A step names its approver by type: role, **tier** (walking up the hierarchy with `EscalationLevels`), specific user, or the employee's manager. Steps may require a comment, a password signature, or allow the approver to adjust the figure (`CanAdjust`, which snapshots `ValueBefore`).
 
+**Which chain a requester follows** (script 107): a chain set to tier X serves tier X and every more senior tier (1..X, since D6); a requester follows the narrowest chain that serves them, the default chain (no tier) last. The lowest tier cannot be chosen (it would be everybody). `workflow.usp_TierChains_Probe` tells which rule the live submit follows.
+
 Behaviour:
 
 - **Submit** resolves every step. A step with no resolvable approver (sole member, the requester themself, no deputy) is skipped with a recorded reason. If every step skips, the request is auto-approved — and the effects are applied explicitly (historically they were silently skipped, so an approved advance never created the advance).
 - **Deputies** sign only when the main approver is genuinely absent (approved leave today, or a disabled account) or when the main approver explicitly delegated that step; delegation can be reclaimed, and the delegator is locked out while it is handed over (decision D8). Organisational types (e.g. roster approval) are exempt from the "never your own request" rule (D8).
 - **Advisory rejection**: a rejection before the final step is advisory; the final approver may overrule with a note.
 - **Hold / Resume**: a step can be put on hold, optionally "waiting on the requester", who may then resume it.
-- **Retract last decision** (same day, by the last signer, password-gated), **Withdraw decision** (while the request is still open), **Reopen** (rejected or cancelled requests; a *two-signature* GM + Owner act, order-free, which re-checks the block reason at the second signature).
-- **Reversals** undo effects: leave ledger rows removed and attendance re-derived, advances and adjustments deleted, swaps reversed. `fn_ReversalBlockReason` refuses what cannot be undone.
+- **Retract last decision** (same **Beirut** day, by the last signer, password-gated), **Withdraw decision** (while the request is still open), **Reopen** (rejected or cancelled requests; a *two-signature* GM + Owner act by two different people, order-free, which re-checks the create-time guards at the second signature; HR's one-signature reopen is for cancelled requests only). A cancelled request cannot be retracted back to life.
+- **Reversals** undo effects for leave, salary advance, payroll adjustment, exit permission, overtime and roster approval (attendance re-derived, the original figure restored); other types, a paid period, converted exit minutes and consumed advances or adjustments are refused.
 - **Cancel** is gated in the procedure (requester, the subject employee, HR or Admin) as well as in the API.
-- **Decisions are concurrency-safe**: the step update checks the expected previous status and the row count.
+- **Decisions are concurrency-safe** (script 101): the request is locked before it is read, the step update checks the expected step and status, and a race answers "This step was decided a moment ago — reload." Reject, Cancel, Hold, Resume and Delegate are base-only and do not have this yet.
 - **Notifications**: on close, the e-mail/WhatsApp outbox gets a message with a PDF of the request; manual resend exists for every role.
 
 ### 7.5 Payroll
 
 **Inputs**: salary components per employee (effective-dated, standing or one-off), attendance (`DayFraction`, anomaly decisions, unpaid leave, overtime), approved adjustments and advances, exchange rates, NSSF and tax configuration.
 
-**Runs**: `Primary` (one per period, creatable on any day of the period) and `Supplemental` (any time, pays approved, unconsumed adjustments; one open at a time). Lifecycle: Create → Generate → Send to review → Approve (Owner) → locked → payslips marked paid. A run **snapshots the exchange rates** it uses (`PAYROLL_RUN_RATE`), so later rate changes never move historical pay. Readiness refuses to run while the period has unprocessed punches, undecided anomalies or unmapped device punches **up to today** (later days in the month don't block).
+**Runs**: `Primary` (one per period, creatable on any day of the period) and `Supplemental` (any time, pays approved, unconsumed adjustments; one open at a time). Lifecycle: Create → Generate → Send to review → Approve (Owner) → locked → payslips marked paid. A run **snapshots the exchange rates** it uses (`PAYROLL_RUN_RATE`): a Draft re-reads them at each Generate, and from Review they are frozen, so later rate changes never move historical pay; a currency without a rate is refused. Readiness refuses to run while the period has unprocessed punches, undecided anomalies or unmapped device punches **on completed days** (a shift still in progress does not count), and Generate and Approve check it again. Every input of every payslip is fingerprinted: **Approve refuses a run whose inputs changed** ("Regenerate the run"), and the run page names who and what changed. A Primary cannot be approved before the period's last day unless the Owner ticks "early lock". Viewing payroll needs `PAYROLL_VIEW`, preparing `PAYROLL_RUN`, approving and paying `PAYROLL_APPROVE`; employees see their own payslips under "My payslips".
+
+**Salary rows** are set from a date and ended, never edited in place: a later row of the same type and currency supersedes the earlier one from its start date. **Settlements and leave payouts** not paid in the leaving month are paid by the next open Primary (a settlement-only payslip), and a payout writes a `TerminationPayout` ledger row so it is never paid twice. Component types used by payroll have a `SystemCode` and cannot be renamed or removed; NSSF and tax keep one version in force at a time.
 
 **Generation, in order**:
 
@@ -308,6 +316,8 @@ Daily and monthly attendance, payroll runs and payslips, bookings (period, room,
 | D13 | The website calls the API directly from the browser; no serverless layer | the Cloudflare functions were retired; fewer moving parts, prices stay live |
 | D14 | Local development runs against a **copy** (`MokaCo_HRMS_Dev`); the real data stays in `MokaCo_HRMS`, and production is the VM | experiments must not touch real payroll |
 
+**Rules settled during the third QA pass** (19 October 2026; full list in `tests/qa3/QA_REPORT_3.md` §6): salaries are visible to HR, payroll and the employee only; the HRMS starts without the card-gateway keys (online deposits off); a partly approved leave keeps its first days and a leave is re-priced on the approved roster, never inside a paid period; worked shifts keep their times; day precedence is leave > holiday > rest day; reversals only for types that can be undone, on the same Beirut day; a Primary is not locked before month end unless the Owner chooses to; a stale run is never approved; unpaid settlements go on the next Primary; access ends the day after leaving; new employees get the lowest tier; a tier chain serves its tier and every more senior one; the Operations Manager sees all branches (`EMP_VIEW_ALL`); the unrostered-day rule stays limited to approved months.
+
 **Rules settled during the deep QA pass** (full list in `tests/qa2/QA_REPORT_2.md`): exit permissions cover by *window*; what a permission covers is not an anomaly at all; "unrostered day" only applies inside an approved roster month; a decision answers a fact, so it survives reprocessing but is cleared when the punch changes; "the period is paid" is per employee; a leave costs rostered working days (fixed-entitlement types count calendar days); partial approval keeps the first days; the balance check counts pending requests and is skipped for discretionary types; carry-over is consumed first; a transfer is dated and `EMPLOYEE.BranchId` means today; an attendance record belongs to the employee's branch of that day, not the terminal's; proration is per component's own dates; leave payout sits outside the NSSF and tax base while holiday work sits inside; an advance instalment is capped per currency, oldest first.
 
 ---
@@ -318,11 +328,12 @@ Daily and monthly attendance, payroll runs and payslips, bookings (period, room,
 |---|---|---|
 | `tests/qa` | `MokaCo.HRMS/tests/qa` (`bash tests/qa/run.sh`) | 216 checks: rosters, attendance, leaves, payroll, bookings, permissions, cultures, responsive smoke |
 | `tests/qa2` | `MokaCo.HRMS/tests/qa2` (`bash tests/qa2/run.sh`) | 67 checks of **complex** scenarios: same-day combinations, overnight + DST + month end, leave edge cases, roster changes, payroll proration and statutory math, plus browser checks |
-| unit tests | `dotnet test` | 332 tests |
+| `tests/qa3` | `MokaCo.HRMS/tests/qa3/<area>/*.sql` (`sqlcmd -I -b -d <db> -i <file>`) | 53 SQL scenarios for the QA3 scripts 98–107; each runs in a transaction it rolls back and prints `ok <name>`. Report: `tests/qa3/QA_REPORT_3.md` |
+| unit + database tests | `dotnet test` | 1736 tests; the database ones run when `MOKACO_TEST_CONNECTION` points at a database with the scripts, otherwise they skip |
 
 Both suites seed everything with a `QA ` / `QA2 ` prefix, run inside transactions where the data is real (payroll), and `cleanup.sql` removes their rows and **verifies integrity**: real row counts plus checksums of rosters, attendance records and the leave ledger must match the baseline taken at seed time. Reports: `QA_REPORT.md` and `tests/qa2/QA_REPORT_2.md` (bug table, rules decided, features added, disposition per finding).
 
-Current state: `qa2` 67/67, `qa` 216/216, `dotnet test` 332/332.
+Current state (19 October 2026): `dotnet test` 1736/1736 against a rebuilt database with 98–107, `tests/qa3` 53/53, web `npm test` 168/168 with `tsc`, lint and build clean. `qa` and `qa2` were last run at 216/216 and 67/67; their cases were updated for QA3 but not re-run (they need the test VM).
 
 If a suite is interrupted, run its `cleanup.sql` before anything else — it also restores the settings the suite changed.
 
@@ -335,6 +346,8 @@ If a suite is interrupted, run its `cleanup.sql` before anything else — it als
 **Production (VM)** — SQL Server **Express**, the API as a systemd unit reading `/etc/mokaco/api.env`, nginx with TLS proxying `/api` and `/hubs` (WebSocket upgrade headers) to Kestrel on 127.0.0.1, the HRMS web built and served as static files, `ufw` allowing 22/80/443 only (1433 never public), timezone `Asia/Beirut`.
 
 **Deploy flow** (agreed): develop on a branch → merge to `main` on GitLab → tag → on the VM a script backs up the database, checks out the tag, applies any new `docs/*.sql` in order, builds, restarts the service, health-checks, and rolls back to the previous tag on failure. The VM authenticates to GitLab with a read-only **deploy token**. Deploy at closing time. The website deploys from GitHub by its own owner.
+
+**Scripts before the API (deploy guard).** The API knows the numbered scripts it calls (`Scripts.Required` in `MokaCo.HRMS.Repository/Common/Scripts.cs`). At startup it logs `DATABASE SCRIPTS NOT APPLIED: …` for any that are missing, and `/health` answers `"schema":"behind"` (status `degraded`, still HTTP 200) until they are applied; no restart is needed after. `deploy/test-env/deploy-test.sh` stops the test API and lists them; `deploy/deploy-api.sh` warns. A new numbered script that the API calls goes on that list in the same commit.
 
 **Database on the server**: built by **restoring a backup** of the developer database, not by replaying `docs/*.sql` (those are only the later patches; the base schema, the seeds and the real data are not in the repo). A backup restores only onto the same or a newer SQL Server major version — check `SELECT @@VERSION` on both sides first; if the versions don't line up, move it as a `.bacpac` with `sqlpackage`.
 
@@ -359,25 +372,35 @@ If a suite is interrupted, run its `cleanup.sql` before anything else — it als
 9. Computed persisted columns cannot reference other computed columns; minutes-from-midnight columns are derived from `DATEPART` on the base times.
 10. Triggers must not return result sets to procedures that use `INSERT … EXEC` (hence the `@Quiet` parameters).
 11. The Vite dev proxy pointing at the IIS/https port gives "Bad Gateway" on login; the API must be on `http://localhost:5078`.
-12. The API refuses to start when the MPGS keys are missing — including on a developer machine. Fix it so the gateway is only required when online deposits are enabled (see open items).
+12. ~~The API refused to start when the MPGS keys were missing.~~ Fixed (QA3): it starts with online deposits off and says so in the log.
+13. **The unnumbered scripts are older than production** for at least 16 procedures (QA3 CON-7): `workflow_core.sql`'s `usp_Request_Submit` returns 5 columns where the live one returns 6, `usp_Request_Reject` lacks `@SignedWithPassword`, the device and settings procedures lack later columns, and so on. **Never re-run an unnumbered script** on a live database, and never redefine a procedure from one: a numbered script either edits the live text or stops when `sys.parameters` shows a parameter it does not know (the guard every QA3 script uses).
+14. `INSERT … EXEC` cannot be nested: a procedure that captures another's result set cannot itself be captured. Pass answers back through `OUTPUT` parameters (`usp_TierChains_Probe`).
+15. SQL Server stores `CREATE OR ALTER PROCEDURE` as `CREATE   PROCEDURE` (three spaces) in `sys.sql_modules`; a text search for `CREATE PROCEDURE` misses it (see D2).
+16. A function used by a default constraint cannot be altered (`hr.fn_ApprovalTier_Lowest`): drop the constraint first.
 
 ---
 
 ## 12. Open items
 
-**Decisions needed from the owner**
+**Decisions needed from the owner** — none open. QA3 settled the two that were here: the "unrostered day = no record" rule stays limited to approved roster months, and the Operations Manager gets `EMP_VIEW_ALL` (script 106; they sign in again to pick it up).
 
-- Should the "unrostered day = no record" rule apply everywhere, or only inside approved roster months (current behaviour)?
-- Does the Operations Manager need `EMP_VIEW_ALL` (see all branches)?
+**From QA3 (19 October 2026), still open** — details in `tests/qa3/QA_REPORT_3.md` §7:
+
+- Apply 98–107 in order on test, read each script's OWNER CHECK lines, then production (report §8). Regenerate every open payroll run once after 103.
+- Snapshot the live procedures that are newer than the repo (CON-7) into a numbered script, and check the live `usp_ExitPermission_Decide`, `usp_Booking_SetStatus` overlap, `fn_LocalNow` across the 25 October DST change, and the "tier" approver steps.
+- Give the base-only Reject, Cancel, Hold, Resume and Delegate the lock pattern of script 101.
+- Website: a per-booking secret for `/pay` and `/release` (the server side is closed).
+- Reports filed by the branch of the day (REL-15); a leaver's open requests cancelled or re-routed automatically; recovery of days paid when a termination is recorded after its month was locked.
+- Decide on read-committed snapshot (RCSI) to avoid deadlocks while payroll generates.
 
 **Work queued**
 
-1. Make the MPGS configuration **conditional** on online deposits being enabled, so a missing gateway key cannot stop payroll and attendance from starting.
+1. ~~Make the MPGS configuration conditional on online deposits being enabled.~~ Done (QA3).
 2. Finish the deploy scripts on the VM (`deploy.sh`, `rollback.sh`, nightly backup cron) and do one rehearsal deploy + rollback.
 3. Settle the August 2026 payroll difference with HR: `docs/august-2026-recalc.md` lists 495.10 USD of under-withholding caused by the two blockers (rest days deducted, LBP counted as zero) in the locked run 17; pay it through adjustment requests in a Supplemental run. Run 17 itself stays untouched.
 4. Decide the two outstanding attendance anomalies of 19 August that block August readiness.
 5. Rotate the `sa` password and move the application to its least-privilege login; the old password is in git history.
-6. Roster page: wire the branch filter (the API already takes `branchId` as of the work date).
+6. ~~Roster page: wire the branch filter.~~ Done; QA3 also made copy and apply patterns branch-only.
 7. Website month calendar (step 3): the site still asks day by day.
 8. Front-end breadth testing: the suites cover the engine, not every page and role. Next pass should walk every page in both languages and at phone width, and exercise the workflow types the suites don't touch (onboarding, separation, shift swap, expenses, tips).
 9. Real delivery checks: e-mail and WhatsApp are verified as *queued*, not as *received*; the fingerprint device has not been tested against the production API in push mode.
