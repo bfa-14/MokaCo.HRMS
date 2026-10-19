@@ -20,6 +20,20 @@ public interface IBookingLivePublisher
 {
     /// <summary>Publish the current state of the booking with this reference. Unknown reference: nothing is sent.</summary>
     Task PublishAsync(string? bookingRef);
+
+    /// <summary>
+    /// Tell the staff calendars that something without a booking changed — a block was laid or lifted
+    /// (<see cref="CalendarKind.Block"/>), or the catalogue was edited: a room, its hours, its add-ons
+    /// (<see cref="CalendarKind.Room"/>). They refetch; nothing is sent to guests (QA3 BKG-14).
+    /// </summary>
+    Task PublishCalendarAsync(string kind, int? roomId = null, DateTime? date = null);
+}
+
+/// <summary>The <c>kind</c> of a CalendarChanged message.</summary>
+public static class CalendarKind
+{
+    public const string Block = "block";
+    public const string Room = "room";
 }
 
 public sealed class BookingLivePublisher : IBookingLivePublisher
@@ -54,6 +68,26 @@ public sealed class BookingLivePublisher : IBookingLivePublisher
             _log.LogWarning(ex, "Live booking publish failed for {Ref}; the change itself stands.", bookingRef);
         }
     }
+
+    public async Task PublishCalendarAsync(string kind, int? roomId = null, DateTime? date = null)
+    {
+        try
+        {
+            await _hub.Clients.Group(BookingHub.StaffGroup).SendAsync(BookingHub.CalendarChanged, CalendarMessage(kind, roomId, date));
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Live calendar publish ({Kind}) failed; the change itself stands.", kind);
+        }
+    }
+
+    /// <summary>What changed, where: the calendar refetches its range, and re-reads the rooms on 'room'.</summary>
+    public static object CalendarMessage(string kind, int? roomId, DateTime? date) => new
+    {
+        kind,
+        roomId,
+        date = date?.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+    };
 
     /// <summary>One calendar row: enough to refetch, toast and open the right drawer.</summary>
     public static object StaffMessage(BookingRefDetail b) => new

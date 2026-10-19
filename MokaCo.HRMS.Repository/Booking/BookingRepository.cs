@@ -88,6 +88,29 @@ public class BookingRepository : IBookingRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    /// <summary>
+    /// The same procedure as the website's quote, by room id and as STAFF (Source 'Manual': no
+    /// lead-time window), so the New booking form shows what the booking will store (WEB-9). The end
+    /// follows the manual create's rule: at or before the start is the next morning.
+    /// </summary>
+    public async Task<BookingQuote?> QuoteForStaffAsync(StaffQuoteRequest request)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<BookingQuote>(
+            "booking.usp_Booking_Quote",
+            new
+            {
+                RoomCode = (string?)null,
+                request.RoomId,
+                BookDate = request.BookDate.Date,
+                StartMin = (int)request.StartTime.TotalMinutes,
+                EndMin = MinuteClock.EndMinOf(request.StartTime, request.EndTime),
+                AddonIds = JoinAddonIds(request.AddonIds),
+                Source = "Manual",
+            },
+            commandType: CommandType.StoredProcedure);
+    }
+
     public async Task<BookingRefDetail?> GetByRefAsync(string bookingRef)
     {
         using var db = _factory.Create();
@@ -227,11 +250,16 @@ public class BookingRepository : IBookingRepository
         };
     }
 
+    /// <summary>
+    /// booking.usp_Block_Add (docs/104, QA3 BKG-2), not the base usp_Block_Create: an end at or before
+    /// the start is the next morning (up to 06:00), and live bookings are checked in absolute time,
+    /// across midnight. Same parameters, same answer (BlockId).
+    /// </summary>
     public async Task<BlockCreated?> CreateBlockAsync(BlockCreateRequest request, int createdByUserId)
     {
         using var db = _factory.Create();
         return await db.QuerySingleOrDefaultAsync<BlockCreated>(
-            "booking.usp_Block_Create",
+            "booking.usp_Block_Add",
             new
             {
                 request.RoomId,

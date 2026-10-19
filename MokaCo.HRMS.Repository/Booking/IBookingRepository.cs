@@ -31,6 +31,9 @@ public interface IBookingRepository
     /// <summary>Prices a slot without taking it (booking.usp_Booking_Quote, Source 'Website' so the website's rules apply).</summary>
     Task<BookingQuote?> QuoteAsync(PublicQuoteRequest request);
 
+    /// <summary>Prices a staff booking without taking it (booking.usp_Booking_Quote by room id, Source 'Manual').</summary>
+    Task<BookingQuote?> QuoteForStaffAsync(StaffQuoteRequest request);
+
     /// <summary>The full row behind an MC- reference (booking.usp_Booking_GetByRef), addons included. Null when unknown.</summary>
     Task<BookingRefDetail?> GetByRefAsync(string bookingRef);
 
@@ -64,6 +67,7 @@ public interface IBookingRepository
     /// <summary>All three result sets behind a printed receipt. Header is null when the id is unknown.</summary>
     Task<BookingReceipt> GetReceiptAsync(int bookingId);
 
+    /// <summary>A staff block (booking.usp_Block_Add, docs/104): after midnight too, live bookings checked across midnight.</summary>
     Task<BlockCreated?> CreateBlockAsync(BlockCreateRequest request, int createdByUserId);
     Task DeleteBlockAsync(int blockId);
 

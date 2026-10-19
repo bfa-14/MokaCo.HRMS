@@ -233,4 +233,19 @@ public class BookingHubTests
         using var live = JsonDocument.Parse(JsonSerializer.Serialize(BookingLivePublisher.GuestMessage(booking), options));
         Assert.Equal(48m, live.RootElement.GetProperty("balance").GetDecimal());
     }
+
+    /// <summary>QA3 BKG-14: a block or a catalogue edit reaches the staff calendars as CalendarChanged — what and where, no guest data.</summary>
+    [Fact]
+    public void The_calendar_message_says_what_changed_and_where()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        using var message = JsonDocument.Parse(JsonSerializer.Serialize(
+            BookingLivePublisher.CalendarMessage(CalendarKind.Block, 3, new DateTime(2026, 11, 2)), options));
+
+        Assert.Equal(["kind", "roomId", "date"], message.RootElement.EnumerateObject().Select(p => p.Name));
+        Assert.Equal("block", message.RootElement.GetProperty("kind").GetString());
+        Assert.Equal(3, message.RootElement.GetProperty("roomId").GetInt32());
+        Assert.Equal("2026-11-02", message.RootElement.GetProperty("date").GetString());
+        Assert.Equal("CalendarChanged", BookingHub.CalendarChanged);
+    }
 }

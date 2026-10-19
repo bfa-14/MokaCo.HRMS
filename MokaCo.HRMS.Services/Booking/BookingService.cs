@@ -124,6 +124,14 @@ public class BookingService : IBookingService
     public Task<BookingCreated?> CreateManuallyAsync(BookingCreateRequest request, int createdByUserId)
         => _bookings.CreateAsync(request, source: "Manual", createdByUserId);
 
+    /// <summary>
+    /// The staff New booking form's price (WEB-9 / QA3 BKG-10): the website's quote procedure, by room
+    /// id and with the staff rules (Source 'Manual': no lead-time window), so the form shows the hour
+    /// discount, the lead-time deposit tier and the floor exactly as the booking will store them.
+    /// </summary>
+    public Task<BookingQuote?> QuoteForStaffAsync(StaffQuoteRequest request)
+        => _bookings.QuoteForStaffAsync(request);
+
     /// <summary>A Cancelled or No-show booking owes nothing (QA3 BKG-8): its balance leaves as 0.</summary>
     public async Task<BookingRange> GetForRangeAsync(DateTime fromDate, DateTime toDate, int? roomId, string? status)
     {
