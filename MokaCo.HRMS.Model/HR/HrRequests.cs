@@ -192,25 +192,9 @@ public class LeaveTypeUpdateRequest
     public bool CarryOver { get; set; }
 }
 
-/* ---- Salary component ---- */
-
-public class SalaryComponentCreateRequest
-{
-    public int EmployeeId { get; set; }
-    public int ComponentTypeId { get; set; }
-    public decimal Amount { get; set; }
-    public string CurrencyCode { get; set; } = string.Empty;
-    public DateTime EffectiveFrom { get; set; }
-    public DateTime? EffectiveTo { get; set; }
-}
-
-public class SalaryComponentUpdateRequest
-{
-    public decimal Amount { get; set; }
-    public string CurrencyCode { get; set; } = string.Empty;
-    public DateTime EffectiveFrom { get; set; }
-    public DateTime? EffectiveTo { get; set; }
-}
+/* ---- Salary component ----
+   The raw create / update request models are gone with their routes (QA3 PAY-6): a salary is set FROM a
+   date (SalaryComponentSetRequest) or ended on one (SalaryComponentEndRequest) — see SalaryComponent.cs. */
 
 /* ---- Document ---- */
 

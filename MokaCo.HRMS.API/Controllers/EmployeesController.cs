@@ -301,10 +301,10 @@ public class EmployeesController : ControllerBase
 
     // ───────────────────── salary administration ─────────────────────
     //
-    // THE HISTORY-PRESERVING PATH. These two are not the same thing as the older
-    // POST/PUT/DELETE on /api/salary-components, which edit a row in place: a change here CLOSES
-    // the standing row the day before and OPENS a new one, so a month already paid keeps saying
-    // what it paid. Use these.
+    // THE HISTORY-PRESERVING PATH, and the only way to change a salary: a change here CLOSES the
+    // standing row the day before and OPENS a new one, so a month already paid keeps saying what it
+    // paid; a row is closed with POST /api/salary-components/{id}/end. The older POST/PUT/DELETE on
+    // /api/salary-components, which edited a row in place, are retired (QA3 PAY-6 / REL-2).
     //
     // The gate is EMP_VIEW/EMP_EDIT for consistency with the rest of this controller, but the real
     // authority is the procedure — it checks for the HR (or Admin) role itself and refuses with
