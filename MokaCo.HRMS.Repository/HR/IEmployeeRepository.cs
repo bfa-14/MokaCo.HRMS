@@ -10,7 +10,7 @@ public interface IEmployeeRepository
     Task<int> CreateAsync(
         int? userId, int branchId, int departmentId, int positionId, string fullName,
         string? nationalId, string? nssfNumber, DateTime hireDate, int? createdBy,
-        string? email, string? phoneNumber, string? preferredLanguage);
+        string? email, string? phoneNumber, string? preferredLanguage, int? approvalTier);
     Task UpdateAsync(
         int employeeId, int branchId, int departmentId, int positionId, string fullName,
         string? nationalId, string? nssfNumber, DateTime hireDate, DateTime? terminationDate, int? modifiedBy,
@@ -26,7 +26,7 @@ public interface IEmployeeRepository
     Task<EmployeeUserLinkResult?> LinkUserAsync(int employeeId, int userId, int? actedBy);
     Task<EmployeeUserUnlinkResult> UnlinkUserAsync(int employeeId, int? actedBy);
 
-    /// <summary>Sets the employee's approval tier (1/2/3). RAISERRORs on an out-of-range value.</summary>
+    /// <summary>Sets the employee's approval tier, a tier of hr.APPROVAL_TIER. RAISERRORs on a tier the dictionary does not have.</summary>
     Task<EmployeeApprovalTier?> SetApprovalTierAsync(int employeeId, int approvalTier);
 
     /// <summary>Sets who the employee reports to. RAISERRORs on a self-reference or a reporting loop.</summary>
@@ -40,4 +40,16 @@ public interface IEmployeeRepository
 
     /// <summary>The longest reporting-line chain among current employees — a Line-manager step deeper than this skips for everyone.</summary>
     Task<int> GetOrgMaxDepthAsync();
+
+    /// <summary>
+    /// QA3 REL-4: hr.usp_Employee_ApplyDueTerminations — the day after a termination date the login is disabled, the
+    /// branch-manager post vacated and the device PINs unmapped, once per termination; one summary row.
+    /// </summary>
+    Task<TerminationSweepResult> ApplyDueTerminationsAsync();
+
+    /// <summary>
+    /// QA3 WEB-2: hr.usp_Employee_GetSwapCounterparts — the requester (IsRequester) and the active colleagues of their
+    /// branch in the same position. RAISERRORs when the caller may not ask for this employee.
+    /// </summary>
+    Task<IEnumerable<SwapCounterpartRow>> GetSwapCounterpartsAsync(int employeeId, int? callerUserId);
 }

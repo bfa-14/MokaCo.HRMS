@@ -116,7 +116,7 @@ public class EmployeeContactValidationTests
         var repo = new Mock<IEmployeeRepository>(MockBehavior.Strict);
         repo.Setup(r => r.CreateAsync(
                 null, 1, 1, 1, "A2TEST Person", null, null, new DateTime(2026, 1, 5), 1,
-                "hadi@mokaco.com", "+9613123456", null))
+                "hadi@mokaco.com", "+9613123456", null, null))   // the last null: no tier chosen — the procedure's lowest
             .ReturnsAsync(42);
         var service = new EmployeeService(repo.Object);
 
