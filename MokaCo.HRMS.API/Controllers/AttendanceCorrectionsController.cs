@@ -44,6 +44,7 @@ public class AttendanceCorrectionsController : ControllerBase
 
     [HttpGet("by-record/{attendanceId:long}")]
     [HasPermission("ATTENDANCE_VIEW")]
+    [InCallerScope(ScopeTarget.Attendance, RouteKey = "attendanceId")]   // QA3 ATT-16: the record's branch of that day
     public async Task<IActionResult> GetByRecord(long attendanceId)
         => Ok(await _corrections.GetByRecordAsync(attendanceId));
 

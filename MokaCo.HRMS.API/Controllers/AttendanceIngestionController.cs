@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MokaCo.HRMS.Api.Auth;
+using MokaCo.HRMS.Repository.HR;
 using MokaCo.HRMS.Model.Attendance;
 using MokaCo.HRMS.Services.Attendance;
 
@@ -138,16 +139,23 @@ public class AttendanceIngestionController : ControllerBase
     /// endpoint that would happily be called without one is a page that works now and times out in
     /// two years.
     /// </summary>
+    /// <remarks>
+    /// BRANCH-SCOPED (QA3 ATT-16), like the attendance lists: a punch is seen by whoever may see its
+    /// employee that day; one on a PIN mapped to nobody, by the manager of the terminal's branch.
+    /// </remarks>
     [HttpGet("punches")]
     [HasPermission("ATTENDANCE_VIEW")]
     public async Task<IActionResult> GetPunches(
         [FromQuery] DateTime? date,
         [FromQuery] int? deviceId,
+        [FromServices] IScopeRepository scopes,
         [FromQuery] bool unresolvedOnly = false)
     {
         if (date is null)
             return BadRequest(new { error = "A date is required." });
 
-        return Ok(await _import.GetPunchesByDateAsync(date.Value, deviceId, unresolvedOnly));
+        var punches = await _import.GetPunchesByDateAsync(date.Value, deviceId, unresolvedOnly);
+        var scope = await scopes.ForCallerAsync(HttpContext, date.Value, date.Value);
+        return Ok(punches.Where(p => scope.SeesPunch(p.EmployeeId, p.BranchId)));
     }
 }

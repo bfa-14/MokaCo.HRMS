@@ -18,6 +18,14 @@ public class Argon2PasswordHasher : IPasswordHasher
     private const int SaltSize     = 16;
     private const int HashSize     = 32;
 
+    /// <summary>
+    /// Random salt and random "hash" under the current parameters, made once per process (the hasher is
+    /// a singleton). Verify runs the full Argon2 computation against it and the comparison fails.
+    /// </summary>
+    public string DecoyHash { get; } =
+        $"argon2id$v=19$m={MemorySizeKb},t={Iterations},p={Parallelism}$" +
+        $"{Convert.ToBase64String(RandomNumberGenerator.GetBytes(SaltSize))}${Convert.ToBase64String(RandomNumberGenerator.GetBytes(HashSize))}";
+
     public string Hash(string password)
     {
         var salt = RandomNumberGenerator.GetBytes(SaltSize);

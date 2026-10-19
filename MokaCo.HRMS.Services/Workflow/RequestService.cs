@@ -3,6 +3,8 @@ using MokaCo.HRMS.Repository.Security;
 using MokaCo.HRMS.Repository.Workflow;
 using MokaCo.HRMS.Services.Attendance;
 using MokaCo.HRMS.Services.Auth;
+using MokaCo.HRMS.Services.Core;
+using MokaCo.HRMS.Services.Security;
 
 namespace MokaCo.HRMS.Services.Workflow;
 
@@ -21,13 +23,16 @@ public class RequestService : IRequestService
     private readonly IUserRepository _users;
     private readonly IPasswordHasher _hasher;
     private readonly IRosterService? _roster;
+    private readonly MissingScriptWarning? _missingScript;
 
-    public RequestService(IRequestRepository repo, IUserRepository users, IPasswordHasher hasher, IRosterService? roster = null)
+    public RequestService(IRequestRepository repo, IUserRepository users, IPasswordHasher hasher,
+        IRosterService? roster = null, MissingScriptWarning? missingScript = null)
     {
         _repo = repo;
         _users = users;
         _hasher = hasher;
         _roster = roster;
+        _missingScript = missingScript;
     }
 
     /* ---- QA3 ROS-2 (unit C, roster) - THE ROSTER HOOK. When an approval CLOSES a ROSTER_APPROVAL request, its month is
@@ -85,11 +90,13 @@ public class RequestService : IRequestService
         if (string.IsNullOrEmpty(password))
             throw new WorkflowException(failureStatus, demand);
 
-        var user = await _users.GetByIdAsync(userId);
-        if (user is null || !_hasher.Verify(password, user.PasswordHash))
-            throw new WorkflowException(failureStatus, "That password is not correct.");
-
-        return true;
+        // Counted against the login lockout, and refused while locked (QA3, item 10): see AccountPassword.
+        return await AccountPassword.CheckAsync(_users, _hasher, userId, password, _missingScript) switch
+        {
+            PasswordVerdict.Ok => true,
+            PasswordVerdict.Locked => throw new WorkflowException(failureStatus, AuthService.Locked),
+            _ => throw new WorkflowException(failureStatus, "That password is not correct."),
+        };
     }
 
     public async Task<RequestDetail?> GetByIdAsync(int requestInstanceId, RequestCaller caller)

@@ -1,9 +1,11 @@
 using System.Security.Claims;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.Data.SqlClient;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Model.Attendance;
+using MokaCo.HRMS.Repository.HR;
 using MokaCo.HRMS.Services.Attendance;
 using MokaCo.HRMS.Services.Workflow;
 
@@ -225,9 +227,14 @@ public class AttendanceController : ControllerBase
 
     private static readonly Regex MonthPattern = new(@"^\d{4}-(0[1-9]|1[0-2])$", RegexOptions.Compiled);
 
-    /// <summary>The raw punches behind a day — what the device ACTUALLY recorded, before processing or correction.</summary>
+    /// <summary>
+    /// The raw punches behind a day — what the device ACTUALLY recorded, before processing or correction.
+    /// Only an employee in the caller's branch scope (QA3 ATT-16: before, anyone with ATTENDANCE_VIEW read
+    /// anyone's punches): 404 for no such employee, 403 outside the caller's branches.
+    /// </summary>
     [HttpGet("raw/{employeeId:int}/{date:datetime}")]
     [HasPermission("ATTENDANCE_VIEW")]
+    [InCallerScope(ScopeTarget.Employee, RouteKey = "employeeId")]
     public async Task<IActionResult> GetRaw(int employeeId, DateTime date)
         => Ok(await _attendance.GetRawAsync(employeeId, date));
 
@@ -437,22 +444,40 @@ public class AttendanceController : ControllerBase
     public async Task<IActionResult> GetPayrollReadiness([FromQuery] string period)
         => Ok(await _attendance.GetPayrollReadinessAsync(period));
 
+    /* THE MONTHLY SUMMARIES ARE BRANCH-SCOPED (QA3 ATT-16), as script 87 scoped the attendance lists:
+       without EMP_VIEW_ALL a caller sees themselves and the employees of the branches they manage.
+       Before, anyone with ATTENDANCE_VIEW read every employee's month. The procedures are not changed
+       (their repo copies are older than production, CON-7); one employee is checked first
+       ([InCallerScope]), and the lists are filtered with hr.usp_Scope_CallerEmployees (script 105). */
+
     [HttpGet("summary")]
     [HasPermission("ATTENDANCE_VIEW")]
-    public async Task<IActionResult> GetSummary([FromQuery] string period, [FromQuery] int employeeId)
+    [InCallerScope(ScopeTarget.Employee, RouteKey = "employeeId")]
+    public async Task<IActionResult> GetSummary([FromQuery] string period, [FromQuery, BindRequired] int employeeId)
     {
         var summary = await _attendance.GetSummaryAsync(employeeId, period);
         return summary is null ? NotFound() : Ok(summary);
     }
 
-    /// <summary>What a payroll RUN iterates over: every active employee's month.</summary>
+    /// <summary>Every active employee's month — those the caller may see in that month.</summary>
     [HttpGet("summary/all")]
     [HasPermission("ATTENDANCE_VIEW")]
-    public async Task<IActionResult> GetSummaryAll([FromQuery] string period)
-        => Ok(await _attendance.GetSummaryAllAsync(period));
+    public async Task<IActionResult> GetSummaryAll([FromQuery] string period, [FromServices] IScopeRepository scopes)
+    {
+        var rows = await _attendance.GetSummaryAllAsync(period);
+        var (from, to) = ScopePeriod.Month(period);
+        var scope = await scopes.ForCallerAsync(HttpContext, from, to);
+        return Ok(rows.Where(r => scope.SeesEmployee(r.EmployeeId)));
+    }
 
+    /// <summary>The per-branch split of a month: each row to whoever manages ITS branch, and to the employee it is about.</summary>
     [HttpGet("summary/by-branch")]
     [HasPermission("ATTENDANCE_VIEW")]
-    public async Task<IActionResult> GetSummaryByBranch([FromQuery] string period, [FromQuery] int? employeeId)
-        => Ok(await _attendance.GetSummaryByBranchAsync(period, employeeId));
+    public async Task<IActionResult> GetSummaryByBranch([FromQuery] string period, [FromQuery] int? employeeId, [FromServices] IScopeRepository scopes)
+    {
+        var rows = await _attendance.GetSummaryByBranchAsync(period, employeeId);
+        var (from, to) = ScopePeriod.Month(period);
+        var scope = await scopes.ForCallerAsync(HttpContext, from, to);
+        return Ok(rows.Where(r => scope.SeesBranchRow(r.EmployeeId, r.BranchId)));
+    }
 }
