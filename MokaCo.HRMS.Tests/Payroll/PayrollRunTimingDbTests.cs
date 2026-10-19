@@ -75,8 +75,12 @@ public class PayrollRunTimingDbTests
         public Task ReviewAsync(int run) => Db.ExecuteAsync("payroll.usp_PayrollRun_SendToReview",
             new { PayrollRunId = run, ActedByUserId = Hr }, Tx, commandType: CommandType.StoredProcedure);
 
+        /// <summary>
+        /// The runs here are in 2099, a period that has not ended: script 103 (QA3 PAY-3) locks such a primary only
+        /// as the Owner's explicit EARLY lock, so these tests ask for one. (A supplemental ignores the flag.)
+        /// </summary>
         public Task ApproveAsync(int run) => Db.ExecuteAsync("payroll.usp_PayrollRun_Approve",
-            new { PayrollRunId = run, ActedByUserId = Owner }, Tx, commandType: CommandType.StoredProcedure);
+            new { PayrollRunId = run, ActedByUserId = Owner, AllowEarlyLock = true }, Tx, commandType: CommandType.StoredProcedure);
 
         /// <summary>How many payslip lines of the run pay the fixture's adjustment.</summary>
         public Task<int> AdjustmentLinesAsync(int run) => Db.QuerySingleAsync<int>(
