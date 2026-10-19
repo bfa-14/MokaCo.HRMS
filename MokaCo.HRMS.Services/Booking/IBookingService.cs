@@ -30,7 +30,7 @@ public interface IBookingService
     /// <summary>Cancels expired unpaid holds; returns the references it cancelled, so each can be announced live. Called by the five-minute job.</summary>
     Task<IReadOnlyList<string>> ExpireHoldsAsync();
 
-    /// <summary>core.SETTING BookingDepositRequired — whether the website must collect the deposit online (step 2).</summary>
+    /// <summary>core.SETTING BookingDepositRequired — whether the website must collect the deposit online (step 2). '1' or 'true' (QA3).</summary>
     Task<bool> IsDepositRequiredAsync();
 
     /* ---- staff ---- */
@@ -38,6 +38,14 @@ public interface IBookingService
     /// <summary>A booking typed in by staff — Source='Manual', opens Confirmed, exempt from the lead-time settings.</summary>
     Task<BookingCreated?> CreateManuallyAsync(BookingCreateRequest request, int createdByUserId);
 
+    /// <summary>
+    /// Prices a staff booking without taking it — usp_Booking_Quote by room id with Source 'Manual': the
+    /// hour discount, the lead-time deposit tier and the floor, as the booking will store them. Refusals
+    /// (closed, too long, in the past) are the procedure's (SqlException 50000).
+    /// </summary>
+    Task<BookingQuote?> QuoteForStaffAsync(StaffQuoteRequest request);
+
+    /// <summary>The calendar's bookings and blocks; a Cancelled or No-show row's balance is 0 (QA3 BKG-8).</summary>
     Task<BookingRange> GetForRangeAsync(DateTime fromDate, DateTime toDate, int? roomId, string? status);
 
     /// <summary>One booking with its money lines, for the back office. Null when the id is unknown.</summary>

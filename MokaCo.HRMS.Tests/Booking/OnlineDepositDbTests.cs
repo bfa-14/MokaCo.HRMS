@@ -13,6 +13,10 @@ namespace MokaCo.HRMS.Tests.Booking;
 /// order twice — one after the other, or at the same moment from two connections — leaves ONE
 /// payment line. Throw-away bookings on 2099-06-22 (a Monday; the QA case uses the 15th). Skipped,
 /// with the reason, when the database is not reachable.
+///
+/// QA3 BKG-1 (docs/104): /pay opens a payment only on a DEPOSIT booking (OnlineDeposit = 1, taken while
+/// BookingDepositRequired was on) and only while deposits are on — the tests that pay turn both on
+/// inside their own transaction.
 /// </summary>
 [Collection(DatabaseCollection.Name)]
 public class OnlineDepositDbTests
@@ -27,9 +31,21 @@ public class OnlineDepositDbTests
         Assert.True(applied == 1, "apply docs/88_booking_online_deposit.sql");
     }
 
-    /// <summary>A website booking waiting for payment: made as a staff booking (no lead-time rules this far out), then turned Pending/Website.</summary>
+    /// <summary>Online deposits on, for the rest of the transaction (QA3 BKG-1: /pay is refused otherwise). Rolled back with it.</summary>
+    private static Task DepositsOnAsync(SqlConnection db, SqlTransaction tx)
+        => db.ExecuteAsync(
+            """
+            IF NOT EXISTS (SELECT 1 FROM core.SETTING WHERE SettingKey = 'BookingDepositRequired')
+                INSERT INTO core.SETTING (SettingKey, SettingValue, DataType) VALUES ('BookingDepositRequired', '1', 'bool');
+            UPDATE core.SETTING SET SettingValue = '1' WHERE SettingKey = 'BookingDepositRequired';
+            """, transaction: tx);
+
+    /// <summary>
+    /// A website DEPOSIT booking waiting for payment: made as a staff booking (no lead-time rules this far
+    /// out), then turned Pending/Website and marked as taken in deposit mode (OnlineDeposit, docs/104).
+    /// </summary>
     private static async Task<(int BookingId, string Ref, decimal Deposit)> WaitingForPaymentAsync(
-        SqlConnection db, SqlTransaction? tx, TimeSpan start, string guest)
+        SqlConnection db, SqlTransaction? tx, TimeSpan start, string guest, bool depositMode = true)
     {
         var room = await db.ExecuteScalarAsync<int?>(
             "SELECT TOP 1 r.RoomId FROM booking.ROOM r WHERE r.IsActive = 1 AND EXISTS (SELECT 1 FROM booking.ROOM_HOURS h WHERE h.RoomId = r.RoomId AND h.DayOfWeek = 1 AND h.IsClosed = 0 AND h.OpenMin <= 600 AND h.CloseMin >= 1020) ORDER BY r.SortOrder",
@@ -42,8 +58,8 @@ public class OnlineDepositDbTests
                   Persons = 1, GuestName = guest, GuestPhone = "+96170000088", Source = "Manual" },
             tx, commandType: CommandType.StoredProcedure);
 
-        await db.ExecuteAsync("UPDATE booking.BOOKING SET [Status] = 'Pending', [Source] = 'Website' WHERE BookingId = @Id",
-            new { Id = created.BookingId }, tx);
+        await db.ExecuteAsync("UPDATE booking.BOOKING SET [Status] = 'Pending', [Source] = 'Website', OnlineDeposit = @Mode WHERE BookingId = @Id",
+            new { Id = created.BookingId, Mode = depositMode }, tx);
         return (created.BookingId, created.BookingRef, created.DepositDue);
     }
 
@@ -64,6 +80,7 @@ public class OnlineDepositDbTests
         try
         {
             await RequireScript88(db, tx);
+            await DepositsOnAsync(db, tx);
             var (id, reference, deposit) = await WaitingForPaymentAsync(db, tx, new TimeSpan(10, 0, 0), "ZZ script 88 start");
             var holdMinutes = await db.ExecuteScalarAsync<int?>(
                 "SELECT TRY_CAST(SettingValue AS INT) FROM core.SETTING WHERE SettingKey = 'BookingHoldMinutes'", transaction: tx) ?? 15;
@@ -94,6 +111,43 @@ public class OnlineDepositDbTests
         }
     }
 
+    /// <summary>
+    /// QA3 BKG-1: a stranger holding the reference of a step-1 REQUEST (taken without an online deposit)
+    /// cannot put a payment hold on it — which /release or the expiry would then have turned into a
+    /// cancellation. Nor can a deposit booking be paid once deposits are switched off. 409 not_pending,
+    /// nothing stamped.
+    /// </summary>
+    [DbFact]
+    public async Task Pay_is_refused_on_a_request_and_when_deposits_are_off()
+    {
+        await using var db = new SqlConnection(DbFactAttribute.ConnectionString);
+        await db.OpenAsync();
+        await using var tx = db.BeginTransaction();
+        try
+        {
+            await RequireScript88(db, tx);
+            Assert.True(await db.ExecuteScalarAsync<int>("SELECT CASE WHEN COL_LENGTH('booking.BOOKING', 'OnlineDeposit') IS NULL THEN 0 ELSE 1 END", transaction: tx) == 1,
+                "apply docs/104_qa3_booking.sql");
+            await DepositsOnAsync(db, tx);
+
+            var request = await WaitingForPaymentAsync(db, tx, new TimeSpan(14, 0, 0), "ZZ QA3 request", depositMode: false);
+            Assert.Equal("not_pending", await RefusalOf(db, tx, request.Ref));
+
+            var deposit = await WaitingForPaymentAsync(db, tx, new TimeSpan(15, 0, 0), "ZZ QA3 deposit");
+            await db.ExecuteAsync("UPDATE core.SETTING SET SettingValue = 'false' WHERE SettingKey = 'BookingDepositRequired'", transaction: tx);
+            Assert.Equal("not_pending", await RefusalOf(db, tx, deposit.Ref));
+
+            var stamped = await db.ExecuteScalarAsync<int>(
+                "SELECT COUNT(*) FROM booking.BOOKING WHERE BookingId IN (@A, @B) AND (HoldExpiresUtc IS NOT NULL OR PaymentOpenedUtc IS NOT NULL)",
+                new { A = request.BookingId, B = deposit.BookingId }, tx);
+            Assert.Equal(0, stamped);
+        }
+        finally
+        {
+            try { await tx.RollbackAsync(); } catch { /* already rolled back */ }
+        }
+    }
+
     [DbFact]
     public async Task Confirming_the_same_order_twice_records_one_line_and_confirms_once()
     {
@@ -103,6 +157,7 @@ public class OnlineDepositDbTests
         try
         {
             await RequireScript88(db, tx);
+            await DepositsOnAsync(db, tx);
             var (id, reference, deposit) = await WaitingForPaymentAsync(db, tx, new TimeSpan(11, 0, 0), "ZZ script 88 replay");
             await db.ExecuteAsync("booking.usp_Booking_StartPayment", new { Ref = reference }, tx, commandType: CommandType.StoredProcedure);
 
@@ -147,6 +202,7 @@ public class OnlineDepositDbTests
         try
         {
             await RequireScript88(db, tx);
+            await DepositsOnAsync(db, tx);
             var (id, reference, deposit) = await WaitingForPaymentAsync(db, tx, new TimeSpan(12, 0, 0), "ZZ script 88 late");
             await db.ExecuteAsync("booking.usp_Booking_StartPayment", new { Ref = reference }, tx, commandType: CommandType.StoredProcedure);
             await db.ExecuteAsync("booking.usp_Booking_ReleaseHold", new { Ref = reference }, tx, commandType: CommandType.StoredProcedure);
