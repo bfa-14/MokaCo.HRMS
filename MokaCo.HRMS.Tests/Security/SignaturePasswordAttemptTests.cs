@@ -125,6 +125,31 @@ public class SignaturePasswordAttemptTests
     }
 
     [Fact]
+    public async Task A_leave_decisions_wrong_signature_is_counted_and_a_locked_account_cannot_sign()
+    {
+        LeaveRequestService Service(Mock<IUserRepository> users, Mock<IPasswordHasher> hasher, Mock<ILeaveRequestRepository> leave)
+        {
+            var requests = new Mock<IRequestRepository>();
+            requests.Setup(r => r.GetSignatureRequirementAsync(42, 7)).ReturnsAsync(new SignatureRequirement { SignatureRequired = true });
+            return new LeaveRequestService(leave.Object, requests.Object, users.Object, hasher.Object);
+        }
+
+        var (users, hasher) = Account();
+        var leave = new Mock<ILeaveRequestRepository>();
+        var wrong = await Assert.ThrowsAsync<WorkflowException>(() =>
+            Service(users, hasher, leave).DecideAsync(42, 7, new LeaveRequestDecideRequest { Password = "guess" }));
+        Assert.Equal((401, "That password is not correct."), (wrong.StatusCode, wrong.Message));
+        users.Verify(u => u.RegisterLoginFailureAsync(7, It.IsAny<int>(), It.IsAny<int>()), Times.Once());
+        leave.Verify(r => r.DecideAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<decimal?>(), It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<bool>()), Times.Never());
+
+        var (lockedUsers, lockedHasher) = Account(failed: 5, lockoutEnd: DateTime.UtcNow.AddMinutes(10));
+        var locked = await Assert.ThrowsAsync<WorkflowException>(() =>
+            Service(lockedUsers, lockedHasher, leave).DecideAsync(42, 7, new LeaveRequestDecideRequest { Password = "right" }));
+        Assert.Equal((401, AuthService.Locked), (locked.StatusCode, locked.Message));
+        lockedHasher.Verify(h => h.Verify(It.IsAny<string>(), It.IsAny<string>()), Times.Never());
+    }
+
+    [Fact]
     public async Task The_password_change_form_counts_wrong_current_passwords_and_refuses_a_locked_account()
     {
         var (users, hasher) = Account();
