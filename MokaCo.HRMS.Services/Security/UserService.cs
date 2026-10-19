@@ -33,12 +33,18 @@ public class UserService : IUserService
     /// <summary>
     /// Disabling ENDS THE ACCOUNT'S SESSIONS (QA3 SEC-5): its refresh tokens are revoked — before, they
     /// worked again the moment the account was re-enabled — and its access tokens stop at the next
-    /// request. Enabling ends nothing: the person signs in again.
+    /// request. Enabling ends nothing: the person signs in again, and the session guard reads the
+    /// account again at once — it may still hold the "disabled" reading, which would otherwise refuse
+    /// the new sign-in for the rest of its window.
     /// </summary>
     public async Task SetActiveAsync(int userId, bool isActive, int modifiedBy)
     {
         var rows = await _users.SetActiveAsync(userId, isActive, modifiedBy);
-        if (rows == 1 && !isActive)
+        if (rows != 1)
+            return;
+        if (isActive)
+            _sessions.Forget(userId);
+        else
             await EndSessionsAsync(userId);
     }
 

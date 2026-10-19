@@ -277,10 +277,10 @@ public class SessionEndTests
     }
 
     [Theory]
-    [InlineData(false, 1, true)]     // disabled: its sessions end
-    [InlineData(true, 1, false)]     // enabled: nothing to end
-    [InlineData(false, 0, false)]    // no such user: nothing happened
-    public async Task Disabling_an_account_ends_its_sessions(bool isActive, int rows, bool ends)
+    [InlineData(false, 1, true, true)]      // disabled: its sessions end
+    [InlineData(true, 1, false, true)]      // enabled: nothing to end, but the guard reads the account again
+    [InlineData(false, 0, false, false)]    // no such user: nothing happened
+    public async Task Disabling_an_account_ends_its_sessions(bool isActive, int rows, bool ends, bool forgets)
     {
         var (service, users, sessions) = Users();
         users.Setup(u => u.SetActiveAsync(7, isActive, 1)).ReturnsAsync(rows);
@@ -288,7 +288,20 @@ public class SessionEndTests
         await service.SetActiveAsync(7, isActive, modifiedBy: 1);
 
         users.Verify(u => u.EndSessionsAsync(7), ends ? Times.Once() : Times.Never());
-        sessions.Verify(s => s.Forget(7), ends ? Times.Once() : Times.Never());
+        sessions.Verify(s => s.Forget(7), forgets ? Times.Once() : Times.Never());
+    }
+
+    [Fact]
+    public async Task A_re_enabled_account_is_let_in_at_once_not_after_the_guards_window()
+    {
+        var rami = Rami(active: false);
+        var (guard, users, _) = Guard(rami);
+        Assert.False(await guard.IsCurrentAsync(7, null));        // read while disabled, and kept for CacheFor
+
+        users.Setup(u => u.SetActiveAsync(7, true, 1)).Callback(() => rami.IsActive = true).ReturnsAsync(1);
+        await new UserService(users.Object, Mock.Of<IPasswordHasher>(), guard).SetActiveAsync(7, true, modifiedBy: 1);
+
+        Assert.True(await guard.IsCurrentAsync(7, null));         // the new sign-in, within the same window
     }
 
     /* ---- the JWT handler hook ---- */
