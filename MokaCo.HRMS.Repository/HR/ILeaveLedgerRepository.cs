@@ -11,7 +11,6 @@ public interface ILeaveLedgerRepository
     /// The roster needs this to avoid scheduling a shift on somebody's leave day, and reading the
     /// ledger one employee at a time would mean a round trip per person per month.
     /// </summary>
-    Task<IEnumerable<LeaveDay>> GetLeaveDaysInRangeAsync(DateTime fromDate, DateTime toDate);
     Task<int> PostMovementAsync(
         int employeeId, int leaveTypeId, string movementType, decimal days, DateTime effectiveDate,
         int? leaveRequestId, string? note, int? createdBy);

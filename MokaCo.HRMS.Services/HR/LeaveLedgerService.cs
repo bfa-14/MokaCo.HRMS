@@ -19,9 +19,6 @@ public class LeaveLedgerService : ILeaveLedgerService
     /// there is; workflow.LEAVE_REQUEST, with a real date range to expand, has not been built. When
     /// it is, the procedure behind this method changes and its callers do not.
     /// </summary>
-    public Task<IEnumerable<LeaveDay>> GetLeaveDaysInRangeAsync(DateTime fromDate, DateTime toDate)
-        => _repo.GetLeaveDaysInRangeAsync(fromDate, toDate);
-
     public Task<int> PostMovementAsync(LeaveLedgerPostRequest request, int? createdBy)
         => _repo.PostMovementAsync(
             request.EmployeeId, request.LeaveTypeId, request.MovementType, request.Days,
