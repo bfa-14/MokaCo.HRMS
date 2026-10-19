@@ -70,6 +70,7 @@ public class AttendanceController : ControllerBase
     /// <summary>One day WITH the paired intervals behind it — the audit trail that shows WHY worked time is what it is.</summary>
     [HttpGet("{id:long}")]
     [HasPermission("ATTENDANCE_VIEW")]
+    [InCallerScope(ScopeTarget.Attendance)]
     public async Task<IActionResult> GetById(long id)
     {
         var record = await _attendance.GetByIdAsync(id);

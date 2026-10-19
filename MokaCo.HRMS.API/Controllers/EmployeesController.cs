@@ -53,6 +53,8 @@ public class EmployeesController : ControllerBase
 
     [HttpGet("{id:int}")]
     [HasPermission("EMP_VIEW")]
+
+    [InCallerScope(ScopeTarget.Employee)]
     public async Task<IActionResult> GetProfile(int id)
     {
         var profile = await _employees.GetProfileAsync(id);
@@ -93,6 +95,7 @@ public class EmployeesController : ControllerBase
     /// <summary>D7: the branches this employee has belonged to, newest first, each with the dates it covers.</summary>
     [HttpGet("{id:int}/branch-history")]
     [HasPermission("EMP_VIEW")]
+    [InCallerScope(ScopeTarget.Employee)]
     public async Task<IActionResult> GetBranchHistory(int id) => Ok(await _employees.GetBranchHistoryAsync(id));
 
     /// <summary>
@@ -160,6 +163,7 @@ public class EmployeesController : ControllerBase
     /// <summary>This employee's chain of command, bottom-up — shown under the "Reports to" field.</summary>
     [HttpGet("{id:int}/reporting-line")]
     [HasPermission("EMP_VIEW")]
+    [InCallerScope(ScopeTarget.Employee)]
     public async Task<IActionResult> GetReportingLine(int id)
         => Ok(await _employees.GetReportingLineAsync(id));
 
@@ -194,18 +198,21 @@ public class EmployeesController : ControllerBase
     /// </summary>
     [HttpGet("{id:int}/leave-requests")]
     [HasPermission("EMP_VIEW")]
+    [InCallerScope(ScopeTarget.Employee)]
     public async Task<IActionResult> GetLeaveRequests(int id, [FromQuery] DateTime? from, [FromQuery] DateTime? to)
         => Ok(await _leave.GetForEmployeeAsync(id, from, to));
 
     /// <summary>This employee's expense claims, newest first, optionally bounded by expense date.</summary>
     [HttpGet("{id:int}/expenses")]
     [HasPermission("EMP_VIEW")]
+    [InCallerScope(ScopeTarget.Employee)]
     public async Task<IActionResult> GetExpenses(int id, [FromQuery] DateTime? from, [FromQuery] DateTime? to)
         => Ok(await _expenses.GetForEmployeeAsync(id, from, to));
 
     /// <summary>This employee's overtime requests, newest first, optionally bounded by work date.</summary>
     [HttpGet("{id:int}/overtime")]
     [HasPermission("EMP_VIEW")]
+    [InCallerScope(ScopeTarget.Employee)]
     public async Task<IActionResult> GetOvertime(int id, [FromQuery] DateTime? from, [FromQuery] DateTime? to)
         => Ok(await _overtime.GetForEmployeeAsync(id, from, to));
 
@@ -222,6 +229,7 @@ public class EmployeesController : ControllerBase
     /// </summary>
     [HttpGet("{id:int}/leave-balance")]
     [HasPermission("EMP_VIEW")]
+    [InCallerScope(ScopeTarget.Employee)]
     public async Task<IActionResult> GetLeaveBalance(int id, [FromQuery] int? leaveTypeId, [FromQuery] int? year)
     {
         if (leaveTypeId is null)
@@ -306,6 +314,7 @@ public class EmployeesController : ControllerBase
     /// <summary>Every salary row for the employee — the standing ones and the closed history.</summary>
     [HttpGet("{id:int}/salary-components")]
     [HasPermission("EMP_VIEW")]
+    [InCallerScope(ScopeTarget.Employee, Salary = true)]
     public async Task<IActionResult> GetSalaryComponents(int id)
         => Ok(await _salaryComponents.GetForEmployeeAsync(id));
 

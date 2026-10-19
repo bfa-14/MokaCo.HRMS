@@ -29,6 +29,8 @@ public class SalaryComponentsController : ControllerBase
 
     [HttpGet("by-employee/{employeeId:int}")]
     [HasPermission("EMP_VIEW")]
+
+    [InCallerScope(ScopeTarget.Employee, RouteKey = "employeeId", Salary = true)]
     public async Task<IActionResult> GetByEmployee(int employeeId)
         => Ok(await _salaryComponents.GetByEmployeeAsync(employeeId));
 

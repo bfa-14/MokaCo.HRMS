@@ -107,6 +107,7 @@ builder.Services.AddScoped<IEmployeeRepository, EmployeeRepository>();
 builder.Services.AddScoped<ILeaveTypeRepository, LeaveTypeRepository>();
 builder.Services.AddScoped<ISalaryComponentRepository, SalaryComponentRepository>();
 builder.Services.AddScoped<IDocumentRepository, DocumentRepository>();
+builder.Services.AddScoped<IScopeRepository, ScopeRepository>();
 builder.Services.AddScoped<ILeaveLedgerRepository, LeaveLedgerRepository>();
 builder.Services.AddScoped<ILeaveYearRepository, LeaveYearRepository>();
 builder.Services.AddScoped<IPayrollTierRepository, PayrollTierRepository>();
