@@ -171,6 +171,10 @@ builder.Services.AddSingleton<ISessionGuard, SessionGuard>();
 // says so ONCE per process (a singleton for that reason): AuthService, UserService, the signature checks
 // and the caller-scope lookups (CallerScopes) report their fallbacks here.
 builder.Services.AddSingleton<MissingScriptWarning>();
+// QA3 deploy guard: which numbered scripts this API calls are missing from the database - logged at startup,
+// shown on /health. A singleton: one reading shared by every /health call, rechecked at most every 30 s.
+builder.Services.AddScoped<ISchemaRepository, SchemaRepository>();
+builder.Services.AddSingleton<SchemaCheck>();
 builder.Services.AddScoped<IUserSignatureService, UserSignatureService>();
 
 // The Google sign-in gate. The STATE is a singleton and must stay one: it is the 20-second cache every
@@ -682,13 +686,21 @@ app.MapGet("/", () => isDevelopment
    .AllowAnonymous()
    .ExcludeFromDescription();
 
-app.MapGet("/health", () => Results.Ok(new
+// "schema" (QA3 deploy guard): "ok", "behind" while a script this API calls is missing from the database (the log
+// names it), "unknown" when the database could not be asked. Either of the last two makes the status "degraded",
+// still HTTP 200: the process is alive. Only the word is public; the script names are in the log.
+app.MapGet("/health", async (SchemaCheck schema) =>
    {
-       status = "ok",
-       service = "MokaCo.HRMS.API",
-       environment = app.Environment.EnvironmentName,
-       utc = DateTime.UtcNow
-   }))
+       var scripts = await schema.CurrentAsync();
+       return Results.Ok(new
+       {
+           status = scripts.IsOk ? "ok" : "degraded",
+           service = "MokaCo.HRMS.API",
+           environment = app.Environment.EnvironmentName,
+           schema = scripts.Status,
+           utc = DateTime.UtcNow
+       });
+   })
    .AllowAnonymous()
    .ExcludeFromDescription();
 
@@ -728,6 +740,10 @@ app.Lifetime.ApplicationStarted.Register(() =>
     app.Logger.LogInformation(
         "iclock receiver listening — point terminals at {Target} (device Cloud Server / ADMS " +
         "setting), serial must be registered on Attendance > Devices.", target);
+
+    // QA3 deploy guard: the scripts check runs once now, so a missing script is in the log at startup (the deploy
+    // scripts read it there), not only when somebody opens /health. It never throws.
+    _ = app.Services.GetRequiredService<SchemaCheck>().CurrentAsync();
 });
 
 app.Run();

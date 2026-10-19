@@ -163,6 +163,7 @@ WantedBy=multi-user.target
 EOF
 sudo systemctl daemon-reload
 sudo systemctl enable "$SVC" >/dev/null 2>&1
+since=$(date '+%Y-%m-%d %H:%M:%S')          # for the scripts check in step 7
 sudo systemctl restart "$SVC"
 
 # =============================================================================
@@ -313,6 +314,21 @@ echo "--- through nginx    :"; curl -sk -m 5 "$BASE/health" | sed 's/^/    /'; e
 echo "--- login endpoint answers (400/401 = alive, it just needs a body):"
 echo "    HTTP $(curl -sk -o /dev/null -w '%{http_code}' -m 5 -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' -d '{}')"
 echo "--- last log lines:"; sudo journalctl -u "$SVC" -n 15 --no-pager -o cat | sed 's/^/    /'
+
+# QA3 deploy guard: the API names every docs/NN_*.sql it calls that the database lacks, and /health says
+# "schema":"behind" until they are applied. Production is not stopped for it - the scripts are applied by hand and
+# no restart is needed after - but it is said here, loudly, with the list.
+health=$(curl -s -m 10 "http://127.0.0.1:$PORT/health" || true)
+if grep -q '"schema":"behind"' <<< "$health"; then
+  echo
+  echo "!!! WARNING: the database lacks scripts this API calls; their features fail until they are applied:"
+  sudo journalctl -u "$SVC" --since "$since" --no-pager -o cat | grep -o 'DATABASE SCRIPTS NOT APPLIED: [^ ]*\( [^ ]*\)*\.sql' \
+    | tail -n 1 | sed 's/^/    /' || true
+  echo "!!! Apply each, in number order: sqlcmd -C -I -b -S 127.0.0.1 -U <login> -d MokaCo_HRMS -i docs/NN_....sql"
+  echo
+elif grep -q '"schema":"unknown"' <<< "$health"; then
+  echo "!!! WARNING: the API could not check the database's scripts (the journal says why)."
+fi
 
 if systemctl is-active --quiet "$SVC" && curl -skf -m 5 "$BASE/health" >/dev/null; then
   cat <<EOF
