@@ -18,10 +18,7 @@ public class DefinitionService : IDefinitionService
     public Task<IEnumerable<RequestType>> GetRequestTypesAsync() => _repo.GetRequestTypesAsync();
 
     public async Task<IEnumerable<RequestType>> GetActiveRequestTypesAsync()
-        => (await _repo.GetRequestTypesAsync())
-            .Where(t => t.IsActive)
-            .Select(t => new RequestType { RequestTypeId = t.RequestTypeId, Code = t.Code, Name = t.Name, IsActive = true })
-            .ToList();
+        => (await _repo.GetRequestTypesAsync()).Where(t => t.IsActive).ToList();
 
     /// <summary>
     /// ONE ROW PER TYPE. usp_RequestType_GetRaisable joins the ACTIVE definitions, and since chains

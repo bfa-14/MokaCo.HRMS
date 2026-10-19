@@ -60,8 +60,8 @@ public class WorkflowController : ControllerBase
     /// Every ACTIVE request type, for filtering lists of requests (QA3 WEB-13) — the Requests hub's
     /// type filter. Not gated on WORKFLOW_CONFIGURE for the same reason as raisable: an approver
     /// filters the requests in front of them by type without configuring anything, and may approve
-    /// types they cannot raise themselves, so the raisable list is not enough. Codes and names only
-    /// travel; the configuration stays behind request-types.
+    /// types they cannot raise themselves, so the raisable list is not enough. A type's name and
+    /// description are no secret; its chains and steps stay behind WORKFLOW_CONFIGURE.
     /// </summary>
     [HttpGet("request-types/active")]
     [Authorize]
