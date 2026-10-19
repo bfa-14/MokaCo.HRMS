@@ -5,7 +5,14 @@ using MokaCo.HRMS.Repository.Common;
 
 namespace MokaCo.HRMS.Repository.Core;
 
-/// <summary>Dapper access for exchange rates via the core.usp_ExchangeRate_* stored procedures.</summary>
+/// <summary>
+/// Dapper access for exchange rates via the core.usp_ExchangeRate_* stored procedures.
+///
+/// THE TWO WRITES GO TO THE FULL-PRECISION PROCEDURES (QA3 CON-9, script 103): core.usp_ExchangeRate_Add and
+/// core.usp_ExchangeRate_SetRate take the rate as DECIMAL(28,12). The older _Create / _Update took
+/// DECIMAL(18,4), which stored an LBP→USD rate of 1/89,500 as 0.0000 — handoff trap 4, the bug that once
+/// priced every LBP amount of a locked run at zero. Both keep the one-rate-per-pair-type-date refusal.
+/// </summary>
 public class ExchangeRateRepository : IExchangeRateRepository
 {
     private readonly IDbConnectionFactory _factory;
@@ -23,7 +30,7 @@ public class ExchangeRateRepository : IExchangeRateRepository
     {
         using var db = _factory.Create();
         return await db.ExecuteScalarAsync<int>(
-            "core.usp_ExchangeRate_Create",
+            "core.usp_ExchangeRate_Add",
             new
             {
                 FromCurrency = fromCurrency,
@@ -45,7 +52,7 @@ public class ExchangeRateRepository : IExchangeRateRepository
     {
         using var db = _factory.Create();
         return await db.QuerySingleOrDefaultAsync<ExchangeRate>(
-            "core.usp_ExchangeRate_Update",
+            "core.usp_ExchangeRate_SetRate",
             new
             {
                 ExchangeRateId = exchangeRateId,
