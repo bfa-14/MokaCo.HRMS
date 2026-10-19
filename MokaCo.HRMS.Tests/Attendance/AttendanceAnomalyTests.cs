@@ -11,6 +11,7 @@ namespace MokaCo.HRMS.Tests.Attendance;
 /// employee is touched. The shift is the brief's: 07:00–15:00, no break, tolerance from the setting.
 /// Skipped, with the reason, when the database is not reachable or script 77 is not applied.
 /// </summary>
+[Collection(DatabaseCollection.Name)]
 public class AttendanceAnomalyTests
 {
     private static readonly DateTime Day = new(2026, 8, 3);
@@ -112,6 +113,26 @@ public class AttendanceAnomalyTests
 
         public Task<Readiness> ReadinessAsync() => Db.QuerySingleAsync<Readiness>(
             "attendance.usp_Attendance_PayrollReadiness", new { PeriodYearMonth = "2026-08" }, Tx, commandType: System.Data.CommandType.StoredProcedure);
+
+        /* QA3 helpers */
+        public Task TerminateAsync(DateTime lastDay) => Db.ExecuteAsync(
+            "UPDATE hr.EMPLOYEE SET TerminationDate = @D WHERE EmployeeId = @EmployeeId", new { D = lastDay.Date, EmployeeId }, Tx);
+
+        public Task<int> MarkAbsenteesAsync(DateTime date) => Db.QuerySingleAsync<int>(
+            "attendance.usp_Attendance_MarkAbsentees", new { WorkDate = date.Date }, Tx, commandType: System.Data.CommandType.StoredProcedure);
+
+        public Task<int?> RecordCountAsync(DateTime date) => Db.ExecuteScalarAsync<int?>(
+            "SELECT COUNT(*) FROM attendance.ATTENDANCE_RECORD WHERE EmployeeId = @EmployeeId AND WorkDate = @D", new { EmployeeId, D = date.Date }, Tx);
+
+        /// <summary>An Approved request of any type (attendance reads only its status), raised by any user.</summary>
+        public Task<int> ApprovedRequestAsync() => Db.QuerySingleAsync<int>(
+            """
+            DECLARE @Wd INT, @Rt INT;
+            SELECT TOP 1 @Wd = WorkflowDefinitionId, @Rt = RequestTypeId FROM workflow.WORKFLOW_DEFINITION ORDER BY WorkflowDefinitionId;
+            INSERT INTO workflow.REQUEST_INSTANCE (RequestTypeId, WorkflowDefinitionId, EmployeeId, RaisedByUserId, [Status], Title)
+            VALUES (@Rt, @Wd, @EmployeeId, (SELECT TOP 1 UserId FROM security.[USER] ORDER BY UserId), 'Approved', N'ZZ test');
+            SELECT CAST(SCOPE_IDENTITY() AS INT);
+            """, new { EmployeeId }, Tx);
 
         public async ValueTask DisposeAsync()
         {
@@ -394,5 +415,168 @@ public class AttendanceAnomalyTests
         var othersAfter = await f.Db.ExecuteScalarAsync<int>(
             "SELECT COUNT(*) FROM attendance.ATTENDANCE_ANOMALY WHERE Decision IS NULL AND EmployeeId <> @E", new { E = f.EmployeeId }, f.Tx);
         Assert.Equal(othersBefore, othersAfter);        // other branches untouched
+    }
+
+    /* ======================================================================================
+       QA3 (docs/100_qa3_attendance.sql)
+       ====================================================================================== */
+
+    /* ---- ROS-1 / ATT-2 / REL-1: after the termination date there is no working day, for anyone ---- */
+    [DbFact]
+    public async Task A_day_after_the_termination_is_not_derived_and_an_old_absence_there_is_removed()
+    {
+        await using var f = await ExampleDayAsync();
+        await f.TerminateAsync(Day);                                        // leaves on the 3rd, rostered to the 6th
+
+        await f.PunchAsync(Day.AddDays(1).AddHours(7), isOut: false);       // a punch on the leaver's PIN the day after
+        await f.ComputeAsync(Day.AddDays(1));
+        Assert.Equal(0, await f.RecordCountAsync(Day.AddDays(1)));
+        Assert.Equal(0, await f.MarkAbsenteesAsync(Day.AddDays(2)));        // no absence after leaving
+        Assert.Equal(0, await f.RecordCountAsync(Day.AddDays(2)));
+
+        // an Absent the old rule wrote on the 6th goes the next time the day is derived
+        await f.Db.ExecuteAsync(
+            """
+            INSERT INTO attendance.ATTENDANCE_RECORD (EmployeeId, WorkDate, StandardMinutes, DayFraction, ShortfallMinutes, [Status], [Source])
+            VALUES (@EmployeeId, @D, 480, 0, 480, 'Absent', 'Device')
+            """, new { f.EmployeeId, D = Day.AddDays(3) }, f.Tx);
+        await f.ComputeAsync(Day.AddDays(3));
+        Assert.Equal(0, await f.RecordCountAsync(Day.AddDays(3)));
+        Assert.Equal(1, await f.RecordCountAsync(Day));                    // the last day worked stays
+
+        var refused = await Assert.ThrowsAsync<SqlException>(() => f.ManualAsync(Day.AddDays(2), Day.AddDays(2).AddHours(7), Day.AddDays(2).AddHours(15)));
+        Assert.Contains("left on 2026-08-03", refused.Message);
+    }
+
+    /* ---- LEV-2 / ATT-8 / REL-6: a partial approval keeps the first days; the others follow the punches ---- */
+    [DbFact]
+    public async Task A_partially_approved_leave_covers_only_its_approved_days()
+    {
+        await using var f = await Fixture.OpenAsync();
+        var request = await f.ApprovedRequestAsync();
+        await f.Db.ExecuteAsync(
+            """
+            INSERT INTO hr.LEAVE_TYPE (Name, IsPaid) VALUES (N'ZZ Annual', 1);
+            INSERT INTO workflow.LEAVE_REQUEST (RequestInstanceId, EmployeeId, LeaveTypeId, FromDate, ToDate, DaysRequested, DaysApproved, ApprovedToDate)
+            VALUES (@Request, @EmployeeId, SCOPE_IDENTITY(), '2026-08-03', '2026-08-06', 4, 2, '2026-08-04');
+            """, new { Request = request, f.EmployeeId }, f.Tx);
+
+        for (var d = Day; d <= Day.AddDays(3); d = d.AddDays(1)) await f.MarkAbsenteesAsync(d);
+
+        Assert.Equal("Leave", (await f.RecordAsync(Day)).Status);
+        Assert.Equal("Leave", (await f.RecordAsync(Day.AddDays(1))).Status);
+        Assert.Equal("Absent", (await f.RecordAsync(Day.AddDays(2))).Status);     // beyond the approved part: the punches (none)
+        Assert.Equal("Absent", (await f.RecordAsync(Day.AddDays(3))).Status);
+    }
+
+    /* ---- ATT-10: approving a correction the manual writer refuses changes NOTHING (inside the caller's transaction too) ---- */
+    [DbFact]
+    public async Task A_refused_correction_approval_leaves_the_day_the_anomaly_and_the_correction_as_they_were()
+    {
+        await using var f = await Fixture.OpenAsync();
+        var day = Day.AddDays(2);
+        await f.PunchAsync(day.AddHours(7), isOut: false);                 // in only: MissingPunch
+        await f.ComputeAsync(day);
+        var attendanceId = (await f.RecordAsync(day)).AttendanceId;
+        var correctionId = await f.Db.QuerySingleAsync<int>(
+            "attendance.usp_Correction_Create",
+            new { AttendanceId = attendanceId, RequestedBy = await f.Db.ExecuteScalarAsync<int>("SELECT TOP 1 UserId FROM security.[USER] ORDER BY UserId", transaction: f.Tx),
+                  NewLastOutUtc = day.AddHours(15), Reason = "ZZ forgot to punch out" },
+            f.Tx, commandType: System.Data.CommandType.StoredProcedure);
+
+        await f.TerminateAsync(Day.AddDays(1));                             // the day is no longer a working day: the writer refuses
+        var refused = await Assert.ThrowsAsync<SqlException>(() => f.Db.ExecuteAsync(
+            "attendance.usp_Correction_Approve", new { CorrectionId = correctionId, ApprovedBy = (int?)null }, f.Tx,
+            commandType: System.Data.CommandType.StoredProcedure));
+        Assert.Contains("is not one of their working days", refused.Message);
+
+        Assert.Equal("Pending", await f.Db.ExecuteScalarAsync<string>(
+            "SELECT ApprovalStatus FROM attendance.ATTENDANCE_CORRECTION WHERE CorrectionId = @Id", new { Id = correctionId }, f.Tx));
+        var r = await f.RecordAsync(day);
+        Assert.False(r.IsManual);
+        Assert.True(r.HasAnomaly);
+        Assert.Null(Assert.Single(await f.AnomaliesAsync(day)).Decision);
+    }
+
+    /* ---- ATT-10: a correction is checked when it is raised ---- */
+    [DbFact]
+    public async Task A_correction_with_the_out_time_before_the_in_time_is_refused_when_raised()
+    {
+        await using var f = await ExampleDayAsync();
+        var attendanceId = (await f.RecordAsync(Day)).AttendanceId;
+        var refused = await Assert.ThrowsAsync<SqlException>(() => f.Db.ExecuteAsync(
+            "attendance.usp_Correction_Create",
+            new { AttendanceId = attendanceId, RequestedBy = 1, NewLastOutUtc = Day.AddHours(3), Reason = "ZZ typed 3 instead of 15" },
+            f.Tx, commandType: System.Data.CommandType.StoredProcedure));
+        Assert.Contains("must be after the in time", refused.Message);
+    }
+
+    /* ---- ATT-7 / ROS-9 / REL-10: a shift that has been worked keeps its times; its name can still change ---- */
+    [DbFact]
+    public async Task A_shift_that_has_been_worked_keeps_its_times()
+    {
+        await using var f = await ExampleDayAsync();
+        var shiftId = await f.Db.ExecuteScalarAsync<int>(
+            "SELECT ShiftId FROM attendance.SHIFT_ASSIGNMENT WHERE EmployeeId = @EmployeeId AND WorkDate = @D", new { f.EmployeeId, D = Day }, f.Tx);
+
+        var refused = await Assert.ThrowsAsync<SqlException>(() => f.Db.ExecuteAsync(
+            "attendance.usp_Shift_Update",
+            new { ShiftId = shiftId, Name = "ZZ 07-15", StartTime = new TimeSpan(6, 45, 0), EndTime = new TimeSpan(15, 0, 0), GraceMinutes = (int?)null, CrossesMidnight = false, BreakMinutes = 0, IsActive = true },
+            f.Tx, commandType: System.Data.CommandType.StoredProcedure));
+        Assert.Contains("already in use", refused.Message);
+        Assert.Contains("Create a new shift", refused.Message);
+
+        await f.Db.ExecuteAsync(
+            "attendance.usp_Shift_Update",
+            new { ShiftId = shiftId, Name = "ZZ 07-15 (old)", StartTime = new TimeSpan(7, 0, 0), EndTime = new TimeSpan(15, 0, 0), GraceMinutes = (int?)null, CrossesMidnight = false, BreakMinutes = 0, IsActive = false },
+            f.Tx, commandType: System.Data.CommandType.StoredProcedure);
+        Assert.Equal("ZZ 07-15 (old)", await f.Db.ExecuteScalarAsync<string>("SELECT Name FROM attendance.SHIFT WHERE ShiftId = @S", new { S = shiftId }, f.Tx));
+    }
+
+    /* ---- a public holiday worked with a lost out-punch is a missing punch (its premium is paid on worked minutes) ---- */
+    [DbFact]
+    public async Task A_holiday_worked_with_a_lost_out_punch_is_a_missing_punch()
+    {
+        await using var f = await Fixture.OpenAsync();
+        var day = Day.AddDays(1);
+        await f.Db.ExecuteAsync("INSERT INTO core.HOLIDAY (HolidayDate, Name, BranchId) VALUES (@D, N'ZZ Holiday', @B)", new { D = day, B = f.BranchId }, f.Tx);
+        await f.PunchAsync(day.AddHours(8), isOut: false);
+        await f.ComputeAsync(day);
+
+        var r = await f.RecordAsync(day);
+        Assert.Equal("Holiday", r.Status);
+        Assert.True(r.HasAnomaly);
+        Assert.Equal("MissingPunch", Assert.Single(await f.AnomaliesAsync(day)).Type);
+    }
+
+    /* ---- CON-4: deciding on a manual day answers with the DECISION (the manual writer's row used to come first) ---- */
+    private sealed class DecisionRow
+    {
+        public long AnomalyId { get; set; }
+        public string? Decision { get; set; }
+    }
+
+    [DbFact]
+    public async Task Deciding_an_anomaly_of_a_manual_day_answers_with_the_decision_and_decide_all_with_its_counts()
+    {
+        await using var f = await Fixture.OpenAsync();
+        var day = Day.AddDays(1);
+        await f.ManualAsync(day, day.AddHours(7).AddMinutes(10), day.AddHours(15));
+        var late = Assert.Single(await f.AnomaliesAsync(day));
+
+        var answer = await f.Db.QuerySingleAsync<DecisionRow>(
+            "attendance.usp_Anomaly_Decide", new { AnomalyId = late.AnomalyId, Decision = "Excuse", Note = "ZZ", DecidedByUserId = (int?)null },
+            f.Tx, commandType: System.Data.CommandType.StoredProcedure);
+        Assert.Equal(late.AnomalyId, answer.AnomalyId);
+        Assert.Equal("Excused", answer.Decision);
+
+        await f.Db.ExecuteAsync("UPDATE attendance.ATTENDANCE_ANOMALY SET Decision = NULL WHERE AnomalyId = @A", new { A = late.AnomalyId }, f.Tx);
+        var all = await f.Db.QuerySingleAsync<(int Decided, int Skipped, int DaysRecomputed)>(
+            "attendance.usp_Anomaly_DecideAll",
+            new { PeriodYearMonth = "2026-08", Decision = "Deduct", BranchId = f.BranchId, Note = "ZZ", DecidedByUserId = (int?)null },
+            f.Tx, commandType: System.Data.CommandType.StoredProcedure);
+        Assert.Equal(1, all.Decided);
+        Assert.Equal(1, all.DaysRecomputed);
+        Assert.Equal(10, (await f.RecordAsync(day)).LateDeductMinutes);
     }
 }

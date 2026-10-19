@@ -22,9 +22,10 @@ public class TakenRange
 }
 
 /// <summary>
-/// A stretch the site may offer, computed by subtracting the taken ranges (plus the turnaround
-/// after each) from the day's opening hours. NOT STORED ANYWHERE and NOT A RESERVATION — the
-/// authority on whether a slot is still free is the overlap check inside usp_Booking_Create.
+/// A stretch the site may offer, computed by subtracting the taken ranges from the day's opening
+/// hours (the turnaround is inside a booking, not after it — QA3 BKG-6). NOT STORED ANYWHERE and NOT
+/// A RESERVATION — the authority on whether a slot is still free is the overlap check inside
+/// usp_Booking_Create.
 /// </summary>
 public class FreeRange
 {
@@ -60,7 +61,10 @@ public class DayAvailability
     public int LeadMinHours { get; set; }
     public int LeadMaxDays { get; set; }
 
-    /// <summary>core.SETTING BookingTurnaroundMinutes — not returned by the procedure; the service fills it in.</summary>
+    /// <summary>
+    /// core.SETTING BookingTurnaroundMinutes — not returned by the procedure; the service fills it in.
+    /// INFORMATION for the site ("wrap up by" EndMin − this), never subtracted from the free time.
+    /// </summary>
     public int TurnaroundMinutes { get; set; }
 
     /// <summary>Café-local wall clock, from booking.fn_LocalNow(). NOT the visitor's clock and not the server's.</summary>
@@ -74,7 +78,7 @@ public class DayAvailability
 
     public List<TakenRange> Taken { get; set; } = [];
 
-    /// <summary>[OpenMin, CloseMin) minus Taken (+ turnaround after each), trimmed to EarliestStartMin, pieces shorter than MinHours × 60 dropped.</summary>
+    /// <summary>[OpenMin, CloseMin) minus Taken, trimmed to EarliestStartMin, pieces shorter than MinHours × 60 dropped.</summary>
     public List<FreeRange> Free { get; set; } = [];
 }
 

@@ -123,6 +123,15 @@ public class LeaveRequestPayload
     /// <summary>D3: "AM" | "PM" for a half-day request, else null.</summary>
     public string? HalfDay { get; set; }
 
+    /// <summary>
+    /// QA3 (LEV-2): the last day the APPROVED leave covers -- ToDate, or for a partial approval the last day the ledger
+    /// allocated (a partial approval keeps the first days). Null until the request is approved and posted.
+    /// </summary>
+    public DateTime? ApprovedToDate { get; set; }
+
+    /// <summary>QA3: whether the leave was paid as approved (the type's IsPaid at final approval). Null until then.</summary>
+    public bool? PaidSnapshot { get; set; }
+
     /* ── THE NOTICE, as it stood when the request was raised ──
        The same three figures LeaveRequestCreated reports back to the REQUESTER, carried on the
        payload so the APPROVER sees them too. Advisory, exactly as they are at submit: short notice
@@ -159,6 +168,9 @@ public class MyLeaveRequest
     public decimal? DaysApproved { get; set; }
     public string? Reason { get; set; }
     public DateTime SubmittedAt { get; set; }
+
+    /// <summary>QA3 (LEV-2): the last approved day once approved (a partial approval keeps the first days), else null.</summary>
+    public DateTime? ApprovedToDate { get; set; }
 }
 
 /// <summary>
@@ -238,12 +250,23 @@ public class LeaveWorkingDays
 
     /// <summary>The employee's balance for the type, so the form can say "5 of 12 left" before the procedure refuses.</summary>
     public decimal Balance { get; set; }
+
+    /// <summary>
+    /// QA3: the days already promised to this employee's requests of the type that are still waiting (Pending / On hold).
+    /// The procedure refuses a request beyond Balance - PendingDays, so the form warns against the same figure.
+    /// </summary>
+    public decimal PendingDays { get; set; }
+
+    /// <summary>QA3: true when the procedure refuses a request beyond the balance for this type (a paid, accruing,
+    /// non-discretionary type, and the company does not allow a negative balance).</summary>
+    public bool BalanceEnforced { get; set; }
 }
 
 /// <summary>
-/// Approve a leave request, optionally granting fewer days than were asked for. The dates are NOT
-/// trimmed — the approver states a day count and the ledger posts that figure, because trimming the
-/// dates would silently change which days the person is away.
+/// Approve a leave request, optionally granting fewer days than were asked for. A PARTIAL APPROVAL KEEPS
+/// THE FIRST DAYS: the approver states a day count, the ledger takes that many working days from the start
+/// of the range, and the leave ends on the last of them (LEAVE_REQUEST.ApprovedToDate, QA3 LEV-2). The
+/// days after it are not leave: attendance measures them and they may be asked for again.
 /// </summary>
 public class LeaveRequestDecideRequest
 {

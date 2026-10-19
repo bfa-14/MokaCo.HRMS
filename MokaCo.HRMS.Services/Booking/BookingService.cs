@@ -35,8 +35,13 @@ public class BookingService : IBookingService
     public Task<BookingCreated?> CreateFromWebsiteAsync(PublicBookingRequest request)
         => _bookings.CreateFromWebsiteAsync(request);
 
-    public Task<BookingQuote?> QuoteAsync(PublicQuoteRequest request)
-        => _bookings.QuoteAsync(request);
+    public async Task<BookingQuote?> QuoteAsync(PublicQuoteRequest request)
+    {
+        var quote = await _bookings.QuoteAsync(request);
+        if (quote is not null)
+            quote.DepositRequired = await IsDepositRequiredAsync();   // read in either dialect (QA3), not the base procedure's way
+        return quote;
+    }
 
     public async Task<PublicBookingRecap?> GetPublicRecapAsync(string bookingRef)
     {
@@ -56,10 +61,14 @@ public class BookingService : IBookingService
     public Task<IReadOnlyList<string>> ExpireHoldsAsync()
         => _bookings.ExpireHoldsAsync();
 
+    /// <summary>
+    /// ON for '1', 'true', 'yes' or 'on' (QA3): the Settings page writes 'true'/'false' to a row with no
+    /// dialect, and '1' alone read a 'true' as off. A missing row is off (step 1).
+    /// </summary>
     public async Task<bool> IsDepositRequiredAsync()
     {
         var setting = await _settings.GetAsync(DepositRequiredSetting);
-        return setting?.SettingValue?.Trim() == "1";
+        return SettingSwitch.IsOn(setting?.SettingValue);
     }
 
     /// <summary>
@@ -86,7 +95,7 @@ public class BookingService : IBookingService
         DiscountAmount = booking.DiscountAmount,
         Deposit = booking.DepositDue,
         Paid = booking.PaidAmount,
-        Balance = booking.BalanceDue,
+        Balance = BookingBalance.Owed(booking.Status, booking.BalanceDue),     // QA3 BKG-8
         RefundAmount = booking.RefundAmount,
         RefundStatus = booking.RefundStatus,
         CancelledBy = booking.CancelledBy,
@@ -115,8 +124,22 @@ public class BookingService : IBookingService
     public Task<BookingCreated?> CreateManuallyAsync(BookingCreateRequest request, int createdByUserId)
         => _bookings.CreateAsync(request, source: "Manual", createdByUserId);
 
-    public Task<BookingRange> GetForRangeAsync(DateTime fromDate, DateTime toDate, int? roomId, string? status)
-        => _bookings.GetForRangeAsync(fromDate, toDate, roomId, status);
+    /// <summary>
+    /// The staff New booking form's price (WEB-9 / QA3 BKG-10): the website's quote procedure, by room
+    /// id and with the staff rules (Source 'Manual': no lead-time window), so the form shows the hour
+    /// discount, the lead-time deposit tier and the floor exactly as the booking will store them.
+    /// </summary>
+    public Task<BookingQuote?> QuoteForStaffAsync(StaffQuoteRequest request)
+        => _bookings.QuoteForStaffAsync(request);
+
+    /// <summary>A Cancelled or No-show booking owes nothing (QA3 BKG-8): its balance leaves as 0.</summary>
+    public async Task<BookingRange> GetForRangeAsync(DateTime fromDate, DateTime toDate, int? roomId, string? status)
+    {
+        var range = await _bookings.GetForRangeAsync(fromDate, toDate, roomId, status);
+        foreach (var row in range.Bookings)
+            row.BalanceDue = BookingBalance.Owed(row.Status, row.BalanceDue);
+        return range;
+    }
 
     /// <summary>
     /// The receipt is read for its payment lines and for the reference; the row itself comes from
@@ -133,6 +156,7 @@ public class BookingService : IBookingService
         if (booking is null)
             return null;
 
+        booking.BalanceDue = BookingBalance.Owed(booking.Status, booking.BalanceDue);     // QA3 BKG-8
         return new BookingStaffDetail { Booking = booking, Payments = receipt.Payments };
     }
 
@@ -207,8 +231,14 @@ public class BookingService : IBookingService
         return (null, string.Empty, "Say how the money went back: method is a payment method id or name.");
     }
 
-    public Task<BookingReceipt> GetReceiptAsync(int bookingId)
-        => _bookings.GetReceiptAsync(bookingId);
+    /// <summary>The receipt's footer is PAID or BALANCE DUE; a Cancelled or No-show booking is never "due" (QA3 BKG-8).</summary>
+    public async Task<BookingReceipt> GetReceiptAsync(int bookingId)
+    {
+        var receipt = await _bookings.GetReceiptAsync(bookingId);
+        if (receipt.Header is { } header)
+            header.BalanceDue = BookingBalance.Owed(header.Status, header.BalanceDue);
+        return receipt;
+    }
 
     public Task<BlockCreated?> CreateBlockAsync(BlockCreateRequest request, int createdByUserId)
         => _bookings.CreateBlockAsync(request, createdByUserId);

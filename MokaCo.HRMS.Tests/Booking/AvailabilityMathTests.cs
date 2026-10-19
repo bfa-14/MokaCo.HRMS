@@ -21,11 +21,35 @@ public class AvailabilityMathTests
         Assert.Equal("540-600,720-1320", Print(free));
     }
 
+    /// <summary>
+    /// QA3 BKG-6: the turnaround is the end of a booking ("wrap up by"), not time after it. A booking
+    /// may start the minute the previous one ends (usp_Booking_Create accepts it), so the free time
+    /// starts there too — and the hour between two bookings is a whole hour, offered.
+    /// </summary>
     [Fact]
-    public void Turnaround_is_added_after_each_taken_range_only()
+    public void A_free_stretch_starts_the_minute_the_previous_booking_ends()
     {
-        var free = AvailabilityMath.FreeRanges(540, 1500, [Taken(600, 720)], 540, 60, turnaroundMinutes: 5);
-        Assert.Equal("540-600,725-1500", Print(free));
+        var free = AvailabilityMath.FreeRanges(540, 1500, [Taken(600, 720)], 540, 60);
+        Assert.Equal("540-600,720-1500", Print(free));
+
+        // the reviewer's day: 10:00-11:00 and 12:00-13:00 booked, rooms 07:00-01:00
+        var between = AvailabilityMath.FreeRanges(420, 1500, [Taken(600, 660), Taken(720, 780)], 420, 60);
+        Assert.Equal("420-600,660-720,780-1500", Print(between));
+    }
+
+    [Fact]
+    public void Derive_does_not_shorten_the_free_time_by_the_turnaround()
+    {
+        var day = new DayAvailability
+        {
+            OnDate = new DateTime(2026, 9, 29), LocalNow = new DateTime(2026, 9, 18, 12, 0, 0),
+            IsClosed = false, OpenMin = 420, CloseMin = 1500, SlotMinutes = 60, MinHours = 1, LeadMinHours = 1, LeadMaxDays = 30,
+            TurnaroundMinutes = 5,
+            Taken = [Taken(600, 660), Taken(720, 780)],
+        };
+        AvailabilityMath.Derive(day);
+        Assert.Equal("420-600,660-720,780-1500", Print(day.Free));
+        Assert.Equal(5, day.TurnaroundMinutes);     // still told to the site, for its "wrap up by" line
     }
 
     [Fact]

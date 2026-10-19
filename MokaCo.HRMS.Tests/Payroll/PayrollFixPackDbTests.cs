@@ -14,9 +14,9 @@ namespace MokaCo.HRMS.Tests.Payroll;
 /// run is touched. Periods in 2099 are used so the "one live primary per period" index and the real
 /// August 2026 run are never in the way. Skipped, with the reason, when the database is not reachable.
 /// </summary>
-// One collection for every class that runs the payroll generator inside an open transaction: two of
-// them side by side take the same locks in a different order and one is chosen as the deadlock victim.
-[Collection("PayrollDb")]
+// The one database collection (DatabaseCollection): two DB test classes side by side take the same locks
+// in a different order and one is chosen as the deadlock victim.
+[Collection(DatabaseCollection.Name)]
 public class PayrollFixPackDbTests
 {
     private sealed class Fixture : IAsyncDisposable

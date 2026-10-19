@@ -129,24 +129,6 @@ public class LeaveTypeRepository : ILeaveTypeRepository
             commandType: CommandType.StoredProcedure);
     }
 
-    public async Task<int> CreateAsync(string name, bool isPaid, bool carryOver)
-    {
-        using var db = _factory.Create();
-        return await db.ExecuteScalarAsync<int>(
-            "hr.usp_LeaveType_Create",
-            new { Name = name, IsPaid = isPaid, CarryOver = carryOver },
-            commandType: CommandType.StoredProcedure);
-    }
-
-    public async Task UpdateAsync(int leaveTypeId, string name, bool isPaid, bool carryOver)
-    {
-        using var db = _factory.Create();
-        await db.ExecuteAsync(
-            "hr.usp_LeaveType_Update",
-            new { LeaveTypeId = leaveTypeId, Name = name, IsPaid = isPaid, CarryOver = carryOver },
-            commandType: CommandType.StoredProcedure);
-    }
-
     public async Task DeleteAsync(int leaveTypeId)
     {
         using var db = _factory.Create();

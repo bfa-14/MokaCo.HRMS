@@ -13,6 +13,8 @@ namespace MokaCo.HRMS.Services.Booking;
 public class RoomService : IRoomService
 {
     private const string TurnaroundSetting = "BookingTurnaroundMinutes";
+    private const string DepositRequiredSetting = "BookingDepositRequired";
+    private const string WebsiteEnabledSetting = "BookingWebsiteEnabled";
 
     private readonly IRoomRepository _rooms;
     private readonly ISettingRepository _settings;
@@ -53,6 +55,12 @@ public class RoomService : IRoomService
                 .Select(d => new PublicRoomDiscount { MinHours = d.MinHours, DiscountPercent = d.DiscountPercent })
                 .ToList();
         }
+
+        /* THE TWO SWITCHES ARE READ HERE, in both dialects ('1'/'true' — QA3), whatever the catalogue
+           procedure made of them: the site decides from these whether to collect a deposit and whether
+           to show the WhatsApp fallback, and the API's own gate and /pay read them the same way. */
+        sets.Rules.DepositRequired = SettingSwitch.IsOn((await _settings.GetAsync(DepositRequiredSetting))?.SettingValue);
+        sets.Rules.WebsiteEnabled = !SettingSwitch.IsOff((await _settings.GetAsync(WebsiteEnabledSetting))?.SettingValue);
 
         return new PublicCatalog
         {

@@ -34,6 +34,23 @@ public class AfterMidnightCreateTests
         Assert.Equal("startMin", PublicBookingRules.Validate(Request(-1, 60))?.Field);
     }
 
+    /// <summary>
+    /// QA3 BKG-12: 01:00 to 02:00 the NEXT day (60 → 1560) is inside the 1800 bound, but the two clock
+    /// times the procedure takes cannot carry 25 hours: it arrived as 01:00–02:00, one hour. Refused here.
+    /// Exactly 24 hours still round-trips (the procedure re-adds the day) and is left to the procedure.
+    /// </summary>
+    [Fact]
+    public void A_span_longer_than_a_day_is_refused_before_it_can_wrap()
+    {
+        var tooLong = PublicBookingRules.Validate(Request(60, 1560));
+        Assert.Equal("endMin", tooLong?.Field);
+        Assert.Contains("24 hours", tooLong?.Error);
+
+        Assert.Null(PublicBookingRules.Validate(Request(360, 1800)));                     // 24 h exactly
+        Assert.Equal(1800, MinuteClock.EndMinOf(MinuteClock.StartTime(360), MinuteClock.EndTime(1800)));
+        Assert.Equal("endMin", PublicBookingRules.SlotProblem("r1", 300, 1750)?.Field);   // 24 h 50 min
+    }
+
     [Theory]
     [InlineData("+96170000001")]
     [InlineData("70 000 001")]

@@ -397,6 +397,26 @@ public class AttendanceController : ControllerBase
         return Ok(result);
     }
 
+    /// <summary>
+    /// QA3: "this PIN belongs to nobody". Its waiting punches are set aside with the reason - kept (the terminal's next copy
+    /// of them stays a duplicate) but no longer waiting, so a stray PIN cannot hold payroll readiness for ever. Mapping
+    /// the PIN later takes them back. Same right as mapping.
+    /// </summary>
+    [HttpPost("device-quarantine/dismiss")]
+    [HasPermission("ATTENDANCE_IMPORT")]
+    public async Task<IActionResult> DismissDeviceQuarantine([FromBody] QuarantineDismissRequest request)
+    {
+        if (request.DeviceId <= 0 || string.IsNullOrWhiteSpace(request.EnrollPin))
+            return BadRequest(new { error = "Choose the device user (device and PIN) whose punches are set aside." });
+        if (string.IsNullOrWhiteSpace(request.Note))
+            return BadRequest(new { error = "Say why these punches are set aside (whose PIN it is, or why it belongs to nobody)." });
+
+        var result = await _attendance.DismissQuarantinedDeviceUserAsync(request, User.UserId());
+        // the waiting punches are part of payroll readiness
+        await _live.NotifyAsync("attendance", "payroll");
+        return Ok(result);
+    }
+
     [HttpGet("exit-variances")]
     [HasPermission("ATTENDANCE_VIEW")]
     public async Task<IActionResult> GetExitVariances(
