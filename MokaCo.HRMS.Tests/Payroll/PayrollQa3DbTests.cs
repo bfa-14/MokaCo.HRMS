@@ -10,9 +10,9 @@ namespace MokaCo.HRMS.Tests.Payroll;
 /// TRANSACTION THAT IS ROLLED BACK, in months of 2099 so nothing real is in the way, with the procedures'
 /// clock (@AsOfDate) injected. Skipped, with the reason, when no database is reachable.
 /// </summary>
-// The one serial database collection: "Database" is DatabaseCollection.Name on dev (QA3 DB-2), so this class never
-// runs beside another DB class there (they take the same locks in a different order and one dies as a deadlock victim).
-[Collection("Database")]
+// The one database collection (DatabaseCollection, QA3 DB-2): two DB test classes side by side take the same locks
+// in a different order and one is chosen as the deadlock victim.
+[Collection(DatabaseCollection.Name)]
 public class PayrollQa3DbTests
 {
     private sealed class Fixture : IAsyncDisposable
