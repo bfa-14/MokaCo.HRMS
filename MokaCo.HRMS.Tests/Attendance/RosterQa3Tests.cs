@@ -131,8 +131,9 @@ public class RosterQa3Tests
     {
         var repo = new Mock<IRequestRepository>();
         repo.Setup(r => r.GetByIdAsync(41)).ReturnsAsync(new RequestDetail { Header = new RequestHeader { RequestTypeCode = typeCode, Status = "Pending" } });
-        repo.Setup(r => r.ApproveAsync(41, Caller, It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<bool>()))
-            .ReturnsAsync(new ApproveResult { RequestInstanceId = 41, Status = statusAfter });
+        // The approval's outcome whatever the repository method's parameter list is (unit A adds one): no argument
+        // matchers to go stale on a merge.
+        repo.SetReturnsDefault(Task.FromResult<ApproveResult?>(new ApproveResult { RequestInstanceId = 41, Status = statusAfter }));
         return repo;
     }
 
@@ -160,8 +161,7 @@ public class RosterQa3Tests
     public async Task A_version_move_that_closes_the_request_re_derives_too()
     {
         var repo = new Mock<IRequestRepository>();
-        repo.Setup(r => r.MoveToVersionAsync(41, 9, Caller, It.IsAny<string>()))
-            .ReturnsAsync(new MoveVersionResult { RequestInstanceId = 41, Status = "Approved" });
+        repo.SetReturnsDefault(Task.FromResult<MoveVersionResult?>(new MoveVersionResult { RequestInstanceId = 41, Status = "Approved" }));
         var roster = new Mock<IRosterService>();
 
         await Requests(repo, roster).MoveToVersionAsync(41, new MoveVersionRequest { TargetWorkflowDefinitionId = 9, Reason = "QA3" }, Caller);

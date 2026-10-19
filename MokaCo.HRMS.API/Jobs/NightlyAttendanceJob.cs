@@ -26,30 +26,30 @@ namespace MokaCo.HRMS.Api.Jobs;
 [DisallowConcurrentExecution]
 public class NightlyAttendanceJob : IJob
 {
+    private readonly IRosterService _roster;
     private readonly IAttendanceService _attendance;
     private readonly IExitPermissionService _exitPermissions;
     private readonly IOvertimeService _overtime;
     private readonly IRequestService _requests;
     private readonly ILeaveYearService _leaveYear;
-    private readonly IRosterService _roster;
     private readonly ILogger<NightlyAttendanceJob> _logger;
 
     public NightlyAttendanceJob(
+        IRosterService roster,
         IAttendanceService attendance,
         IExitPermissionService exitPermissions,
         IOvertimeService overtime,
         IRequestService requests,
         ILeaveYearService leaveYear,
-        IRosterService roster,
         ILogger<NightlyAttendanceJob> logger)
     {
         _leaveYear = leaveYear;
-        _roster = roster;
         _attendance = attendance;
         _exitPermissions = exitPermissions;
         _overtime = overtime;
         _requests = requests;
         _logger = logger;
+        _roster = roster;
     }
 
     public async Task Execute(IJobExecutionContext context)
