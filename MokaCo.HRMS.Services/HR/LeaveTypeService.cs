@@ -13,10 +13,6 @@ public class LeaveTypeService : ILeaveTypeService
 
     public Task<IEnumerable<LeaveRelationEntitlement>> GetRelationEntitlementsAsync()
         => _repo.GetRelationEntitlementsAsync();
-    public Task<int> CreateAsync(string name, bool isPaid, bool carryOver)
-        => _repo.CreateAsync(name, isPaid, carryOver);
-    public Task UpdateAsync(int leaveTypeId, string name, bool isPaid, bool carryOver)
-        => _repo.UpdateAsync(leaveTypeId, name, isPaid, carryOver);
 
     public Task<LeavePolicy> GetPolicyAsync() => _repo.GetPolicyAsync();
 

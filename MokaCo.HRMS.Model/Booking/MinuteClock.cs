@@ -15,6 +15,12 @@ public static class MinuteClock
     /// <summary>The latest an end may be: 30 hours from midnight, matching usp_Booking_Validate's own bound.</summary>
     public const int MaxEndMin = 1800;
 
+    /// <summary>
+    /// The longest span the two clock times can carry: the procedure adds back ONE day, so anything
+    /// longer than 24 hours would be stored as its remainder (QA3 BKG-12).
+    /// </summary>
+    public const int MaxSpanMinutes = 1440;
+
     public static TimeSpan StartTime(int startMin) => TimeSpan.FromMinutes(startMin);
 
     /// <summary>1500 → 01:00. The procedure re-adds the day when the end is not after the start.</summary>

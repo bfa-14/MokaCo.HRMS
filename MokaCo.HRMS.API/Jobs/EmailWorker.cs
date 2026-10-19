@@ -3,7 +3,9 @@ using System.Net.Http.Headers;
 using System.Net.Mail;
 using System.Text;
 using System.Text.Json;
+using MokaCo.HRMS.Model.Booking;
 using MokaCo.HRMS.Model.Core;
+using MokaCo.HRMS.Repository.Booking;
 using MokaCo.HRMS.Repository.Core;
 using MokaCo.HRMS.Services.Core;
 using MokaCo.HRMS.Services.Workflow;
@@ -32,6 +34,14 @@ namespace MokaCo.HRMS.Api.Jobs;
 /// FAILURE POLICY: one bad address must never stop the others, and no failure may stop the worker.
 /// Every send is caught individually and recorded against its own row; the cycle itself is wrapped
 /// again, because an exception escaping ExecuteAsync ends the service for the life of the process.
+///
+/// BOOKING MAIL HAS ITS OWN SENDER (QA3 BKG-7). Rows queued for a booking carry the bookings mailbox
+/// as their sender, the SMTP account to send through ('Booking') and, where the outbox has one, a
+/// WhatsApp template — read for the claimed rows with core.usp_Email_GetBookingSenders, because the
+/// claiming procedure answers the common columns only. <see cref="BookingMailRouting"/> decides; the
+/// bookings mailbox gets a second SMTP client built from core.SETTING BookingSmtp*. Nothing changes for
+/// a request's mail. The HR SmtpHost still gates the whole cycle (a test copy with no host sends
+/// nothing, booking mail included).
 /// </summary>
 public class EmailWorker : BackgroundService
 {
@@ -135,6 +145,7 @@ public class EmailWorker : BackgroundService
         var settings = scope.ServiceProvider.GetRequiredService<ISettingService>();
         var outbox = scope.ServiceProvider.GetRequiredService<IEmailRepository>();
         var pdfs = scope.ServiceProvider.GetRequiredService<IRequestPdfBuilder>();
+        var bookings = scope.ServiceProvider.GetRequiredService<IBookingRepository>();
 
         var config = await ReadSettingsAsync(settings);
 
@@ -196,13 +207,18 @@ public class EmailWorker : BackgroundService
         if (pending.Count == 0)
             return;
 
+        // The booking rows' own sender, account and template (QA3 BKG-7), by EmailId.
+        var senders = await ReadBookingSendersAsync(bookings, pending);
+
         var sent = 0;
         var failed = 0;
 
         // ONE CLIENT FOR THE BATCH, and only once there is something to use it for. SmtpClient holds
         // the connection open across sends, and opening a fresh TLS session per message is the
-        // difference between a batch of twenty taking a second and taking half a minute.
+        // difference between a batch of twenty taking a second and taking half a minute. The bookings
+        // mailbox has a client of its own, built the first time a booking row needs it.
         SmtpClient? smtp = null;
+        SmtpClient? bookingSmtp = null;
 
         try
         {
@@ -212,6 +228,7 @@ public class EmailWorker : BackgroundService
                     return;
 
                 var isWhatsApp = string.Equals(row.Channel, "WhatsApp", StringComparison.OrdinalIgnoreCase);
+                senders.TryGetValue(row.EmailId, out var sender);
 
                 /*
                  * NO PATH OUT OF THIS BLOCK THAT DOES NOT MARK THE ROW.
@@ -237,15 +254,21 @@ public class EmailWorker : BackgroundService
                             throw new InvalidOperationException(
                                 "WhatsApp is switched off, or its API URL, number id or token is blank.");
 
-                        await SendWhatsAppAsync(row, config, ct);
+                        await SendWhatsAppAsync(row, sender, config, ct);
                     }
                     else
                     {
                         if (!smtpReady)
                             throw new InvalidOperationException("No SmtpHost is configured.");
 
-                        smtp ??= BuildClient(config);
-                        await SendEmailAsync(smtp, row, config, pdfs, ct);
+                        var route = BookingMailRouting.Email(sender, config.Booking, config.FromEmail, config.FromName);
+                        var client = route.Account == MailAccount.Booking
+                            ? bookingSmtp ??= BuildClient(
+                                string.IsNullOrWhiteSpace(config.Booking.Host) ? config.Host : config.Booking.Host,
+                                config.Booking.Port > 0 ? config.Booking.Port : config.Port,
+                                config.Booking.User, config.Booking.Password)
+                            : smtp ??= BuildClient(config.Host, config.Port, config.User, config.Password);
+                        await SendEmailAsync(client, row, route, pdfs, ct);
                     }
 
                     // IMMEDIATELY, naming THIS row — never collected and written after the loop. The
@@ -286,9 +309,30 @@ public class EmailWorker : BackgroundService
         finally
         {
             smtp?.Dispose();
+            bookingSmtp?.Dispose();
         }
 
         _logger.LogInformation("Email cycle: {Sent} sent, {Failed} failed.", sent, failed);
+    }
+
+    /// <summary>
+    /// The sender / account / template of the claimed rows that are booking mail. FAILS SAFE: if they
+    /// cannot be read, every row goes out the way it did before (the HR account and sender) rather than
+    /// not at all — the rows are already claimed and must all reach MarkResult.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<int, BookingMailSender>> ReadBookingSendersAsync(
+        IBookingRepository bookings, IReadOnlyCollection<OutboxEmail> rows)
+    {
+        try
+        {
+            var found = await bookings.GetMailSendersAsync(rows.Select(r => r.EmailId).ToList());
+            return found.GroupBy(f => f.EmailId).ToDictionary(g => g.Key, g => g.First());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read the booking mail senders; this cycle sends every row through the HR account.");
+            return new Dictionary<int, BookingMailSender>();
+        }
     }
 
     /* ─────────────────────────────── Email ─────────────────────────────── */
@@ -302,12 +346,13 @@ public class EmailWorker : BackgroundService
     /// document is better off than one who does not hear it at all.
     /// </summary>
     private async Task SendEmailAsync(
-        SmtpClient client, OutboxEmail row, NotificationSettings config,
+        SmtpClient client, OutboxEmail row, MailRoute route,
         IRequestPdfBuilder pdfs, CancellationToken ct)
     {
         using var message = new MailMessage
         {
-            From = new MailAddress(config.FromEmail, config.FromName),
+            // The HR sender, or the bookings mailbox for a booking row sent through its own account.
+            From = new MailAddress(route.FromEmail, route.FromName),
             Subject = row.Subject,
             Body = row.Body,
             // The bodies are composed in SQL as plain text with CRLFs. Sending them as HTML would
@@ -355,9 +400,9 @@ public class EmailWorker : BackgroundService
     /// Builds the client from the settings as they stand THIS cycle — never cached, so a corrected
     /// password works on the next pass rather than after a restart.
     /// </summary>
-    private SmtpClient BuildClient(NotificationSettings mail)
+    private SmtpClient BuildClient(string host, int port, string user, string password)
     {
-        var client = new SmtpClient(mail.Host, mail.Port);
+        var client = new SmtpClient(host, port);
 
         /*
          * THE ORDER OF THESE THREE LINES IS LOAD-BEARING, and only the first two for the reason
@@ -374,7 +419,7 @@ public class EmailWorker : BackgroundService
          * authenticates read in one place, top to bottom, in the order they must be applied.
          */
         client.UseDefaultCredentials = false;
-        client.Credentials = new NetworkCredential(mail.User, mail.Password);
+        client.Credentials = new NetworkCredential(user, password);
         client.EnableSsl = true;
         client.DeliveryMethod = SmtpDeliveryMethod.Network;
 
@@ -384,7 +429,7 @@ public class EmailWorker : BackgroundService
          * failures apart: no user reaching the server is a settings problem, and a user that IS
          * reaching it and still being refused is a credential the provider rejects.
          */
-        _logger.LogInformation("authenticating as '{SmtpUser}'", mail.User);
+        _logger.LogInformation("authenticating as '{SmtpUser}'", user);
 
         return client;
     }
@@ -402,7 +447,7 @@ public class EmailWorker : BackgroundService
     /// body — an unapproved template name, an expired token, a number not on WhatsApp — and each of
     /// those is a different thing to go and fix, so the body is what gets recorded against the row.
     /// </summary>
-    private async Task SendWhatsAppAsync(OutboxEmail row, NotificationSettings config, CancellationToken ct)
+    private async Task SendWhatsAppAsync(OutboxEmail row, BookingMailSender? sender, NotificationSettings config, CancellationToken ct)
     {
         var to = DigitsOnly(row.ToAddress);
         if (to.Length == 0)
@@ -415,19 +460,24 @@ public class EmailWorker : BackgroundService
             type = "template",
             template = new
             {
-                name = config.WhatsAppTemplateName,
+                // A booking row asks for its own template (the row's, else BookingWhatsAppTemplate —
+                // QA3 BKG-7); everything else the HR one.
+                name = BookingMailRouting.WhatsAppTemplate(sender, config.Booking, config.WhatsAppTemplateName),
                 // Anything that is not Arabic is English. The template must exist in the language
-                // asked for, and asking for one it was never published in is a rejection.
+                // asked for, and asking for one it was never published in is a rejection. A booking
+                // template is asked for in BookingWhatsAppLang when that is set.
                 language = new
                 {
-                    code = string.Equals(row.Lang, "ar", StringComparison.OrdinalIgnoreCase) ? "ar" : "en",
+                    code = BookingMailRouting.WhatsAppLanguage(sender, config.Booking, row.Lang),
                 },
                 components = new object[]
                 {
                     new
                     {
                         type = "body",
-                        parameters = new object[] { new { type = "text", text = row.Body } },
+                        // ONE LINE: the Cloud API refuses a parameter with a line break, a tab or more
+                        // than four spaces in a row (error 132018), and every body is composed with CRLFs.
+                        parameters = new object[] { new { type = "text", text = BookingMailRouting.WhatsAppParameter(row.Body) } },
                     },
                 },
             },
@@ -492,6 +542,18 @@ public class EmailWorker : BackgroundService
             var waToken = (await settings.GetAsync("WhatsAppAccessToken"))?.SettingValue;
             var waTemplate = (await settings.GetAsync("WhatsAppTemplateName"))?.SettingValue;
 
+            // The bookings mailbox (QA3 BKG-7).
+            var bookingPort = (await settings.GetAsync("BookingSmtpPort"))?.SettingValue;
+            var booking = new BookingMailSettings(
+                Trimmed((await settings.GetAsync("BookingSmtpHost"))?.SettingValue),
+                int.TryParse(bookingPort, out var parsedBookingPort) && parsedBookingPort > 0 ? parsedBookingPort : 0,
+                Trimmed((await settings.GetAsync("BookingSmtpUser"))?.SettingValue),
+                (await settings.GetAsync("BookingSmtpPassword"))?.SettingValue ?? string.Empty,
+                Trimmed((await settings.GetAsync("BookingFromEmail"))?.SettingValue),
+                Trimmed((await settings.GetAsync("BookingFromName"))?.SettingValue),
+                Trimmed((await settings.GetAsync("BookingWhatsAppTemplate"))?.SettingValue),
+                Trimmed((await settings.GetAsync("BookingWhatsAppLang"))?.SettingValue));
+
             return new NotificationSettings(
                 (host ?? string.Empty).Trim(),
                 int.TryParse(port, out var parsed) && parsed > 0 ? parsed : 587,
@@ -505,14 +567,15 @@ public class EmailWorker : BackgroundService
                 (waUrl ?? string.Empty).Trim(),
                 (waPhoneId ?? string.Empty).Trim(),
                 (waToken ?? string.Empty).Trim(),
-                string.IsNullOrWhiteSpace(waTemplate) ? "request_update" : waTemplate.Trim());
+                string.IsNullOrWhiteSpace(waTemplate) ? "request_update" : waTemplate.Trim(),
+                booking);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Could not read the notification settings; skipping this cycle.");
             return new NotificationSettings(
                 string.Empty, 587, string.Empty, string.Empty, string.Empty, "MokaCo HRMS",
-                false, string.Empty, string.Empty, string.Empty, "request_update");
+                false, string.Empty, string.Empty, string.Empty, "request_update", BookingMailSettings.None);
         }
     }
 
@@ -528,9 +591,11 @@ public class EmailWorker : BackgroundService
     private static string Truncate(string value, int max)
         => value.Length <= max ? value : value[..max];
 
+    private static string Trimmed(string? value) => (value ?? string.Empty).Trim();
+
     /// <summary>Both channels' settings as one frozen snapshot, so a cycle cannot half-change under itself.</summary>
     private readonly record struct NotificationSettings(
         string Host, int Port, string User, string Password, string FromEmail, string FromName,
         bool WhatsAppEnabled, string WhatsAppApiUrl, string WhatsAppPhoneNumberId,
-        string WhatsAppAccessToken, string WhatsAppTemplateName);
+        string WhatsAppAccessToken, string WhatsAppTemplateName, BookingMailSettings Booking);
 }

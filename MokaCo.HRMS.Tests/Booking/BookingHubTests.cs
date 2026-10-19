@@ -1,5 +1,9 @@
+using System.Net;
 using System.Security.Claims;
 using System.Text.Json;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Connections.Features;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.SignalR;
 using Moq;
 using MokaCo.HRMS.Api.Hubs;
@@ -87,6 +91,117 @@ public class BookingHubTests
         Assert.Equal("too_many", refusal.Message);
     }
 
+    /* ---- QA3 BKG-9: WatchBooking is not an oracle of which references exist ------------------- */
+
+    private sealed class Clock(DateTimeOffset now) : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = now;
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private sealed class HttpContextFeature : IHttpContextFeature
+    {
+        public HttpContext? HttpContext { get; set; }
+    }
+
+    /// <summary>An anonymous guest connection from <paramref name="address"/>, on a throttle the test owns.</summary>
+    private static (BookingHub Hub, Mock<HubCallerContext> Context, Mock<IGroupManager> Groups) GuestHub(
+        IBookingService bookings, BookingWatchThrottle throttle, string address = "203.0.113.7", string connectionId = "c1")
+    {
+        var http = new DefaultHttpContext();
+        http.Connection.RemoteIpAddress = IPAddress.Parse(address);
+        var features = new FeatureCollection();
+        features.Set<IHttpContextFeature>(new HttpContextFeature { HttpContext = http });
+
+        var context = new Mock<HubCallerContext>();
+        context.SetupGet(c => c.ConnectionId).Returns(connectionId);
+        context.SetupGet(c => c.User).Returns((ClaimsPrincipal?)null);
+        context.SetupGet(c => c.Items).Returns(new Dictionary<object, object?>());
+        context.SetupGet(c => c.Features).Returns(features);
+        var groups = new Mock<IGroupManager>();
+        return (new BookingHub(bookings, throttle) { Context = context.Object, Groups = groups.Object }, context, groups);
+    }
+
+    private static Mock<IBookingService> Knows(params string[] references)
+    {
+        var bookings = new Mock<IBookingService>();
+        bookings.Setup(b => b.GetPublicRecapAsync(It.IsAny<string>()))
+            .ReturnsAsync((string r) => references.Contains(r) ? new PublicBookingRecap { Ref = r } : null);
+        return bookings;
+    }
+
+    [Fact]
+    public async Task A_connection_that_keeps_guessing_is_dropped_and_its_next_call_is_not_looked_up()
+    {
+        var bookings = Knows("MC-REAL0001");
+        var (hub, context, groups) = GuestHub(bookings.Object, new BookingWatchThrottle(new Clock(DateTimeOffset.UtcNow)));
+
+        for (var i = 0; i < BookingWatchThrottle.MissesPerConnection; i++)
+            Assert.Equal("not_found", (await Assert.ThrowsAsync<HubException>(() => hub.WatchBooking($"MC-GUESS00{i}"))).Message);
+
+        // the sixth call — even for a reference that exists — is refused and the connection dropped
+        Assert.Equal("too_many", (await Assert.ThrowsAsync<HubException>(() => hub.WatchBooking("MC-REAL0001"))).Message);
+        context.Verify(c => c.Abort(), Times.Once());
+        bookings.Verify(b => b.GetPublicRecapAsync("MC-REAL0001"), Times.Never());
+        groups.Verify(g => g.AddToGroupAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never());
+    }
+
+    [Fact]
+    public async Task A_new_connection_does_not_reset_the_count_of_the_address()
+    {
+        var throttle = new BookingWatchThrottle(new Clock(DateTimeOffset.UtcNow));
+        var bookings = Knows("MC-REAL0001");
+
+        // twenty misses spread over four connections from one address
+        for (var connection = 0; connection < 4; connection++)
+        {
+            var (hub, _, _) = GuestHub(bookings.Object, throttle, connectionId: $"c{connection}");
+            for (var i = 0; i < 5; i++)
+                await Assert.ThrowsAsync<HubException>(() => hub.WatchBooking($"MC-GUESS{connection}{i:D2}"));
+        }
+
+        var (fresh, freshContext, _) = GuestHub(bookings.Object, throttle, connectionId: "c9");
+        Assert.Equal("too_many", (await Assert.ThrowsAsync<HubException>(() => fresh.WatchBooking("MC-REAL0001"))).Message);
+        freshContext.Verify(c => c.Abort(), Times.Once());
+
+        // another address is not affected
+        var (other, _, otherGroups) = GuestHub(bookings.Object, throttle, address: "198.51.100.4");
+        await other.WatchBooking("MC-REAL0001");
+        otherGroups.Verify(g => g.AddToGroupAsync("c1", "booking:MC-REAL0001", It.IsAny<CancellationToken>()), Times.Once());
+    }
+
+    [Fact]
+    public async Task The_address_is_forgiven_once_its_window_is_over()
+    {
+        var clock = new Clock(DateTimeOffset.UtcNow);
+        var throttle = new BookingWatchThrottle(clock);
+        for (var i = 0; i < BookingWatchThrottle.MissesPerAddress; i++)
+            throttle.RecordMiss("203.0.113.7");
+        Assert.True(throttle.IsBlocked("203.0.113.7"));
+
+        clock.Now += BookingWatchThrottle.Window;
+        Assert.False(throttle.IsBlocked("203.0.113.7"));
+
+        var (hub, _, groups) = GuestHub(Knows("MC-REAL0001").Object, throttle);
+        await hub.WatchBooking("MC-REAL0001");
+        groups.Verify(g => g.AddToGroupAsync("c1", "booking:MC-REAL0001", It.IsAny<CancellationToken>()), Times.Once());
+    }
+
+    [Fact]
+    public async Task The_websites_page_watching_its_own_reference_is_never_counted()
+    {
+        var throttle = new BookingWatchThrottle(new Clock(DateTimeOffset.UtcNow));
+        var bookings = Knows("MC-REAL0001");
+
+        for (var reload = 0; reload < 30; reload++)       // a guest reloading the confirmation page all evening
+        {
+            var (hub, _, _) = GuestHub(bookings.Object, throttle, connectionId: $"c{reload}");
+            await hub.WatchBooking("MC-REAL0001");
+        }
+
+        Assert.False(throttle.IsBlocked("203.0.113.7"));
+    }
+
     [Fact]
     public void The_two_messages_carry_the_contract_fields_under_the_contract_names()
     {
@@ -111,7 +226,26 @@ public class BookingHubTests
             ["ref", "status", "refundStatus", "paid", "balance", "changedAt"],
             guest.RootElement.EnumerateObject().Select(p => p.Name));
         Assert.Equal("Due", guest.RootElement.GetProperty("refundStatus").GetString());
-        Assert.Equal(48m, guest.RootElement.GetProperty("balance").GetDecimal());
+        Assert.Equal(0m, guest.RootElement.GetProperty("balance").GetDecimal());     // a cancelled booking owes nothing (QA3 BKG-8)
         Assert.DoesNotContain("Rami", guest.RootElement.GetRawText());               // the guest channel names nobody
+
+        booking.Status = "Confirmed";
+        using var live = JsonDocument.Parse(JsonSerializer.Serialize(BookingLivePublisher.GuestMessage(booking), options));
+        Assert.Equal(48m, live.RootElement.GetProperty("balance").GetDecimal());
+    }
+
+    /// <summary>QA3 BKG-14: a block or a catalogue edit reaches the staff calendars as CalendarChanged — what and where, no guest data.</summary>
+    [Fact]
+    public void The_calendar_message_says_what_changed_and_where()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        using var message = JsonDocument.Parse(JsonSerializer.Serialize(
+            BookingLivePublisher.CalendarMessage(CalendarKind.Block, 3, new DateTime(2026, 11, 2)), options));
+
+        Assert.Equal(["kind", "roomId", "date"], message.RootElement.EnumerateObject().Select(p => p.Name));
+        Assert.Equal("block", message.RootElement.GetProperty("kind").GetString());
+        Assert.Equal(3, message.RootElement.GetProperty("roomId").GetInt32());
+        Assert.Equal("2026-11-02", message.RootElement.GetProperty("date").GetString());
+        Assert.Equal("CalendarChanged", BookingHub.CalendarChanged);
     }
 }

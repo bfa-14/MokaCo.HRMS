@@ -12,9 +12,6 @@ public interface ILeaveTypeRepository
     /// </summary>
     Task<IEnumerable<LeaveRelationEntitlement>> GetRelationEntitlementsAsync();
 
-    Task<int> CreateAsync(string name, bool isPaid, bool carryOver);
-    Task UpdateAsync(int leaveTypeId, string name, bool isPaid, bool carryOver);
-
     /* ---- the whole policy: one read, and the writes behind the leave-policy screen ---- */
 
     /// <summary>The four result sets of hr.usp_LeavePolicy_GetAll: types, accrual tiers, pay tiers, relations.</summary>
