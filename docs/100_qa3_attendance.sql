@@ -58,7 +58,12 @@
      requests; usp_Overtime_Create checks the Submit row (CON: convention 4). usp_ExitPermission_Create no longer
      answers with usp_ExitPermission_ApplyToAttendance's count when the request auto-approves (CON-3: @Quiet).
      usp_Attendance_SetExitApproval @ClearHrApproval = 1 removes HR's own approved figure, so the approved exit
-     permissions decide the day again (it used to be sticky).
+     permissions decide the day again (it used to be sticky). SetExitApproval / SetExitDisposition re-run a MANUAL day
+     through the manual writer (the approval and the ruling move its cover with the same rule). usp_Attendance_DeleteManual
+     refuses a day that carries correction requests (it failed on the foreign key) and re-posts the day's exit leave.
+   REFUSAL AFTER A WRITE: Correction_Approve, Anomaly_Decide / _DecideAll, SetExitApproval / _Disposition and
+     Holiday_Upsert / _Delete undo their own work and nothing more when they run inside a caller's transaction
+     (SAVE TRAN), and roll back as before when they own it.
 
    DATA REPAIRS (section 9; guarded, idempotent; never a paid period - ComputeDay leaves paid days as they were paid):
      R1 non-manual records outside the employment are re-derived (= removed, with their exit-permission posting);
