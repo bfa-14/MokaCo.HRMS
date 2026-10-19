@@ -20,6 +20,19 @@
           (and is refused) - never a token that survives.
           security.usp_RefreshToken_Rotate (base) is left as it is: the API no longer calls it.
 
+   ATT-16 BRANCH SCOPE FOR THE ATTENDANCE SUMMARIES, RAW PUNCHES AND REPORTS (with REL-15's scoping).
+          Script 87 scoped the attendance LISTS; the monthly summaries (one employee, all employees,
+          per branch), the raw punches of a day and the printable reports answered every caller
+          about every employee. Their procedures are NOT redefined here: the repo's copies are older
+          than production (contract review CON-7: usp_Attendance_MonthlySummary_All lacks columns the
+          API reads; report_procedures.sql still reads LEAVE_TYPE.AccrualPerMonth). Instead:
+          - hr.usp_Scope_CallerEmployees (NEW): what one caller may see for a period, as (Kind, Id)
+            rows - everyone; or their own employee, the branches they manage and the employees they
+            may see (themselves, those whose branch today they manage, and those with an attendance
+            day in the period filed to a branch they manage - script 87's two rules). The API filters
+            the rows of those reads with it; reads of ONE employee use script 98's
+            hr.usp_Scope_CallerSees ([InCallerScope]).
+
    Prerequisites: script 87 (hr.fn_CallerScope); the base security tables with the columns the API
    already uses. Adds security.REFRESH_TOKEN.ReplacedByHash if a database lacks it (the base rotation
    writes it). No data is changed; existing sessions stay valid until their account's sessions are
@@ -202,5 +215,50 @@ BEGIN
 END;
 GO
 
-PRINT 'QA3 security (105): SEC-5 session ending in place';
+/* ------------------------- ATT-16: what one caller may see ------------------------- */
+/* One result set of (Kind, Id) rows - one shape, so a procedure can capture it with INSERT ... EXEC:
+     'A', NULL  the caller sees everyone (EMP_VIEW_ALL, or the system when @CallerUserId is NULL);
+                no other row then;
+     'S', id    the caller's own employee;
+     'B', id    a branch the caller manages;
+     'E', id    an employee the caller may see for @FromDate..@ToDate (NULL = any day): the caller,
+                the employees whose branch TODAY they manage (the employee list's rule), and those
+                with an attendance day in the period filed to a branch they manage (the attendance
+                lists' rule: the employee's branch of THAT day).
+   No row at all: a caller with no employee and no EMP_VIEW_ALL, who sees nothing. */
+CREATE OR ALTER PROCEDURE hr.usp_Scope_CallerEmployees
+    @CallerUserId INT,
+    @FromDate     DATE = NULL,
+    @ToDate       DATE = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @SeesAll BIT, @CallerEmp INT;
+    SELECT @SeesAll = SeesAll, @CallerEmp = CallerEmployeeId FROM hr.fn_CallerScope(@CallerUserId);
+    DECLARE @Limited BIT = CASE WHEN @SeesAll = 0 AND @CallerEmp IS NOT NULL THEN 1 ELSE 0 END;
+
+    SELECT Kind = CAST('A' AS CHAR(1)), Id = CAST(NULL AS INT) WHERE @SeesAll = 1
+    UNION ALL
+    SELECT 'S', @CallerEmp WHERE @Limited = 1
+    UNION ALL
+    SELECT 'B', b.BranchId FROM hr.BRANCH b WHERE @Limited = 1 AND b.ManagerEmployeeId = @CallerEmp
+    UNION ALL
+    SELECT 'E', e.EmployeeId
+    FROM hr.EMPLOYEE e
+    WHERE @Limited = 1
+      AND (e.EmployeeId = @CallerEmp
+           OR EXISTS (SELECT 1 FROM hr.BRANCH mb WHERE mb.ManagerEmployeeId = @CallerEmp AND mb.BranchId = e.BranchId)
+           OR EXISTS (SELECT 1
+                      FROM attendance.ATTENDANCE_RECORD a
+                      JOIN hr.BRANCH mb ON mb.BranchId = ISNULL(a.BranchId, e.BranchId)
+                      WHERE a.EmployeeId = e.EmployeeId
+                        AND mb.ManagerEmployeeId = @CallerEmp
+                        AND (@FromDate IS NULL OR a.WorkDate >= @FromDate)
+                        AND (@ToDate   IS NULL OR a.WorkDate <= @ToDate)));
+    RETURN 0;
+END;
+GO
+
+PRINT 'QA3 security (105): SEC-5 session ending, ATT-16 caller scope in place';
 GO
