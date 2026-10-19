@@ -36,10 +36,18 @@ public class ComponentTypesController : ControllerBase
     [HasPermission("COMPONENT_MANAGE")]
     public async Task<IActionResult> Update(int id, [FromBody] ComponentTypeUpdateRequest request)
     {
-        await _componentTypes.UpdateAsync(id, request.Name, request.Category, request.Sign, request.IsActive);
-        // The SIGN decides whether an amount is paid or deducted — never a cosmetic edit.
-        await _live.NotifyAsync("payroll");
-        return NoContent();
+        try
+        {
+            await _componentTypes.UpdateAsync(id, request.Name, request.Category, request.Sign, request.IsActive);
+            // The SIGN decides whether an amount is paid or deducted — never a cosmetic edit.
+            await _live.NotifyAsync("payroll");
+            return NoContent();
+        }
+        catch (WorkflowException ex)
+        {
+            // "'Overtime' is a system component type: payroll writes it…" — the procedure's own sentence.
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
     }
 
     /// <summary>
