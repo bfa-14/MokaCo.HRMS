@@ -12,7 +12,9 @@
        attendance.usp_Attendance_ComputeDay (script 100: the day is 'None', its non-manual record goes with its
        exit-permission posting); then their roster rows go (a record still pointing at one - a manual day, a day
        with a correction on file - lets go of it first; the SHIFT_ASSIGNMENT trigger marks the months as changed).
-       All of it inside the employee update's transaction.
+       All of it inside the employee update's transaction. Then the leave is priced again (unit D's
+       hr.usp_LeaveLedger_Reprice) from the earlier of the old and the new hire / termination date - a day outside
+       the employment costs nothing - as for a transfer from its date (ROS-8).
        The generators - _GenerateRange, _CopyPeriod, _ApplyPattern - skip days outside the employment, retired shifts
        (SHIFT.IsActive = 0) and the public holidays of the employee's branch of the day, and never put a rest day on
        an approved leave day (auto-roster rule D5: the day gets a working row instead, and an existing row inside a
@@ -57,7 +59,10 @@
         (script 100 removes their non-manual records), then their roster rows are removed (ROS-1);
      R2 attendance records dated after Beirut today that hold no punch and are not manual (left by the holiday
         recompute and by transfers, ATT-14 / ROS-5) are removed;
-     R3 nothing to run for approved months: their RederivedAt is NULL, so the first nightly run re-derives them.
+     R3 nothing to run for approved months: their RederivedAt is NULL, so the first nightly run re-derives them;
+     R4 approved leave reaching before the hire date or past a termination date on file is priced again (unit D's
+        hr.usp_LeaveLedger_Reprice: those days cost nothing; paid months are left as they are) - what saving the
+        employee form now does.
 
    Every refusal is RAISERROR(msg,16,1) + RETURN 1 (ROLLBACK first inside a transaction). Pure ASCII: an em dash in
    a message is NCHAR(8212).
@@ -1122,7 +1127,11 @@ GO
      new ModifiedUtc and both branches' months a new LastChangedUtc, so both read "changed since approval"; the leave
      from the transfer on is re-priced (unit D's hr.usp_LeaveLedger_Reprice).
    - 102 (ATT-14 / ROS-5): the transfer's days are derived again up to TODAY only (today only when it already has a
-     record) - never a future day, which used to get an Absent record and lock the roster. */
+     record) - never a future day, which used to get an Absent record and lock the roster.
+   - 102 (unit D's handoff): a hire or termination date set, changed or cleared re-prices the leave too, from the
+     earlier of the old and the new date to the last approved leave day - approved leave beyond a new last day stops
+     consuming the balance (and inflating the payout); a termination cleared, it consumes again. One call with the
+     transfer's, from the earliest date that moved. */
 CREATE OR ALTER PROCEDURE [hr].[usp_Employee_Update]
     @EmployeeId INT, @BranchId INT, @DepartmentId INT, @PositionId INT,
     @FullName NVARCHAR(150), @NationalId VARCHAR(50) = NULL, @NssfNumber VARCHAR(50) = NULL,
@@ -1136,8 +1145,8 @@ BEGIN
     DECLARE @msg NVARCHAR(400);
 
     DECLARE @Today DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Middle East Standard Time' AS DATE);
-    DECLARE @OldBranch INT, @OldHire DATE;
-    SELECT @OldBranch = BranchId, @OldHire = HireDate FROM hr.EMPLOYEE WHERE EmployeeId = @EmployeeId;
+    DECLARE @OldBranch INT, @OldHire DATE, @OldTerm DATE;
+    SELECT @OldBranch = BranchId, @OldHire = HireDate, @OldTerm = TerminationDate FROM hr.EMPLOYEE WHERE EmployeeId = @EmployeeId;
     DECLARE @CurrentBranchToStore INT = @BranchId, @Transferred BIT = 0, @Eff DATE = NULL;
     IF @OldBranch IS NOT NULL AND @OldBranch <> @BranchId
     BEGIN
@@ -1272,15 +1281,24 @@ BEGIN
     END
     CLOSE day_cur; DEALLOCATE day_cur;
 
-    /* 102 (ROS-8): a leave from the transfer on now belongs to the other branch's roster and holidays */
-    IF @Transferred = 1
+    /* 102: the leave priced again (unit D's hr.usp_LeaveLedger_Reprice; paid months are left as they are) from the
+       earliest date that moved to the last approved leave day:
+       - ROS-8: a transfer's date - the leave from it on belongs to the other branch's roster and holidays;
+       - unit D: a hire or termination date set, changed or cleared - from the earlier of the old and the new date
+         (a day outside the employment costs nothing) */
+    DECLARE @RepriceFrom DATE = CASE WHEN @Transferred = 1 THEN @Eff END;
+    IF @OldHire IS NOT NULL AND @OldHire <> @HireDate
+        SET @RepriceFrom = (SELECT MIN(v.d) FROM (VALUES (@RepriceFrom), (@OldHire), (@HireDate)) v(d));
+    IF @OldHire IS NOT NULL AND ISNULL(@OldTerm, '99991231') <> ISNULL(@TerminationDate, '99991231')
+        SET @RepriceFrom = (SELECT MIN(v.d) FROM (VALUES (@RepriceFrom), (@OldTerm), (@TerminationDate)) v(d));
+    IF @RepriceFrom IS NOT NULL
     BEGIN
-        DECLARE @LeaveTo DATE = (SELECT MAX(lr.ToDate)
+        DECLARE @LeaveTo DATE = (SELECT MAX(ISNULL(lr.ApprovedToDate, lr.ToDate))
                                  FROM workflow.LEAVE_REQUEST lr
                                  JOIN workflow.REQUEST_INSTANCE ri ON ri.RequestInstanceId = lr.RequestInstanceId AND ri.[Status] = 'Approved'
-                                 WHERE lr.EmployeeId = @EmployeeId AND lr.ToDate >= @Eff);
+                                 WHERE lr.EmployeeId = @EmployeeId AND ISNULL(lr.ApprovedToDate, lr.ToDate) >= @RepriceFrom);
         IF @LeaveTo IS NOT NULL
-            EXEC hr.usp_LeaveLedger_Reprice @EmployeeId = @EmployeeId, @FromDate = @Eff, @ToDate = @LeaveTo;
+            EXEC hr.usp_LeaveLedger_Reprice @EmployeeId = @EmployeeId, @FromDate = @RepriceFrom, @ToDate = @LeaveTo;
     END
     RETURN 0;
 END;
@@ -1322,10 +1340,10 @@ BEGIN
                     AND (rm.BranchId = m.OldBranch OR rm.BranchId = m.NewBranch));
     COMMIT;
 
-    DECLARE @LeaveTo DATE = (SELECT MAX(lr.ToDate)
+    DECLARE @LeaveTo DATE = (SELECT MAX(ISNULL(lr.ApprovedToDate, lr.ToDate))
                              FROM workflow.LEAVE_REQUEST lr
                              JOIN workflow.REQUEST_INSTANCE ri ON ri.RequestInstanceId = lr.RequestInstanceId AND ri.[Status] = 'Approved'
-                             WHERE lr.EmployeeId = @Emp AND lr.ToDate >= @From);
+                             WHERE lr.EmployeeId = @Emp AND ISNULL(lr.ApprovedToDate, lr.ToDate) >= @From);
     IF @LeaveTo IS NOT NULL
         EXEC hr.usp_LeaveLedger_Reprice @EmployeeId = @Emp, @FromDate = @From, @ToDate = @LeaveTo;
 
@@ -1609,6 +1627,48 @@ GO
    (attendance.usp_Roster_RederivePending) derives their completed days again against the approved roster. */
 DECLARE @Pending INT = (SELECT COUNT(*) FROM attendance.ROSTER_MONTH WHERE [Status] = 'Approved' AND RederivedAt IS NULL);
 PRINT CONCAT('REPAIR R3 | approved roster months the nightly safety net will re-derive: ', @Pending);
+GO
+
+/* R4 (unit D's handoff, ROS-1 / REL-1): approved leave that reaches before the hire date or past a termination date on
+   file kept consuming the balance (and inflating a leaver's payout). It is priced again by unit D's
+   hr.usp_LeaveLedger_Reprice from the first such request's first day to the employee's last approved leave day - the
+   days outside the employment cost nothing; paid months are left as they are. The same as saving the employee form
+   now. Idempotent: what is already right is left alone. One employee's failure is reported and the others go on. */
+SET NOCOUNT ON;
+DECLARE @rp TABLE (EmployeeId INT PRIMARY KEY, FromDate DATE NOT NULL, ToDate DATE NOT NULL);
+INSERT INTO @rp (EmployeeId, FromDate, ToDate)
+SELECT lr.EmployeeId, MIN(lr.FromDate), MAX(ISNULL(lr.ApprovedToDate, lr.ToDate))
+FROM workflow.LEAVE_REQUEST lr
+JOIN workflow.REQUEST_INSTANCE ri ON ri.RequestInstanceId = lr.RequestInstanceId AND ri.[Status] = 'Approved'
+JOIN hr.EMPLOYEE e ON e.EmployeeId = lr.EmployeeId
+WHERE lr.FromDate < e.HireDate
+   OR (e.TerminationDate IS NOT NULL AND ISNULL(lr.ApprovedToDate, lr.ToDate) > e.TerminationDate)
+GROUP BY lr.EmployeeId;
+UPDATE r SET ToDate = x.LastDay
+FROM @rp r
+CROSS APPLY (SELECT MAX(ISNULL(lr.ApprovedToDate, lr.ToDate)) AS LastDay
+             FROM workflow.LEAVE_REQUEST lr
+             JOIN workflow.REQUEST_INSTANCE ri ON ri.RequestInstanceId = lr.RequestInstanceId AND ri.[Status] = 'Approved'
+             WHERE lr.EmployeeId = r.EmployeeId) x;
+DECLARE @E INT, @F DATE, @T DATE, @Done INT = 0, @Failed INT = 0, @FirstError NVARCHAR(400) = NULL;
+DECLARE r4_cur CURSOR LOCAL FAST_FORWARD FOR SELECT EmployeeId, FromDate, ToDate FROM @rp ORDER BY EmployeeId;
+OPEN r4_cur; FETCH NEXT FROM r4_cur INTO @E, @F, @T;
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    BEGIN TRY
+        EXEC hr.usp_LeaveLedger_Reprice @EmployeeId = @E, @FromDate = @F, @ToDate = @T;
+        SET @Done = @Done + 1;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK;
+        SET @Failed = @Failed + 1;
+        IF @FirstError IS NULL SET @FirstError = CONCAT('employee ', @E, ': ', ERROR_MESSAGE());
+    END CATCH;
+    FETCH NEXT FROM r4_cur INTO @E, @F, @T;
+END
+CLOSE r4_cur; DEALLOCATE r4_cur;
+PRINT CONCAT('REPAIR R4 | employees whose leave outside the employment was priced again: ', @Done,
+             CASE WHEN @Failed > 0 THEN CONCAT('; FAILED for ', @Failed, ' (first: ', @FirstError, ') - re-save those employees') ELSE '' END);
 GO
 
 PRINT '102_qa3_roster.sql: QA3 roster fixes in place';

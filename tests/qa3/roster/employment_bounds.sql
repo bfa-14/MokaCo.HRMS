@@ -3,7 +3,9 @@
    Setting a termination date on the employee form removes the roster rows after it (days not paid) and derives the
    days again - the non-manual records after it go (script 100's rule), a manual one stays and lets go of its row -
    and marks the approved month as changed; moving the hire date later does the same before it; saving again changes
-   nothing; a single day outside the employment is refused with a sentence.
+   nothing; a single day outside the employment is refused with a sentence. Unit D's handoff: a termination date set
+   in the middle of an approved leave prices the leave again (hr.usp_LeaveLedger_Reprice from the termination date to
+   the leave's last day): the days after it no longer consume the balance.
    Runs on a real dev database: everything inside one transaction that is rolled back; seeded rows start with 'QA3 '.
    Uses the previous and the next month. Prints 'ok employment_bounds', or raises the first wrong result. Needs 99-102.
    ============================================================================ */
@@ -85,6 +87,52 @@ BEGIN TRY
         RAISERROR('FAIL employment_bounds: roster rows left before the (later) hire date.', 16, 1);
     IF NOT EXISTS (SELECT 1 FROM attendance.SHIFT_ASSIGNMENT WHERE EmployeeId = @E2 AND WorkDate = @Hire)
         RAISERROR('FAIL employment_bounds: the hire date itself must stay rostered.', 16, 1);
+
+    /* unit D's handoff: a termination in the middle of an approved (and posted) leave prices it again - next month, never paid */
+    DECLARE @User INT = (SELECT TOP 1 UserId FROM security.[USER] ORDER BY UserId);
+    DECLARE @LT INT = (SELECT RequestTypeId FROM workflow.REQUEST_TYPE WHERE Code = 'LEAVE_REQUEST');
+    DECLARE @LDef INT = (SELECT TOP 1 WorkflowDefinitionId FROM workflow.WORKFLOW_DEFINITION WHERE RequestTypeId = @LT
+                         ORDER BY CASE WHEN [Status] = 'Active' THEN 0 ELSE 1 END, WorkflowDefinitionId DESC);
+    DECLARE @Annual INT = (SELECT TOP 1 LeaveTypeId FROM hr.LEAVE_TYPE ORDER BY CASE WHEN Name = N'Annual' THEN 0 ELSE 1 END, LeaveTypeId);
+    IF @LT IS NULL OR @LDef IS NULL OR @Annual IS NULL
+        RAISERROR('FAIL employment_bounds: no LEAVE_REQUEST workflow or leave type on this database.', 16, 1);
+    INSERT INTO hr.EMPLOYEE (BranchId, DepartmentId, PositionId, FullName, HireDate) VALUES (@B, @Dep, @Pos, N'QA3 Leave Leaver', '2020-01-01');
+    DECLARE @E3 INT = SCOPE_IDENTITY();
+    DECLARE @LvFrom DATE = DATEADD(DAY, 9, @NM), @LvTo DATE = DATEADD(DAY, 15, @NM), @LastDay DATE = DATEADD(DAY, 11, @NM);
+    INSERT INTO workflow.REQUEST_INSTANCE (RequestTypeId, WorkflowDefinitionId, EmployeeId, RaisedByUserId, [Status], Title, ClosedAt)
+    VALUES (@LT, @LDef, @E3, @User, 'Approved', N'QA3 leaver leave', DATEADD(DAY, -2, SYSUTCDATETIME()));
+    DECLARE @LvRid INT = SCOPE_IDENTITY();
+    INSERT INTO workflow.LEAVE_REQUEST (RequestInstanceId, EmployeeId, LeaveTypeId, FromDate, ToDate, DaysRequested, IsDiscretionary)
+    VALUES (@LvRid, @E3, @Annual, @LvFrom, @LvTo, 7, 0);
+    DECLARE @LvId INT = SCOPE_IDENTITY();
+    EXEC hr.usp_LeaveLedger_PostRequest @RequestInstanceId = @LvRid, @ActorUserId = @User;
+    DECLARE @UsedBefore DECIMAL(9,2) = ISNULL((SELECT -SUM(Days) FROM hr.LEAVE_LEDGER WHERE LeaveRequestId = @LvId AND MovementType IN ('Usage', 'Adjustment')), 0);
+    IF OBJECT_ID('dbo.QA3_REPRICE_LOG') IS NOT NULL DELETE FROM dbo.QA3_REPRICE_LOG;
+    SET @Name = N'QA3 Leave Leaver';
+    EXEC hr.usp_Employee_Update @EmployeeId = @E3, @BranchId = @B, @DepartmentId = @Dep, @PositionId = @Pos, @FullName = @Name,
+         @HireDate = '2020-01-01', @TerminationDate = @LastDay;
+    IF OBJECT_ID('dbo.QA3_REPRICE_LOG') IS NOT NULL
+    BEGIN
+        /* the stand-in of unit D's procedure logs its calls */
+        IF NOT EXISTS (SELECT 1 FROM dbo.QA3_REPRICE_LOG WHERE EmployeeId = @E3 AND FromDate = @LastDay AND ToDate = @LvTo)
+            RAISERROR('FAIL employment_bounds: the termination did not price the leave again from the last day to the leave''s end.', 16, 1);
+    END
+    ELSE
+    BEGIN
+        DECLARE @UsedAfter DECIMAL(9,2) = ISNULL((SELECT -SUM(Days) FROM hr.LEAVE_LEDGER WHERE LeaveRequestId = @LvId AND MovementType IN ('Usage', 'Adjustment')), 0);
+        DECLARE @Costs DECIMAL(9,2) = ISNULL((SELECT SUM(Part) FROM hr.fn_LeaveRequestDays(@LvId, 0)), 0);
+        IF @UsedAfter <> @Costs OR @UsedAfter >= @UsedBefore OR EXISTS (SELECT 1 FROM hr.fn_LeaveRequestDays(@LvId, 0) WHERE WorkDate > @LastDay AND Part > 0)
+        BEGIN
+            SET @msg = CONCAT('FAIL employment_bounds: after the termination the leave should cost only the days up to it: before ', @UsedBefore,
+                              ', after ', @UsedAfter, ', the days say ', @Costs, '.');
+            RAISERROR(@msg, 16, 1);
+        END
+        /* the termination taken back: the leave consumes again */
+        EXEC hr.usp_Employee_Update @EmployeeId = @E3, @BranchId = @B, @DepartmentId = @Dep, @PositionId = @Pos, @FullName = @Name,
+             @HireDate = '2020-01-01', @TerminationDate = NULL;
+        IF ISNULL((SELECT -SUM(Days) FROM hr.LEAVE_LEDGER WHERE LeaveRequestId = @LvId AND MovementType IN ('Usage', 'Adjustment')), 0) <> @UsedBefore
+            RAISERROR('FAIL employment_bounds: with the termination cleared the leave should cost what it did before.', 16, 1);
+    END
 
     /* one day outside the employment is refused, with the reason */
     DECLARE @r TABLE (Id INT);
