@@ -25,6 +25,13 @@ public interface ILeaveYearRepository
     /// </summary>
     Task<LeaveCarryOverExpired> ExpireCarryOverAsync();
 
+    /// <summary>
+    /// hr.usp_LeaveYear_Undo (QA3 LEV-9): takes back what opening the CURRENT year wrote -- for one employee, or everybody
+    /// when <paramref name="employeeId"/> is null -- so the year can be opened again. Refused (SqlException 50000, the
+    /// sentence intact) for another year, or when leave of the year was used in a period already paid.
+    /// </summary>
+    Task<LeaveYearUndoSummary> UndoAsync(int year, int? employeeId, int actedByUserId);
+
     /// <summary>hr.usp_EmployeeBranch_ApplyDue (SQL 82, D7): a transfer recorded ahead of its date becomes the current branch on that date.</summary>
     Task<int> ApplyDueBranchTransfersAsync();
 }

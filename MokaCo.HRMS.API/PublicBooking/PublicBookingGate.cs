@@ -1,9 +1,14 @@
+using MokaCo.HRMS.Model.Booking;
 using MokaCo.HRMS.Repository.Core;
 
 namespace MokaCo.HRMS.Api.PublicBooking;
 
 /// <summary>What a caller is judged against, as one immutable reading — so a request cannot see the origins from one refresh and the key from the next.</summary>
-/// <param name="WebsiteEnabled">core.SETTING BookingWebsiteEnabled. False = quote and create answer 503 paused; the reads stay up.</param>
+/// <param name="WebsiteEnabled">
+/// core.SETTING BookingWebsiteEnabled. False = quote and create answer 503 paused; the reads stay up.
+/// OFF for '0', 'false', 'no' or 'off' (QA3: the Settings page can write 'false', which '0'-only read
+/// as ON); a missing or empty row is ON, as it always was.
+/// </param>
 /// <param name="Origins">core.SETTING BookingCorsOrigins, split on commas. A browser on one of these needs nothing else.</param>
 /// <param name="ApiKey">core.SETTING BookingApiKey. EMPTY MEANS THE KEY MODE IS OFF, not "any key will do".</param>
 public sealed record PublicBookingSnapshot(bool WebsiteEnabled, string[] Origins, string ApiKey)
@@ -84,7 +89,7 @@ public sealed class PublicBookingGate : IPublicBookingGate
                 StringComparer.OrdinalIgnoreCase);
 
             _current = new PublicBookingSnapshot(
-                WebsiteEnabled: Value(all, WebsiteEnabledSetting) != "0",
+                WebsiteEnabled: !SettingSwitch.IsOff(Value(all, WebsiteEnabledSetting)),
                 Origins: Value(all, CorsOriginsSetting)
                     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                     .Select(origin => origin.TrimEnd('/'))

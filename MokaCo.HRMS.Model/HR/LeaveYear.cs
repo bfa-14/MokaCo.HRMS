@@ -40,6 +40,23 @@ public class LeaveYearOpenSummary
 /// <summary>What one run of the carry-over expiry did (hr.usp_LeaveCarryOver_Expire). Both are 0 on an ordinary night.</summary>
 public class LeaveCarryOverExpired
 {
+    /// <summary>Employee-types whose expiry line was posted or corrected this run.</summary>
     public int EmployeesExpired { get; set; }
+
+    /// <summary>The days expired this run, net: a correction that gives days back is negative.</summary>
     public decimal DaysExpired { get; set; }
+
+    /// <summary>
+    /// QA3 (LEV-6): set when the LeaveCarryOverExpiresOn setting is not an MM-DD date -- nothing expired, and the
+    /// nightly job logs this sentence as a warning so the setting gets fixed. Null when all is well.
+    /// </summary>
+    public string? SettingProblem { get; set; }
+}
+
+/// <summary>What hr.usp_LeaveYear_Undo took back (QA3 LEV-9): the employees whose opening of the year was removed, and the
+/// ledger movements that went with it (entitlement, carry-over, the close of the old year, the carry-over expiry).</summary>
+public class LeaveYearUndoSummary
+{
+    public int EmployeesUndone { get; set; }
+    public int MovementsRemoved { get; set; }
 }

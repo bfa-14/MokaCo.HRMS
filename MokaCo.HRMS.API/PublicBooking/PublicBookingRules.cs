@@ -44,6 +44,12 @@ public static partial class PublicBookingRules
         if (endMin <= startMin)
             return new Problem("The end time must be after the start time.", "endMin");
 
+        // QA3 BKG-12: the procedure takes two clock times and re-adds ONE day to an end at or before the
+        // start, so a span past 24 hours cannot reach it: 01:00 → 02:00 the next day (60 → 1560) arrived
+        // as a one-hour 01:00–02:00 booking that the quote, judging the minutes, had refused.
+        if (endMin - startMin > MinuteClock.MaxSpanMinutes)
+            return new Problem("A booking cannot be longer than 24 hours.", "endMin");
+
         return null;
     }
 

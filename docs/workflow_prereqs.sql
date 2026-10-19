@@ -21,10 +21,9 @@
 USE MokaCo_HRMS;
 GO
 
-DROP PROCEDURE IF EXISTS hr.usp_Branch_SetManager;
-DROP PROCEDURE IF EXISTS hr.usp_Branch_GetAllWithManager;
-DROP PROCEDURE IF EXISTS hr.usp_Employee_GetByUserId;
-GO
+/* QA3 (DB-1): no DROP here any more. A failed CREATE after a DROP left the database without
+   hr.usp_Employee_GetByUserId ("who am I", every self-service screen); CREATE OR ALTER keeps the old
+   version until the new one compiles. */
 
 /* ############################################################################
    ==========================  1. PERMISSIONS  ===============================
@@ -88,7 +87,7 @@ GO
    is skipped (with a reason). This is the CRUD that stops that happening.
    ############################################################################ */
 
-CREATE PROCEDURE hr.usp_Branch_GetAllWithManager
+CREATE OR ALTER PROCEDURE hr.usp_Branch_GetAllWithManager
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -108,7 +107,7 @@ GO
 /* Set (or clear, with NULL) a branch's manager.
    Warns rather than blocks when the chosen manager has no user account: the data
    is still valid, but that person cannot sign anything until they can log in. */
-CREATE PROCEDURE hr.usp_Branch_SetManager
+CREATE OR ALTER PROCEDURE hr.usp_Branch_SetManager
     @BranchId          INT,
     @ManagerEmployeeId INT = NULL,
     @ModifiedBy        INT = NULL
@@ -147,14 +146,14 @@ GO
    attendance" all key off EmployeeId, but the token carries a UserId.
    Returns nothing when the account is not linked to an employee (e.g. a pure
    admin login) - the API should treat that as "no self-service", not an error. */
-CREATE PROCEDURE hr.usp_Employee_GetByUserId @UserId INT
+CREATE OR ALTER PROCEDURE hr.usp_Employee_GetByUserId @UserId INT
 AS
 BEGIN
     SET NOCOUNT ON;
     SELECT e.EmployeeId, e.UserId, e.FullName,
            e.BranchId, b.Name AS BranchName,
            e.DepartmentId, d.Name AS DepartmentName,
-           e.PositionId, p.Name AS PositionName,
+           e.PositionId, p.Title AS PositionName,   -- QA3 (DB-1): hr.[POSITION] has Title, not Name
            e.HireDate, e.TerminationDate,
            /* is this person the manager of their own branch? the UI uses this to
               explain why a step was skipped on their own requests */

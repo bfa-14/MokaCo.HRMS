@@ -187,7 +187,7 @@ public class AttendanceRepository : IAttendanceRepository
     }
 
     /// <summary>Records what was AUTHORISED. It never overwrites what the punches observed — the procedure keeps the two apart.</summary>
-    public async Task<AttendanceRecord?> SetExitApprovalAsync(long attendanceId, int exitApprovedMinutes, int? exitPermissionId, bool alsoSetActual, string? hrNote)
+    public async Task<AttendanceRecord?> SetExitApprovalAsync(long attendanceId, int exitApprovedMinutes, int? exitPermissionId, bool alsoSetActual, string? hrNote, bool clearHrApproval = false)
     {
         using var db = _factory.Create();
         return await db.QuerySingleOrDefaultAsync<AttendanceRecord>(
@@ -198,7 +198,8 @@ public class AttendanceRepository : IAttendanceRepository
                 ExitApprovedMinutes = exitApprovedMinutes,
                 ExitPermissionId = exitPermissionId,
                 AlsoSetActual = alsoSetActual,
-                HrNote = hrNote
+                HrNote = hrNote,
+                ClearHrApproval = clearHrApproval
             },
             commandType: CommandType.StoredProcedure);
     }
@@ -312,6 +313,15 @@ public class AttendanceRepository : IAttendanceRepository
         return await db.QuerySingleAsync<QuarantineMapResult>(
             "attendance.usp_DevicePunchQuarantine_MapToEmployee",
             new { request.DeviceId, EnrollPin = request.EnrollPin.Trim(), request.EmployeeId, ActedByUserId = actedByUserId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<QuarantineDismissResult> DismissQuarantinedDeviceUserAsync(QuarantineDismissRequest request, int actedByUserId)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleAsync<QuarantineDismissResult>(
+            "attendance.usp_DevicePunchQuarantine_Dismiss",
+            new { request.DeviceId, EnrollPin = request.EnrollPin.Trim(), Note = request.Note.Trim(), ActedByUserId = actedByUserId },
             commandType: CommandType.StoredProcedure);
     }
 }

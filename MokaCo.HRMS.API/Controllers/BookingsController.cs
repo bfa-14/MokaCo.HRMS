@@ -85,8 +85,8 @@ public class BookingsController : ControllerBase
         if (string.IsNullOrWhiteSpace(request.GuestName) || string.IsNullOrWhiteSpace(request.GuestPhone))
             return BadRequest(new { error = "Guest name and phone are required." });
 
-        if (request.EndTime == request.StartTime || (request.EndTime < request.StartTime && request.EndTime > TimeSpan.FromHours(6)))
-            return BadRequest(new { error = "The end time must be after the start time (an end up to 06:00 is read as the next morning)." });
+        if (SpanProblem(request.StartTime, request.EndTime) is { } span)
+            return BadRequest(new { error = span });
 
         try
         {
@@ -102,6 +102,44 @@ public class BookingsController : ControllerBase
             return BadRequest(new { error = ex.Message });
         }
     }
+
+    /// <summary>
+    /// What a staff booking would cost, before it is taken (WEB-9 / QA3 BKG-10): the website's quote
+    /// procedure by room id, with the staff rules — the hour discount, the lead-time deposit tier and the
+    /// floor, exactly as usp_Booking_Create will store them. The New booking form shows this instead of
+    /// its own rate × hours. A refusal (closed, too long, in the past, unknown room) is the procedure's
+    /// sentence, 400.
+    /// </summary>
+    [HttpPost("quote")]
+    [HasPermission("BOOKING_MANAGE")]
+    public async Task<IActionResult> Quote([FromBody] StaffQuoteRequest request)
+    {
+        if (request.RoomId <= 0)
+            return BadRequest(new { error = "Choose a room." });
+
+        if (SpanProblem(request.StartTime, request.EndTime) is { } span)
+            return BadRequest(new { error = span });
+
+        try
+        {
+            var quote = await _bookings.QuoteForStaffAsync(request);
+            return quote is null ? BadRequest(new { error = "That slot could not be priced." }) : Ok(quote);
+        }
+        catch (SqlException ex) when (ex.Number == 50000)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// The one rule for a staff time span (a booking, a quote, a block): an end AT OR BEFORE the start is
+    /// the next morning, up to 06:00 — 22:00–01:00 is three hours (QA3 BKG-2). An end equal to the
+    /// start, or a "next morning" past 06:00, is refused here; everything else is the procedure's.
+    /// </summary>
+    public static string? SpanProblem(TimeSpan start, TimeSpan end)
+        => end == start || (end < start && end > TimeSpan.FromHours(6))
+            ? "The end time must be after the start time (an end up to 06:00 is read as the next morning)."
+            : null;
 
     /// <summary>
     /// One booking with its money lines: the row as usp_Booking_GetByRef reads it (refundAmount,
@@ -333,14 +371,15 @@ public class BookingsController : ControllerBase
     ///
     /// The procedure REFUSES to lay a block over live bookings. That is the right answer: a block is
     /// not a way to evict guests, and silently double-holding the room would leave the calendar
-    /// showing both.
+    /// showing both. AFTER MIDNIGHT TOO (QA3 BKG-2): 23:00–01:00 is the same next-morning rule as a
+    /// booking (booking.usp_Block_Add), and the live bookings are compared across midnight.
     /// </summary>
     [HttpPost("blocks")]
     [HasPermission("BOOKING_MANAGE")]
     public async Task<IActionResult> CreateBlock([FromBody] BlockCreateRequest request)
     {
-        if (request.EndTime <= request.StartTime)
-            return BadRequest(new { error = "The end time must be after the start time." });
+        if (SpanProblem(request.StartTime, request.EndTime) is { } span)
+            return BadRequest(new { error = span });
 
         try
         {
@@ -348,6 +387,7 @@ public class BookingsController : ControllerBase
             if (created is null)
                 return BadRequest(new { error = "The block could not be created." });
 
+            await _live.PublishCalendarAsync(CalendarKind.Block, request.RoomId, request.BlockDate);   // QA3 BKG-14
             return Ok(created);
         }
         catch (SqlException ex) when (ex.Number == 50000)
@@ -364,6 +404,7 @@ public class BookingsController : ControllerBase
         try
         {
             await _bookings.DeleteBlockAsync(id);
+            await _live.PublishCalendarAsync(CalendarKind.Block);   // QA3 BKG-14
             return NoContent();
         }
         catch (SqlException ex) when (ex.Number == 50000)
@@ -418,6 +459,7 @@ public class BookingsController : ControllerBase
                     ? BadRequest(new { error = "The room could not be saved." })
                     : NotFound();
 
+            await _live.PublishCalendarAsync(CalendarKind.Room, saved.RoomId);   // QA3 BKG-14
             return Ok(saved);
         }
         catch (SqlException ex) when (ex.Number == 50000)
@@ -449,6 +491,7 @@ public class BookingsController : ControllerBase
         try
         {
             await _rooms.SetHoursAsync(id, hours);
+            await _live.PublishCalendarAsync(CalendarKind.Room, id);   // QA3 BKG-14
             return NoContent();
         }
         catch (SqlException ex) when (ex.Number == 50000)
@@ -481,6 +524,7 @@ public class BookingsController : ControllerBase
         try
         {
             await _rooms.UpsertAddonAsync(addonId, roomId, request);
+            await _live.PublishCalendarAsync(CalendarKind.Room, roomId);   // QA3 BKG-14
             return NoContent();
         }
         catch (SqlException ex) when (ex.Number == 50000)

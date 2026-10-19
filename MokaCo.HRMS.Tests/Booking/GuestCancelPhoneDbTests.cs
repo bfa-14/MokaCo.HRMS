@@ -12,6 +12,7 @@ namespace MokaCo.HRMS.Tests.Booking;
 /// throw-away booking (and the outbox rows its trigger writes) never persist. Skipped, with the
 /// reason, when the database is not reachable.
 /// </summary>
+[Collection(DatabaseCollection.Name)]
 public class GuestCancelPhoneDbTests
 {
     [DbFact]
