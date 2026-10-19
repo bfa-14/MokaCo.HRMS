@@ -35,5 +35,6 @@ public static class Scripts
         new("docs/104_qa3_booking.sql", "core.usp_Email_GetBookingSenders"),
         new(Security105, "hr.usp_Scope_CallerEmployees"),
         new("docs/106_qa3_webhr.sql", "hr.usp_Employee_GetSwapCounterparts"),
+        new("docs/107_qa3_tier_chains.sql", "workflow.usp_TierChains_Align"),
     ];
 }
