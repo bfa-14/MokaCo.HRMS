@@ -17,6 +17,9 @@ public class DefinitionService : IDefinitionService
 
     public Task<IEnumerable<RequestType>> GetRequestTypesAsync() => _repo.GetRequestTypesAsync();
 
+    public async Task<IEnumerable<RequestType>> GetActiveRequestTypesAsync()
+        => (await _repo.GetRequestTypesAsync()).Where(t => t.IsActive).ToList();
+
     /// <summary>
     /// ONE ROW PER TYPE. usp_RequestType_GetRaisable joins the ACTIVE definitions, and since chains
     /// became tier-scoped a type can have several active at once (everyone / management+ / executive)

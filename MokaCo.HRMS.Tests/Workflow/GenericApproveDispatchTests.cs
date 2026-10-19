@@ -53,7 +53,7 @@ public class GenericApproveDispatchTests
 
         // and nothing was written: the engine was never called
         _repo.Verify(r => r.ApproveAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<string?>(),
-                                         It.IsAny<string?>(), It.IsAny<bool>()), Times.Never);
+                                         It.IsAny<string?>(), It.IsAny<bool>(), It.IsAny<int?>()), Times.Never);
     }
 
     /// <summary>The refusal must come BEFORE the signature check — no point demanding a password for a call that was never going to be honoured.</summary>
@@ -75,14 +75,14 @@ public class GenericApproveDispatchTests
         GivenRequestOfType(9, "SOME_SIMPLE_TYPE");
         _repo.Setup(r => r.GetSignatureRequirementAsync(9, 20))
              .ReturnsAsync((SignatureRequirement?)null);          // nothing demands a password here
-        _repo.Setup(r => r.ApproveAsync(9, 20, null, null, false))
+        _repo.Setup(r => r.ApproveAsync(9, 20, null, null, false, null))
              .ReturnsAsync(new ApproveResult { RequestInstanceId = 9, Status = "Approved" });
 
         var result = await Service().ApproveAsync(9, actedByUserId: 20, comment: null);
 
         Assert.NotNull(result);
         Assert.Equal("Approved", result!.Status);
-        _repo.Verify(r => r.ApproveAsync(9, 20, null, null, false), Times.Once);
+        _repo.Verify(r => r.ApproveAsync(9, 20, null, null, false, null), Times.Once);
     }
 
     /// <summary>A request that does not exist is still a 404, not a 409.</summary>
