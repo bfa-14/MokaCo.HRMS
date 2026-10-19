@@ -2,14 +2,17 @@
    102_qa3_roster.sql - QA3 (deep test, 2026-10-19), unit C: ROSTERS.
 
    PREREQUISITES (checked below): 87 (hr.fn_CallerScope), 96 (the auto-roster), 99 (workflow.LEAVE_REQUEST.
-   ApprovedToDate and hr.usp_LeaveLedger_Reprice). Apply after 100 (usp_Attendance_ComputeDay: a day outside the
-   employment is 'None' and loses its non-manual unpaid record) and 101. Idempotent. Run with sqlcmd -I.
+   ApprovedToDate and hr.usp_LeaveLedger_Reprice), 100 (usp_Attendance_ComputeDay: a day outside the employment is
+   'None' and loses its non-manual unpaid record). Apply after 101 too (its reversal calls usp_Roster_RederiveMonth
+   once this script has created it). Idempotent. Run with sqlcmd -I.
 
    ROS-1 / REL-1  NOBODY IS ROSTERED OUTSIDE THEIR EMPLOYMENT.
-       hr.usp_Employee_Update: when a termination date is on file, the roster rows after it go (unpaid days only; an
-       attendance day still pointing at one lets go of it first; the SHIFT_ASSIGNMENT trigger marks the months as
-       changed); the same for the rows before the hire date. The attendance days those rows or records were on are
-       derived again with attendance.usp_Attendance_ComputeDay (script 100 removes what no longer belongs there).
+       hr.usp_Employee_Update: the unpaid days outside the employment (after a termination date on file, before the
+       hire date) that have a roster row or a non-manual record are derived again FIRST with
+       attendance.usp_Attendance_ComputeDay (script 100: the day is 'None', its non-manual record goes with its
+       exit-permission posting); then their roster rows go (a record still pointing at one - a manual day, a day
+       with a correction on file - lets go of it first; the SHIFT_ASSIGNMENT trigger marks the months as changed).
+       All of it inside the employee update's transaction.
        The generators - _GenerateRange, _CopyPeriod, _ApplyPattern - skip days outside the employment, retired shifts
        (SHIFT.IsActive = 0) and the public holidays of the employee's branch of the day, and never put a rest day on
        an approved leave day (auto-roster rule D5: the day gets a working row instead, and an existing row inside a
@@ -50,8 +53,8 @@
        earliest start, then the lowest id).
 
    DATA REPAIRS (guarded, idempotent, never a paid day):
-     R1 roster rows outside the employment (after the termination date, before the hire date) are removed and their
-        attendance days derived again (ROS-1);
+     R1 the unpaid days outside the employment (after the termination date, before the hire date) are derived again
+        (script 100 removes their non-manual records), then their roster rows are removed (ROS-1);
      R2 attendance records dated after Beirut today that hold no punch and are not manual (left by the holiday
         recompute and by transfers, ATT-14 / ROS-5) are removed;
      R3 nothing to run for approved months: their RederivedAt is NULL, so the first nightly run re-derives them.
@@ -71,6 +74,10 @@ IF OBJECT_ID('hr.usp_LeaveLedger_Reprice') IS NULL
 GO
 IF OBJECT_ID('hr.fn_CallerScope') IS NULL OR OBJECT_ID('attendance.usp_AutoRoster_Commit') IS NULL
     RAISERROR('102_qa3_roster.sql needs scripts 87 (hr.fn_CallerScope) and 96 (the auto-roster). Apply them first.', 16, 1);
+GO
+/* script 100's ComputeDay knows the employment window (no version before it reads TerminationDate) */
+IF ISNULL(OBJECT_DEFINITION(OBJECT_ID('attendance.usp_Attendance_ComputeDay')), N'') NOT LIKE N'%TerminationDate%'
+    RAISERROR('102_qa3_roster.sql needs script 100 (usp_Attendance_ComputeDay: a day outside the employment). Apply 100 first.', 16, 1);
 GO
 
 /* ---------------------------------------------------------------- 0. the safety net's marker */
@@ -1105,12 +1112,12 @@ GO
 
 /* ---------------------------------------------------------------- 9. the employee form: termination, hire, transfer */
 /* Unchanged from 85 (D7, the dated transfer) except:
-   - 102 (ROS-1 / REL-1): nobody stays rostered outside their employment. With a termination date on file the roster
-     rows after it go, and the rows before the hire date go, on the days not yet paid for the employee (an attendance
-     day still pointing at one lets go of it first; the SHIFT_ASSIGNMENT trigger marks the months as changed). The
-     attendance days concerned are derived again: up to today, the days of those rows; and every non-manual record
-     outside the employment (script 100: no longer a working day for anybody, the record goes). Re-running it is a
-     no-op.
+   - 102 (ROS-1 / REL-1): nobody stays rostered outside their employment. The days not yet paid for the employee
+     after a termination date on file, or before the hire date, that have a roster row or a non-manual record are
+     derived again FIRST (script 100: no longer a working day for anybody - the non-manual record goes, with its
+     exit-permission posting); then the roster rows on those days go (a record still pointing at one - a manual day,
+     a day with a correction on file - lets go of it first; the SHIFT_ASSIGNMENT trigger marks the months as
+     changed). Inside the update's transaction. Re-running it is a no-op.
    - 102 (ROS-8 / REL-9): a transfer moves the rows from its date into the other branch's month: those rows get a
      new ModifiedUtc and both branches' months a new LastChangedUtc, so both read "changed since approval"; the leave
      from the transfer on is re-priced (unit D's hr.usp_LeaveLedger_Reprice).
@@ -1200,15 +1207,36 @@ BEGIN
                         AND (rm.BranchId = m.OldBranch OR rm.BranchId = m.NewBranch));
     END
 
-    /* 102 (ROS-1 / REL-1) */
+    /* 102 (ROS-1 / REL-1): the unpaid days outside the employment with a roster row or a non-manual record are
+       derived again FIRST - script 100 removes the non-manual record (attendance records point at SHIFT_ASSIGNMENT)
+       - and only then do the rows go */
     INSERT INTO @gone (ShiftAssignmentId, WorkDate)
     SELECT sa.ShiftAssignmentId, sa.WorkDate
     FROM attendance.SHIFT_ASSIGNMENT sa
     WHERE sa.EmployeeId = @EmployeeId
       AND (sa.WorkDate < @HireDate OR (@TerminationDate IS NOT NULL AND sa.WorkDate > @TerminationDate))
       AND payroll.fn_IsPeriodPaid(@EmployeeId, sa.WorkDate) = 0;
+    DECLARE @outside TABLE (WorkDate DATE PRIMARY KEY);
+    INSERT INTO @outside (WorkDate)
+    SELECT g.WorkDate FROM @gone g
+    UNION
+    SELECT ar.WorkDate
+    FROM attendance.ATTENDANCE_RECORD ar
+    WHERE ar.EmployeeId = @EmployeeId AND ar.IsManual = 0
+      AND (ar.WorkDate < @HireDate OR (@TerminationDate IS NOT NULL AND ar.WorkDate > @TerminationDate))
+      AND payroll.fn_IsPeriodPaid(@EmployeeId, ar.WorkDate) = 0;
+    DECLARE @Day DATE;
+    DECLARE out_cur CURSOR LOCAL FAST_FORWARD FOR SELECT WorkDate FROM @outside ORDER BY WorkDate;
+    OPEN out_cur; FETCH NEXT FROM out_cur INTO @Day;
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        EXEC attendance.usp_Attendance_ComputeDay @EmployeeId = @EmployeeId, @WorkDate = @Day;   -- 'None' there (script 100)
+        FETCH NEXT FROM out_cur INTO @Day;
+    END
+    CLOSE out_cur; DEALLOCATE out_cur;
     IF EXISTS (SELECT 1 FROM @gone)
     BEGIN
+        /* what still points at a row is a day ComputeDay keeps for HR (manual, or a correction on file) */
         UPDATE ar SET ShiftAssignmentId = NULL
         FROM attendance.ATTENDANCE_RECORD ar
         JOIN @gone g ON g.ShiftAssignmentId = ar.ShiftAssignmentId;
@@ -1218,24 +1246,16 @@ BEGIN
     END
     COMMIT TRAN;
 
-    /* the days to derive again: outside the employment (the rows just removed, up to today; every non-manual record)
-       and, after a transfer, the days from its date up to today */
+    /* after a transfer, the days from its date up to TODAY (ATT-14 / ROS-5: never a future day) */
     DECLARE @days TABLE (WorkDate DATE PRIMARY KEY);
-    INSERT INTO @days (WorkDate)
-    SELECT g.WorkDate FROM @gone g WHERE g.WorkDate <= @Today
-    UNION
-    SELECT ar.WorkDate
-    FROM attendance.ATTENDANCE_RECORD ar
-    WHERE ar.EmployeeId = @EmployeeId AND ar.IsManual = 0
-      AND (ar.WorkDate < @HireDate OR (@TerminationDate IS NOT NULL AND ar.WorkDate > @TerminationDate))
-      AND payroll.fn_IsPeriodPaid(@EmployeeId, ar.WorkDate) = 0;
     IF @Transferred = 1 AND @Eff <= @Today
     BEGIN
         DECLARE @d DATE = @Eff;
         WHILE @d <= @Today
         BEGIN
-            /* only days that have something to say: a record, or (before today) a roster row */
-            IF NOT EXISTS (SELECT 1 FROM @days WHERE WorkDate = @d)
+            /* only days that have something to say: a record, or (before today) a roster row; a day outside the
+               employment was dealt with above */
+            IF NOT EXISTS (SELECT 1 FROM @outside WHERE WorkDate = @d)
                AND (EXISTS (SELECT 1 FROM attendance.ATTENDANCE_RECORD WHERE EmployeeId = @EmployeeId AND WorkDate = @d)
                     OR (@d < @Today AND EXISTS (SELECT 1 FROM attendance.SHIFT_ASSIGNMENT WHERE EmployeeId = @EmployeeId AND WorkDate = @d)))
                 INSERT INTO @days (WorkDate) VALUES (@d);
@@ -1243,7 +1263,6 @@ BEGIN
         END
     END
 
-    DECLARE @Day DATE;
     DECLARE day_cur CURSOR LOCAL FAST_FORWARD FOR SELECT WorkDate FROM @days ORDER BY WorkDate;
     OPEN day_cur; FETCH NEXT FROM day_cur INTO @Day;
     WHILE @@FETCH_STATUS = 0
@@ -1520,12 +1539,11 @@ END;
 GO
 
 /* ---------------------------------------------------------------- 12. data repairs */
-/* R1 (ROS-1 / REL-1): roster rows outside the employment, on days not paid for the employee, are removed (an
-   attendance day pointing at one lets go of it first; the trigger marks their months as changed), and the attendance
-   days concerned are derived again - up to today the days of those rows, and every non-manual unpaid record outside
-   the employment (script 100 removes it). Idempotent: a second run finds nothing. */
+/* R1 (ROS-1 / REL-1): the days not paid for the employee outside the employment that have a roster row or a
+   non-manual record are derived again FIRST (script 100 removes the non-manual record, with its exit-permission
+   posting), then their roster rows are removed (a record still pointing at one - manual, or with a correction on
+   file - lets go of it first; the trigger marks their months as changed). Idempotent: a second run finds nothing. */
 SET NOCOUNT ON;
-DECLARE @Today DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Middle East Standard Time' AS DATE);
 DECLARE @gone TABLE (ShiftAssignmentId INT PRIMARY KEY, EmployeeId INT NOT NULL, WorkDate DATE NOT NULL);
 INSERT INTO @gone (ShiftAssignmentId, EmployeeId, WorkDate)
 SELECT sa.ShiftAssignmentId, sa.EmployeeId, sa.WorkDate
@@ -1533,20 +1551,9 @@ FROM attendance.SHIFT_ASSIGNMENT sa
 JOIN hr.EMPLOYEE e ON e.EmployeeId = sa.EmployeeId
 WHERE (sa.WorkDate < e.HireDate OR (e.TerminationDate IS NOT NULL AND sa.WorkDate > e.TerminationDate))
   AND payroll.fn_IsPeriodPaid(sa.EmployeeId, sa.WorkDate) = 0;
-DECLARE @Removed INT = 0;
-IF EXISTS (SELECT 1 FROM @gone)
-BEGIN
-    BEGIN TRAN;
-    UPDATE ar SET ShiftAssignmentId = NULL
-    FROM attendance.ATTENDANCE_RECORD ar
-    JOIN @gone g ON g.ShiftAssignmentId = ar.ShiftAssignmentId;
-    DELETE sa FROM attendance.SHIFT_ASSIGNMENT sa JOIN @gone g ON g.ShiftAssignmentId = sa.ShiftAssignmentId;
-    SET @Removed = @@ROWCOUNT;
-    COMMIT;
-END
 DECLARE @rd TABLE (EmployeeId INT NOT NULL, WorkDate DATE NOT NULL, PRIMARY KEY (EmployeeId, WorkDate));
 INSERT INTO @rd (EmployeeId, WorkDate)
-SELECT EmployeeId, WorkDate FROM @gone WHERE WorkDate <= @Today
+SELECT EmployeeId, WorkDate FROM @gone
 UNION
 SELECT ar.EmployeeId, ar.WorkDate
 FROM attendance.ATTENDANCE_RECORD ar
@@ -1564,7 +1571,18 @@ BEGIN
     FETCH NEXT FROM r1_cur INTO @E, @D;
 END
 CLOSE r1_cur; DEALLOCATE r1_cur;
-PRINT CONCAT('REPAIR R1 | roster rows outside the employment removed: ', @Removed, '; attendance days derived again: ', @Derived);
+DECLARE @Removed INT = 0;
+IF EXISTS (SELECT 1 FROM @gone)
+BEGIN
+    BEGIN TRAN;
+    UPDATE ar SET ShiftAssignmentId = NULL
+    FROM attendance.ATTENDANCE_RECORD ar
+    JOIN @gone g ON g.ShiftAssignmentId = ar.ShiftAssignmentId;
+    DELETE sa FROM attendance.SHIFT_ASSIGNMENT sa JOIN @gone g ON g.ShiftAssignmentId = sa.ShiftAssignmentId;
+    SET @Removed = @@ROWCOUNT;
+    COMMIT;
+END
+PRINT CONCAT('REPAIR R1 | days outside the employment derived again: ', @Derived, '; roster rows outside it removed: ', @Removed);
 GO
 
 /* R2 (ATT-14 / ROS-5): an attendance record dated after today (Beirut) that holds no punch and is not manual was made
