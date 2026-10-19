@@ -126,15 +126,38 @@ public class PayrollRepository : IPayrollRepository
             commandType: CommandType.StoredProcedure);
     }
 
-    public async Task<PayrollRunStatusResult?> ApproveAsync(int payrollRunId, int actedByUserId)
+    public async Task<PayrollRunStatusResult?> ApproveAsync(int payrollRunId, int actedByUserId, bool allowEarlyLock = false)
     {
         using var db = _factory.Create();
         return await db.QuerySingleOrDefaultAsync<PayrollRunStatusResult>(
             "payroll.usp_PayrollRun_Approve",
-            new { PayrollRunId = payrollRunId, ActedByUserId = actedByUserId },
+            new { PayrollRunId = payrollRunId, ActedByUserId = actedByUserId, AllowEarlyLock = allowEarlyLock },
             commandType: CommandType.StoredProcedure,
-            // Stamps expenses, reduces advances and consumes adjustments in the same transaction.
+            // Compares every payslip's inputs with the data now, then stamps expenses, reduces advances,
+            // consumes adjustments, stamps settlements and settles leave payouts in the same transaction.
             commandTimeout: 300);
+    }
+
+    /// <summary>
+    /// The two result sets of usp_PayrollRun_GetStaleness, read in order: the run (status, period end,
+    /// the attendance cut-off of its last generation), then one row per employee and changed source.
+    /// Null when the run does not exist.
+    /// </summary>
+    public async Task<PayrollRunStaleness?> GetStalenessAsync(int payrollRunId)
+    {
+        using var db = _factory.Create();
+        using var multi = await db.QueryMultipleAsync(
+            "payroll.usp_PayrollRun_GetStaleness",
+            new { PayrollRunId = payrollRunId },
+            commandType: CommandType.StoredProcedure,
+            // Recomputes the fingerprint of every payslip in the run.
+            commandTimeout: 120);
+
+        var head = await multi.ReadSingleOrDefaultAsync<PayrollRunStaleness>();
+        var items = (await multi.ReadAsync<PayrollRunStaleInput>()).ToList();
+        if (head is null) return null;
+        head.Items = items;
+        return head;
     }
 
     public async Task<PayrollRunStatusResult?> CancelAsync(int payrollRunId, int actedByUserId, string? reason)

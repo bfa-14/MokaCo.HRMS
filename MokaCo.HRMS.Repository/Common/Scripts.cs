@@ -29,6 +29,9 @@ public static class Scripts
         new("docs/100_qa3_attendance.sql", "attendance.usp_DevicePunchQuarantine_Dismiss"),
         new("docs/101_qa3_workflow.sql", "workflow.usp_Request_GetDelegateCandidates"),
         new("docs/102_qa3_roster.sql", "attendance.usp_Roster_GetLeaveDays"),
+        // QA3 unit E: the staleness read, the summaries' short days and the full-precision rate writes; the
+        // marker is the last procedure the script creates.
+        new("docs/103_qa3_payroll.sql", "core.usp_ExchangeRate_SetRate"),
         new("docs/104_qa3_booking.sql", "core.usp_Email_GetBookingSenders"),
         new(Security105, "hr.usp_Scope_CallerEmployees"),
         new("docs/106_qa3_webhr.sql", "hr.usp_Employee_GetSwapCounterparts"),

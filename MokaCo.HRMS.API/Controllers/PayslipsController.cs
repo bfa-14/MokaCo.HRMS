@@ -9,14 +9,14 @@ namespace MokaCo.HRMS.Api.Controllers;
 /// <summary>
 /// The payslip DOCUMENT — the one payroll resource a person may read about themselves.
 ///
-/// WHY THIS IS ITS OWN CONTROLLER. Everything else under /api/payroll carries a blanket
-/// PAYROLL_RUN requirement declared on the class, which is exactly what you want for a surface
-/// where every route exposes the whole company's pay. This route is the single exception, and an
-/// exception is safer expressed as a separate class with its own rule than as a hole punched in a
-/// class-level gate — a hole that the next route added to that class would silently inherit.
+/// WHY THIS IS ITS OWN CONTROLLER. Everything else under /api/payroll needs a payroll code on every
+/// route (PAYROLL_VIEW to read), which is exactly what you want for a surface where every route
+/// exposes the whole company's pay. These routes are the exception — they also answer the employee
+/// a payslip is about — and an exception is safer as a separate class with its own rule.
 ///
 /// WHO MAY READ ONE:
-///   • a PAYROLL_RUN holder — any payslip, in any state, because preparing the month requires it;
+///   • a PAYROLL_VIEW holder — any payslip, in any state, because preparing and checking the month
+///     requires it (QA3 PAY-12: PAYROLL_VIEW, not PAYROLL_RUN, is the read trust);
 ///   • the employee the payslip is ABOUT — but only once the run is APPROVED.
 ///
 /// The second condition is not squeamishness. A draft still changes: regeneration rebuilds every
@@ -83,7 +83,7 @@ public class PayslipsController : ControllerBase
         if (detail.Payslip is null)
             return NotFound();
 
-        if (User.HasPermission("PAYROLL_RUN"))
+        if (User.HasPermission("PAYROLL_VIEW"))
             return Ok(detail);
 
         // Not managerial: the only payslip readable is this caller's own, and only once locked.
@@ -98,5 +98,37 @@ public class PayslipsController : ControllerBase
         // somebody asking about another person's payslip would confirm that the person and the
         // period exist, which is the thing being withheld.
         return StatusCode(403, new { error = "You may only open your own payslips, and only once the month is approved." });
+    }
+
+    /// <summary>
+    /// "Was this request ever paid?" — one (sourceType, sourceId) pair, answered from the payslip
+    /// lines. 200 with the payslip and its period, or 404 when nothing has paid it yet.
+    ///
+    /// 404 IS THE POINT, not a failure: the request pages render their "Paid in …" badge only on a
+    /// hit, so the absent case has to be cheap and unambiguous.
+    ///
+    /// WHO MAY ASK (QA3 WEB-15). A PAYROLL_VIEW holder about any line. Anybody else only about a line
+    /// on THEIR OWN payslip of an APPROVED run — the person who raised an advance or an expense may see
+    /// that it was paid, and follow the link to the payslip, which opens for them on the same rule.
+    /// Every other answer is the same 404 as "not paid yet": it says nothing about whose pay it was.
+    /// </summary>
+    [HttpGet("/api/payroll/lines/lookup")]
+    public async Task<IActionResult> LookupLine([FromQuery] string? sourceType, [FromQuery] int? sourceId)
+    {
+        if (string.IsNullOrWhiteSpace(sourceType) || sourceId is not int id)
+            return BadRequest(new { error = "sourceType and sourceId are both required." });
+
+        var hit = await _payroll.LookupLineAsync(sourceType.Trim(), id);
+        if (hit is null)
+            return NotFound();
+        if (User.HasPermission("PAYROLL_VIEW"))
+            return Ok(hit);
+
+        var detail = await _payroll.GetPayslipAsync(hit.PayslipId);
+        var me = await _support.GetEmployeeByUserIdAsync(User.UserId());
+        var isOwn = detail.Payslip is not null && me is not null && me.EmployeeId == detail.Payslip.EmployeeId;
+        var isApproved = detail.Payslip is not null
+            && string.Equals(detail.Payslip.RunStatus, "Approved", StringComparison.OrdinalIgnoreCase);
+        return isOwn && isApproved ? Ok(hit) : NotFound();
     }
 }

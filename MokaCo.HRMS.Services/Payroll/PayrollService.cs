@@ -83,12 +83,16 @@ public class PayrollService : IPayrollService
         => WorkflowSqlErrors.MapAsync(() => _repo.SendToReviewAsync(payrollRunId, actedByUserId));
 
     /// <summary>
-    /// Approves and locks. Pressing it twice is safe because the SECOND call is refused — "This run
-    /// is already closed." — before any of the side effects run, so advance balances cannot be
-    /// reduced twice. That is the procedure's guarantee, not a guard added here.
+    /// Approves and locks. Pressing it twice is safe because the SECOND call changes nothing — the
+    /// procedure claims the run first (only from Review, row count checked) and refuses "This run is
+    /// already approved and locked." — so advance balances cannot be reduced twice. That is the
+    /// procedure's guarantee, not a guard added here; so are the early-lock rule (the flag is passed
+    /// through untouched), the staleness check and the readiness gate (QA3 PAY-3 / PAY-5 / PAY-4 / PAY-11).
     /// </summary>
-    public Task<PayrollRunStatusResult?> ApproveAsync(int payrollRunId, int actedByUserId)
-        => WorkflowSqlErrors.MapAsync(() => _repo.ApproveAsync(payrollRunId, actedByUserId));
+    public Task<PayrollRunStatusResult?> ApproveAsync(int payrollRunId, int actedByUserId, bool allowEarlyLock = false)
+        => WorkflowSqlErrors.MapAsync(() => _repo.ApproveAsync(payrollRunId, actedByUserId, allowEarlyLock));
+
+    public Task<PayrollRunStaleness?> GetStalenessAsync(int payrollRunId) => _repo.GetStalenessAsync(payrollRunId);
 
     public Task<PayrollRunStatusResult?> CancelAsync(int payrollRunId, int actedByUserId, PayrollRunCancelRequest request)
         => WorkflowSqlErrors.MapAsync(() => _repo.CancelAsync(

@@ -37,8 +37,9 @@ INSERT INTO @notes VALUES (CONCAT('Formulas read from payroll.usp_PayrollRun_Gen
 BEGIN TRY
     BEGIN TRAN;
 
-    /* ---- P9k (script 81): the readiness gates look only at the days up to "today" — measured on the data as it stands,
-            real undecided anomalies included, with the procedure's clock set to 10 Aug and to the end of the month ---- */
+    /* ---- P9k (script 81, QA3 script 103): the readiness gates look only at the COMPLETED days - up to the day before
+            "today" - measured on the data as it stands, real undecided anomalies included, with the procedure's clock
+            set to 10 Aug (days 1-9 count) and to after the end of the month ---- */
     DECLARE @rk TABLE (PeriodYearMonth CHAR(7), PeriodStart DATE, PeriodEnd DATE, UnprocessedPunches INT, UnresolvedPinPunches INT, OpenAnomalies INT,
                        PendingCorrections INT, RosteredDaysWithNoRecord INT, UndecidedExitVariances INT, UndecidedAnomalies INT, IsReady BIT);
     DECLARE @k10 INT, @k31 INT, @kEnd DATE;
@@ -46,14 +47,14 @@ BEGIN TRY
     SELECT @k10 = UndecidedAnomalies + UndecidedExitVariances + OpenAnomalies, @kEnd = PeriodEnd FROM @rk; DELETE FROM @rk;
     INSERT INTO @rk EXEC attendance.usp_Attendance_PayrollReadiness '2026-08', '2026-09-05';
     SELECT @k31 = UndecidedAnomalies + UndecidedExitVariances + OpenAnomalies FROM @rk;
-    SELECT @n  = (SELECT COUNT(*) FROM attendance.ATTENDANCE_ANOMALY WHERE WorkDate BETWEEN '2026-08-01' AND '2026-08-10' AND Decision IS NULL)
-               + (SELECT COUNT(*) FROM attendance.ATTENDANCE_RECORD WHERE WorkDate BETWEEN '2026-08-01' AND '2026-08-10' AND ExitVarianceMinutes > 0 AND ExitVarianceDisposition IS NULL)
-               + (SELECT COUNT(*) FROM attendance.ATTENDANCE_RECORD WHERE WorkDate BETWEEN '2026-08-01' AND '2026-08-10' AND HasAnomaly = 1);
+    SELECT @n  = (SELECT COUNT(*) FROM attendance.ATTENDANCE_ANOMALY WHERE WorkDate BETWEEN '2026-08-01' AND '2026-08-09' AND Decision IS NULL)
+               + (SELECT COUNT(*) FROM attendance.ATTENDANCE_RECORD WHERE WorkDate BETWEEN '2026-08-01' AND '2026-08-09' AND ExitVarianceMinutes > 0 AND ExitVarianceDisposition IS NULL)
+               + (SELECT COUNT(*) FROM attendance.ATTENDANCE_RECORD WHERE WorkDate BETWEEN '2026-08-01' AND '2026-08-09' AND HasAnomaly = 1);
     SELECT @n2 = (SELECT COUNT(*) FROM attendance.ATTENDANCE_ANOMALY WHERE WorkDate BETWEEN '2026-08-01' AND '2026-08-31' AND Decision IS NULL)
                + (SELECT COUNT(*) FROM attendance.ATTENDANCE_RECORD WHERE WorkDate BETWEEN '2026-08-01' AND '2026-08-31' AND ExitVarianceMinutes > 0 AND ExitVarianceDisposition IS NULL)
                + (SELECT COUNT(*) FROM attendance.ATTENDANCE_RECORD WHERE WorkDate BETWEEN '2026-08-01' AND '2026-08-31' AND HasAnomaly = 1);
-    INSERT INTO @res SELECT 'P9k', 'readiness counts only the days up to today: run on 10 Aug it counts 1-10 Aug, after the month it counts the whole month; PeriodEnd stays 31 Aug (undecided anomalies + undecided variances + open anomalies)',
-        CONCAT('10 Aug: ', @n, '; whole month: ', @n2, '; PeriodEnd 2026-08-31'), CONCAT('10 Aug: ', @k10, '; whole month: ', @k31, '; PeriodEnd ', CONVERT(VARCHAR(10), @kEnd, 23)),
+    INSERT INTO @res SELECT 'P9k', 'readiness counts only the completed days: run on 10 Aug it counts 1-9 Aug (the 10th is still running), after the month it counts the whole month; PeriodEnd stays 31 Aug (undecided anomalies + undecided variances + open anomalies)',
+        CONCAT('1-9 Aug: ', @n, '; whole month: ', @n2, '; PeriodEnd 2026-08-31'), CONCAT('10 Aug: ', @k10, '; whole month: ', @k31, '; PeriodEnd ', CONVERT(VARCHAR(10), @kEnd, 23)),
         CASE WHEN @k10 = @n AND @k31 = @n2 AND @kEnd = '2026-08-31' THEN 1 ELSE 0 END;
 
     /* neutralise the real August primary and complete the real attendance so readiness passes — all uncommitted */
@@ -204,10 +205,11 @@ BEGIN TRY
     /* ---- P6: NSSF and tax for E9, hand-computed from the settings/rates ---- */
     DECLARE @base9 DECIMAL(18,2) = (SELECT SUM(ROUND(l.Amount * CASE WHEN l.CurrencyCode = 'USD' THEN 1 ELSE @trueRate END, 2) * l.[Sign]) FROM payroll.PAYSLIP_LINE l WHERE l.PayslipId = @ps9 AND l.SourceType IN ('Salary', 'Overtime', 'Leave', 'Attendance') AND l.Category IN ('Earning', 'Deduction'));
     DECLARE @base9stored DECIMAL(18,2) = (SELECT SUM(payroll.fn_ToPrimary(@RunId, l.Amount, l.CurrencyCode) * l.[Sign]) FROM payroll.PAYSLIP_LINE l WHERE l.PayslipId = @ps9 AND l.SourceType IN ('Salary', 'Overtime', 'Leave', 'Attendance') AND l.Category IN ('Earning', 'Deduction'));
-    DECLARE @nssfEmpExp DECIMAL(18,2) = ROUND((SELECT SUM(CASE WHEN r.IsCeilinged = 1 AND @base9 > ISNULL(r.CeilingAmount, @Ceiling) THEN ISNULL(r.CeilingAmount, @Ceiling) ELSE @base9 END * r.EmployeeRate) FROM hr.NSSF_RATE r WHERE r.EffectiveFrom <= '2026-08-31' AND (r.EffectiveTo IS NULL OR r.EffectiveTo >= '2026-08-01')), 2);
-    DECLARE @nssfErExp DECIMAL(18,2) = ROUND((SELECT SUM(CASE WHEN r.IsCeilinged = 1 AND @base9 > ISNULL(r.CeilingAmount, @Ceiling) THEN ISNULL(r.CeilingAmount, @Ceiling) ELSE @base9 END * r.EmployerRate) FROM hr.NSSF_RATE r WHERE r.EffectiveFrom <= '2026-08-31' AND (r.EffectiveTo IS NULL OR r.EffectiveTo >= '2026-08-01')), 2);
+    /* QA3 PAY-9: one NSSF version per scheme and one tax table per month - the ones in force on the period's last day */
+    DECLARE @nssfEmpExp DECIMAL(18,2) = ROUND((SELECT SUM(CASE WHEN r.IsCeilinged = 1 AND @base9 > ISNULL(r.CeilingAmount, @Ceiling) THEN ISNULL(r.CeilingAmount, @Ceiling) ELSE @base9 END * r.EmployeeRate) FROM hr.NSSF_RATE r WHERE r.EffectiveFrom <= '2026-08-31' AND (r.EffectiveTo IS NULL OR r.EffectiveTo >= '2026-08-31')), 2);
+    DECLARE @nssfErExp DECIMAL(18,2) = ROUND((SELECT SUM(CASE WHEN r.IsCeilinged = 1 AND @base9 > ISNULL(r.CeilingAmount, @Ceiling) THEN ISNULL(r.CeilingAmount, @Ceiling) ELSE @base9 END * r.EmployerRate) FROM hr.NSSF_RATE r WHERE r.EffectiveFrom <= '2026-08-31' AND (r.EffectiveTo IS NULL OR r.EffectiveTo >= '2026-08-31')), 2);
     DECLARE @annual DECIMAL(18,2) = (@base9 - @nssfEmpExp) * 12 - @FamilyDed;
-    DECLARE @taxExp DECIMAL(18,2) = ROUND((SELECT SUM((CASE WHEN @annual > ISNULL(b.MaxAnnual, @annual) THEN ISNULL(b.MaxAnnual, @annual) ELSE @annual END - b.MinAnnual) * b.Rate) FROM hr.TAX_BRACKET b WHERE b.MinAnnual < @annual AND b.EffectiveFrom <= '2026-08-31' AND (b.EffectiveTo IS NULL OR b.EffectiveTo >= '2026-08-01')) / 12, 2);
+    DECLARE @taxExp DECIMAL(18,2) = ROUND((SELECT SUM((CASE WHEN @annual > ISNULL(b.MaxAnnual, @annual) THEN ISNULL(b.MaxAnnual, @annual) ELSE @annual END - b.MinAnnual) * b.Rate) FROM hr.TAX_BRACKET b WHERE b.MinAnnual < @annual AND b.EffectiveFrom <= '2026-08-31' AND (b.EffectiveTo IS NULL OR b.EffectiveTo >= '2026-08-31')) / 12, 2);
     DECLARE @nssfEmp DECIMAL(18,2) = (SELECT SUM(Amount) FROM payroll.PAYSLIP_LINE WHERE PayslipId = @ps9 AND ComponentName = N'NSSF Employee Share');
     DECLARE @nssfEr DECIMAL(18,2) = (SELECT SUM(Amount) FROM payroll.PAYSLIP_LINE WHERE PayslipId = @ps9 AND ComponentName = N'NSSF Employer Share');
     DECLARE @tax DECIMAL(18,2) = (SELECT SUM(Amount) FROM payroll.PAYSLIP_LINE WHERE PayslipId = @ps9 AND ComponentName = N'Income Tax');

@@ -117,16 +117,30 @@ BEGIN TRY
     INSERT INTO @res SELECT 'A5g1', 'tax on a bracket boundary: E9 basic 1000, NSSF 30, family deduction 5640 -> annual taxable exactly 6000.00', 'NSSF 30.00; tax = 6000 x 2 % / 12 = 10.00 (nothing from the 4 % bracket that STARTS at 6000)',
         CONCAT('NSSF ', @a2, '; tax ', @a1), CASE WHEN @a2 = 30.00 AND @a1 = 10.00 THEN 1 ELSE 0 END;
 
-    /* ---- A5h: the exchange rate changes after the run was created; then the run is regenerated with the law's deduction of 3000 ---- */
+    /* ---- A5h (QA3 REL-11): the exchange rate changes after the run was created; then the run is regenerated with the law's
+            deduction of 3000. While the run is a DRAFT a regenerate re-reads the rates as of the period end (the old
+            intent - "frozen at creation" - let a rate corrected after Create, or a currency first used later, be priced
+            wrong or not at all); from Review on the snapshot is frozen: a later change does not move it. ---- */
     DECLARE @rate0 DECIMAL(28,12) = payroll.fn_RunRate(@RunId, 'LBP', 'USD');
-    /* one row per currency pair and rate type (UX_EXCHANGE_RATE_Pair): "a new rate" is that row changing — rolled back with the rest */
+    /* "a new rate" is that row changing - rolled back with the rest */
     UPDATE core.EXCHANGE_RATE SET Rate = 95000 WHERE FromCurrency = 'USD' AND ToCurrency = 'LBP' AND RateType = (SELECT SettingValue FROM core.SETTING WHERE SettingKey = 'PayrollRateType');
     UPDATE core.SETTING SET SettingValue = '3000' WHERE SettingKey = 'TaxFamilyDeductionAnnualUsd';
     DELETE FROM @gen; INSERT INTO @gen EXEC payroll.usp_PayrollRun_Generate @PayrollRunId = @RunId, @ActedByUserId = @Hr;
     DECLARE @rate1 DECIMAL(28,12) = payroll.fn_RunRate(@RunId, 'LBP', 'USD');
     DECLARE @lbpUsd DECIMAL(18,2) = payroll.fn_ToPrimary(@RunId, 27000000, 'LBP');
-    INSERT INTO @res SELECT 'A5h', 'a new USD->LBP rate (95,000) is recorded after the run was created, and the run is regenerated', 'the run keeps the rate it froze at creation; the LBP allowance converts as before',
-        CONCAT('run rate LBP->USD ', @rate0, ' before, ', @rate1, ' after; 27,000,000 LBP = ', @lbpUsd, ' USD'), CASE WHEN @rate0 = @rate1 AND @rate0 > 0 THEN 1 ELSE 0 END;
+    /* frozen from Review on: sent to review, the rate changes again, the run is regenerated - undone with a savepoint */
+    DECLARE @rate2 DECIMAL(28,12);
+    SAVE TRAN qa2_frozen;
+    DELETE FROM @rv; INSERT INTO @rv EXEC payroll.usp_PayrollRun_SendToReview @PayrollRunId = @RunId, @ActedByUserId = @Hr;
+    UPDATE core.EXCHANGE_RATE SET Rate = 100000 WHERE FromCurrency = 'USD' AND ToCurrency = 'LBP' AND RateType = (SELECT SettingValue FROM core.SETTING WHERE SettingKey = 'PayrollRateType');
+    DELETE FROM @gen; INSERT INTO @gen EXEC payroll.usp_PayrollRun_Generate @PayrollRunId = @RunId, @ActedByUserId = @Hr;
+    SET @rate2 = payroll.fn_RunRate(@RunId, 'LBP', 'USD');
+    ROLLBACK TRAN qa2_frozen;
+    DELETE FROM @rv;
+    INSERT INTO @res SELECT 'A5h', 'a new USD->LBP rate (95,000) is recorded after the run was created and the DRAFT is regenerated; then, once in Review, the rate changes again (100,000) and the run is regenerated',
+        'the draft re-reads the rate (1/95,000 = 0.000010526316); in Review the snapshot is frozen (still 0.000010526316)',
+        CONCAT('run rate LBP->USD ', @rate0, ' at creation, ', @rate1, ' after the draft regenerate, ', @rate2, ' after the regenerate in Review; 27,000,000 LBP = ', @lbpUsd, ' USD'),
+        CASE WHEN @rate1 = CAST(1.0 / 95000 AS DECIMAL(28,12)) AND @rate2 = @rate1 THEN 1 ELSE 0 END;
 
     /* every QA2 line of the primary, once */
     IF OBJECT_ID('tempdb..#L') IS NOT NULL DROP TABLE #L;
@@ -208,19 +222,22 @@ BEGIN TRY
     INSERT INTO @res SELECT 'A3i', 'E6 leaves on the 20th with 6.5 unused days; E5 (in a variant) leaves with a balance of -1.5', 'E6: "Leave Balance Payout" 6.5 x 50 = 325.00 in the termination month; E5 negative: a deduction line of 1.5 x 50 = 75.00',
         CONCAT('E6 payout ', ISNULL(CAST(@a1 AS VARCHAR(20)), 'no line'), '; E5 with -1.5: ', ISNULL(CAST(@a2 AS VARCHAR(20)), 'no deduction line')), CASE WHEN @a1 = 325.00 AND @a2 = 75.00 AND @n = 1 THEN 1 ELSE 0 END;
 
-    /* ---- A5j: terminated in M-1 -> absent from M; rehired in M -> present with the new hire date ---- */
+    /* ---- A5j: terminated in M-1 -> no pay for M; rehired in M -> present with the new hire date.
+            QA3 PAY-2: a leaver whose leave balance was never settled may get a SETTLEMENT-ONLY payslip in M (the payout the
+            leaving month did not pay) - never a salary line ---- */
     SAVE TRAN qa2_rehire;
     UPDATE hr.EMPLOYEE SET TerminationDate = DATEADD(DAY, -1, @M) WHERE EmployeeId = @E4;
     DELETE FROM @gen; INSERT INTO @gen EXEC payroll.usp_PayrollRun_Generate @PayrollRunId = @RunId, @ActedByUserId = @Hr;
-    SET @n = (SELECT COUNT(*) FROM payroll.PAYSLIP WHERE PayrollRunId = @RunId AND EmployeeId = @E4);
+    SET @n = (SELECT COUNT(*) FROM payroll.PAYSLIP_LINE l JOIN payroll.PAYSLIP ps ON ps.PayslipId = l.PayslipId
+              WHERE ps.PayrollRunId = @RunId AND ps.EmployeeId = @E4 AND l.SourceType NOT IN ('LeavePayout', 'Separation'));
     UPDATE hr.EMPLOYEE SET HireDate = DATEADD(DAY, 9, @M), TerminationDate = NULL WHERE EmployeeId = @E4;                         -- rehired on the 10th
     DELETE FROM @gen; INSERT INTO @gen EXEC payroll.usp_PayrollRun_Generate @PayrollRunId = @RunId, @ActedByUserId = @Hr;
     SELECT @n2 = COUNT(*), @d = MAX(ps.HireDate) FROM payroll.PAYSLIP ps WHERE ps.PayrollRunId = @RunId AND ps.EmployeeId = @E4;
     SELECT @a1 = SUM(l.Amount) FROM payroll.PAYSLIP_LINE l JOIN payroll.PAYSLIP ps ON ps.PayslipId = l.PayslipId WHERE ps.PayrollRunId = @RunId AND ps.EmployeeId = @E4 AND l.ComponentName = N'Basic Salary';
     ROLLBACK TRAN qa2_rehire;
     SET @a2 = ROUND(1300.0 * (@DaysInM - 9) / @DaysInM, 2);
-    INSERT INTO @res SELECT 'A5j', 'E4 terminated on the last day of M-1, then rehired on the 10th of M', CONCAT('no payslip in M while terminated; after the rehire one payslip with hire date ', CONVERT(CHAR(10), DATEADD(DAY, 9, @M), 23), ' and basic prorated ', @DaysInM - 9, '/', @DaysInM, ' = ', @a2),
-        CONCAT('payslips while terminated=', @n, '; after rehire=', @n2, ', hire date ', CONVERT(CHAR(10), @d, 23), ', basic ', @a1), CASE WHEN @n = 0 AND @n2 = 1 AND @d = DATEADD(DAY, 9, @M) AND @a1 = @a2 THEN 1 ELSE 0 END;
+    INSERT INTO @res SELECT 'A5j', 'E4 terminated on the last day of M-1, then rehired on the 10th of M', CONCAT('nothing of M paid while terminated (at most a settlement-only payslip); after the rehire one payslip with hire date ', CONVERT(CHAR(10), DATEADD(DAY, 9, @M), 23), ' and basic prorated ', @DaysInM - 9, '/', @DaysInM, ' = ', @a2),
+        CONCAT('lines other than a settlement while terminated=', @n, '; after rehire=', @n2, ', hire date ', CONVERT(CHAR(10), @d, 23), ', basic ', @a1), CASE WHEN @n = 0 AND @n2 = 1 AND @d = DATEADD(DAY, 9, @M) AND @a1 = @a2 THEN 1 ELSE 0 END;
 
     /* ---- A3j: exit permissions converted to leave at period close — both bases, and more minutes than balance ---- */
     DECLARE @px TABLE (LeaveMovementsPosted INT);
