@@ -54,6 +54,9 @@
    PAY-13         Sick-pay tiers by WHOLE years of service. PAY-14 / REL-16: the hour rate reads StandardWorkDayHours.
    PAY-15         The payslip's branch is the branch of the period (hr.fn_EmployeeBranchOn on the last day in the period).
    REL-5          A soft-deleted employee with attendance or an adjustment in the period is still paid.
+   REL-15 (part)  The short days a payslip deducts (section D) are one function, payroll.fn_ShortDays; the attendance
+                  summaries and the monthly report take their "unpaid absence days" figure from it (NEW
+                  attendance.usp_Attendance_UnpaidAbsenceDays, read by the API) instead of "Absent - leave usage".
    Suspicions fixed: the unpaid-holiday line counts approved roster months only; tips are one line per distribution
                   (SourceId = that distribution); unpaid deductions are capped at the basic paid for the month.
 
@@ -271,6 +274,67 @@ BEGIN
         RETURN 1;
     END
     RETURN 0;
+END;
+GO
+
+/* ------------------------- 3b. the short days: one predicate for the payslip and the summaries (QA3 REL-15) -------------------------
+   What an employee's payslip deducts as "day(s) short" (Generate, section D): a worked or absent day on a rostered
+   shift of an APPROVED roster month (the branch of the day), not covered by an approved full-day leave (the approved
+   span, ISNULL(ApprovedToDate, ToDate)), inside the employment - a day not worked counts whole (1 - DayFraction),
+   a short one by its shortfall minutes. The attendance summaries and the monthly report printed "Absent days - leave
+   usage" as "the deduction": since script 76 a leave day is Status 'Leave', not 'Absent', so the subtraction counted
+   the leave twice (2 absences beside 3 days of leave read 0). Their procedures are stale repo copies (CON-7), so the
+   API replaces that one figure with attendance.usp_Attendance_UnpaidAbsenceDays, which reads this function. */
+CREATE OR ALTER FUNCTION payroll.fn_ShortDays (@From DATE, @To DATE)
+RETURNS TABLE
+AS RETURN
+SELECT a.EmployeeId,
+       SUM(CASE WHEN a.ShortfallMinutes > 0 AND a.StandardMinutes > 0
+                THEN CAST(a.ShortfallMinutes AS DECIMAL(18,8)) / a.StandardMinutes
+                ELSE CAST(1 - a.DayFraction AS DECIMAL(18,8)) END) AS MissingDays,
+       COUNT(*) AS DaysAffected
+FROM attendance.ATTENDANCE_RECORD a
+JOIN hr.EMPLOYEE e ON e.EmployeeId = a.EmployeeId
+WHERE a.WorkDate BETWEEN @From AND @To
+  AND a.WorkDate >= e.HireDate AND (e.TerminationDate IS NULL OR a.WorkDate <= e.TerminationDate)
+  AND a.[Status] NOT IN ('RestDay', 'Leave', 'Holiday')
+  AND a.DayFraction IS NOT NULL
+  AND a.DayFraction < 1
+  AND EXISTS (SELECT 1
+              FROM attendance.SHIFT_ASSIGNMENT sa
+              JOIN attendance.ROSTER_MONTH rm
+                ON rm.BranchId = hr.fn_EmployeeBranchOn(a.EmployeeId, a.WorkDate)
+               AND rm.MonthDate = DATEFROMPARTS(YEAR(a.WorkDate), MONTH(a.WorkDate), 1)
+               AND rm.[Status] = 'Approved'
+              WHERE sa.EmployeeId = a.EmployeeId AND sa.WorkDate = a.WorkDate
+                AND sa.IsRestDay = 0 AND sa.ShiftId IS NOT NULL)
+  AND NOT EXISTS (SELECT 1 FROM workflow.LEAVE_REQUEST lr
+                  JOIN workflow.REQUEST_INSTANCE ri ON ri.RequestInstanceId = lr.RequestInstanceId
+                  WHERE ri.[Status] = 'Approved' AND lr.EmployeeId = a.EmployeeId
+                    AND lr.HalfDay IS NULL
+                    AND a.WorkDate BETWEEN lr.FromDate AND ISNULL(lr.ApprovedToDate, lr.ToDate))
+GROUP BY a.EmployeeId;
+GO
+
+/* The figure the attendance summaries and the monthly report show as "unpaid absence days - this is the deduction":
+   the short days of the period's COMPLETED days (up to yesterday in Beirut, never past the month's end), per
+   employee (@EmployeeId NULL = everyone with any). Two decimals, as the payslip line prints them. */
+CREATE OR ALTER PROCEDURE attendance.usp_Attendance_UnpaidAbsenceDays
+    @PeriodYearMonth CHAR(7),
+    @EmployeeId INT = NULL,
+    @AsOfDate DATE = NULL      -- the clock. NULL = today in Beirut; a caller passes a date only to test the rule
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF TRY_CAST(@PeriodYearMonth + '-01' AS DATE) IS NULL
+    BEGIN RAISERROR('The period is a month written YYYY-MM.', 16, 1); RETURN 1; END
+    DECLARE @Start DATE = CAST(@PeriodYearMonth + '-01' AS DATE);
+    DECLARE @End DATE = EOMONTH(@Start);
+    DECLARE @Today DATE = ISNULL(@AsOfDate, CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Middle East Standard Time' AS DATE));
+    DECLARE @UpTo DATE = CASE WHEN DATEADD(DAY, -1, @Today) < @End THEN DATEADD(DAY, -1, @Today) ELSE @End END;
+    SELECT sd.EmployeeId, CAST(ROUND(sd.MissingDays, 2) AS DECIMAL(9,2)) AS UnpaidAbsenceDays
+    FROM payroll.fn_ShortDays(@Start, @UpTo) sd
+    WHERE @EmployeeId IS NULL OR sd.EmployeeId = @EmployeeId;
 END;
 GO
 
@@ -902,7 +966,7 @@ BEGIN
 
     /* -- D. short days (script 78 BUG-06, script 86 QA2-22): a worked or absent day on a rostered shift of an approved
           roster month, not covered by an approved full-day leave (ISNULL(ApprovedToDate, ToDate), QA3 PAY-8), from the
-          first day employed to the last COMPLETED day employed (QA3 REL-1, ATT-11) -- */
+          first day employed to the last COMPLETED day employed (QA3 REL-1, ATT-11) - payroll.fn_ShortDays (QA3 REL-15) -- */
     INSERT INTO payroll.PAYSLIP_LINE
         (PayslipId,ComponentTypeId,ComponentName,Category,[Sign],Amount,CurrencyCode,
          SourceType,SourceId,Quantity,UnitAmount,Note,SortOrder)
@@ -911,35 +975,12 @@ BEGIN
            'Attendance', NULL, sh.MissingDays, r.DayRate,
            CONCAT(FORMAT(sh.MissingDays,'0.##'),N' day(s) short across ',sh.DaysAffected,N' date(s)'), 22
     FROM #Rate r
+    /* the same function the attendance summaries read (QA3 REL-15): the completed days of the period; the employment
+       window is the function's own (HireDate..TerminationDate) */
     JOIN (
-        SELECT a.EmployeeId,
-               SUM(CASE WHEN a.ShortfallMinutes > 0 AND a.StandardMinutes > 0
-                        THEN CAST(a.ShortfallMinutes AS DECIMAL(18,8)) / a.StandardMinutes
-                        ELSE CAST(1 - a.DayFraction AS DECIMAL(18,8)) END) AS MissingDays,
-               COUNT(*) AS DaysAffected
-        FROM attendance.ATTENDANCE_RECORD a
-        JOIN #Emp x ON x.EmployeeId=a.EmployeeId
-        WHERE a.WorkDate BETWEEN x.EmpFrom AND x.AttTo
-          AND a.[Status] NOT IN ('RestDay','Leave','Holiday')
-          AND a.DayFraction IS NOT NULL
-          AND a.DayFraction < 1
-          AND EXISTS (SELECT 1
-                      FROM attendance.SHIFT_ASSIGNMENT sa
-                      JOIN attendance.ROSTER_MONTH rm
-                        ON rm.BranchId=hr.fn_EmployeeBranchOn(a.EmployeeId, a.WorkDate)
-                       AND rm.MonthDate=DATEFROMPARTS(YEAR(a.WorkDate),MONTH(a.WorkDate),1)
-                       AND rm.[Status]='Approved'
-                      WHERE sa.EmployeeId=a.EmployeeId AND sa.WorkDate=a.WorkDate
-                        AND sa.IsRestDay=0 AND sa.ShiftId IS NOT NULL)
-          AND NOT EXISTS (SELECT 1 FROM workflow.LEAVE_REQUEST lr
-                          JOIN workflow.REQUEST_INSTANCE ri ON ri.RequestInstanceId=lr.RequestInstanceId
-                          WHERE ri.[Status]='Approved' AND lr.EmployeeId=a.EmployeeId
-                            AND lr.HalfDay IS NULL
-                            AND a.WorkDate BETWEEN lr.FromDate AND ISNULL(lr.ApprovedToDate, lr.ToDate))
-        GROUP BY a.EmployeeId
-        HAVING SUM(CASE WHEN a.ShortfallMinutes > 0 AND a.StandardMinutes > 0
-                        THEN CAST(a.ShortfallMinutes AS DECIMAL(18,8)) / a.StandardMinutes
-                        ELSE CAST(1 - a.DayFraction AS DECIMAL(18,8)) END) > 0.0005
+        SELECT sd.EmployeeId, sd.MissingDays, sd.DaysAffected
+        FROM payroll.fn_ShortDays(@Start, @UpTo) sd
+        WHERE sd.MissingDays > 0.0005
     ) sh ON sh.EmployeeId=r.EmployeeId
     JOIN #CT ct ON ct.Code='LATE';
 

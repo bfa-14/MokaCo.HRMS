@@ -232,6 +232,46 @@ public class PayrollQa3DbTests
         Assert.Equal(0, await f.Db.QuerySingleAsync<int>(count, transaction: f.Tx));
     }
 
+    /// <summary>
+    /// REL-15: "unpaid absence days — this is the deduction" is the payslip's own short-days figure. Two days absent
+    /// and three days of approved leave: 2, as the payslip deducts — the summaries' "Absent − leave usage" read 0.
+    /// </summary>
+    [DbFact]
+    public async Task TheUnpaidAbsenceFigure_IsTheShortDaysThePayslipDeducts()
+    {
+        await using var f = await Fixture.OpenAsync();
+        if (f is null) return;
+        var emp = await f.EmployeeAsync("QA3 Absent", "2024-01-01", 2600);
+        var rid = await f.ApprovedRequestAsync(emp);
+        await f.Db.ExecuteAsync(
+            """
+            DECLARE @Shift INT = (SELECT MIN(ShiftId) FROM attendance.SHIFT);
+            DECLARE @Paid INT = (SELECT TOP 1 LeaveTypeId FROM hr.LEAVE_TYPE WHERE IsPaid = 1 ORDER BY LeaveTypeId);
+            INSERT INTO attendance.SHIFT_ASSIGNMENT (EmployeeId, ShiftId, WorkDate, IsRestDay)
+            SELECT @E, @Shift, d, 0 FROM (VALUES ('2099-05-10'), ('2099-05-11'), ('2099-05-12'), ('2099-05-13'), ('2099-05-14')) v(d);
+            INSERT INTO attendance.ROSTER_MONTH (BranchId, MonthDate, [Status], ApprovedAt) VALUES (@B, '2099-05-01', 'Approved', SYSUTCDATETIME());
+            INSERT INTO attendance.ATTENDANCE_RECORD (EmployeeId, WorkDate, [Status], DayFraction, StandardMinutes, WorkedMinutes, [Source])
+            VALUES (@E, '2099-05-10', 'Absent', 0, 480, 0, 'Manual'), (@E, '2099-05-11', 'Absent', 0, 480, 0, 'Manual'),
+                   (@E, '2099-05-12', 'Leave', 1, 480, 0, 'Manual'), (@E, '2099-05-13', 'Leave', 1, 480, 0, 'Manual'),
+                   (@E, '2099-05-14', 'Leave', 1, 480, 0, 'Manual');
+            INSERT INTO workflow.LEAVE_REQUEST (RequestInstanceId, EmployeeId, LeaveTypeId, FromDate, ToDate, DaysRequested, DaysApproved, ApprovedToDate, PaidSnapshot)
+            VALUES (@R, @E, @Paid, '2099-05-12', '2099-05-14', 3, 3, '2099-05-14', 1);
+            """, new { E = emp, R = rid, B = f.Branch }, f.Tx);
+
+        var row = await f.Db.QuerySingleAsync(
+            "attendance.usp_Attendance_UnpaidAbsenceDays",
+            new { PeriodYearMonth = "2099-05", EmployeeId = emp, AsOfDate = new DateTime(2099, 6, 2) },
+            f.Tx, commandType: CommandType.StoredProcedure);
+        decimal figure = row.UnpaidAbsenceDays;
+        Assert.Equal(2m, figure);
+
+        var may = await f.CreateAsync("2099-05", "2099-06-02");
+        await f.GenerateAsync(may, "2099-06-02");
+        Assert.Equal(figure, await f.Db.QuerySingleAsync<decimal>(
+            "SELECT l.Quantity FROM payroll.PAYSLIP_LINE l JOIN payroll.PAYSLIP ps ON ps.PayslipId = l.PayslipId JOIN hr.COMPONENT_TYPE c ON c.ComponentTypeId = l.ComponentTypeId WHERE ps.PayrollRunId = @R AND ps.EmployeeId = @E AND c.SystemCode = 'LATE'",
+            new { R = may, E = emp }, f.Tx));
+    }
+
     /// <summary>PAY-6: a raise added WITHOUT closing the old row still pays each row only its own days.</summary>
     [DbFact]
     public async Task Generate_ALaterRowSupersedesTheStandingOne()

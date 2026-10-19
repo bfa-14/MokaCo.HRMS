@@ -5,6 +5,7 @@
            approved span is judged from attendance like any other day;
    LEV-17  the payslip's paid / unpaid leave days are WORKING days of the approved span (a rest day costs nothing, a half
            day is 0.5);
+   REL-15  the attendance summaries' "unpaid absence days" is the payslip's own short-days figure;
    LEV-16 / LEV-13 / PAY-13  sick pay tiers: the days of every TIERED type (a type with LEAVE_PAY_TIER rows, whatever its
            name) are numbered day by day across the year, so a leave crossing a month end costs each month its own days;
            the tier is chosen by WHOLE years of service (hired 31 Dec 2097: one whole year in January 2099, not two).
@@ -93,6 +94,11 @@ BEGIN
     SET @x = CONCAT('unpaid leave ', @unpaidAmt, ' (expected 250), short days ', @shortAmt, ' (expected 100), header unpaid ', @hdrUnpaid, ' (2.5), paid ', @hdrPaid, ' (2)');
     RAISERROR('05 A: %s.', 16, 1, @x);
 END
+/* REL-15: the summaries' figure is the payslip's short days - the absence on the 15th, not "Absent - leave usage" */
+DECLARE @ua TABLE (EmployeeId INT, UnpaidAbsenceDays DECIMAL(9,2));
+INSERT INTO @ua EXEC attendance.usp_Attendance_UnpaidAbsenceDays @PeriodYearMonth = '2099-03', @EmployeeId = @E, @AsOfDate = '2099-04-02';
+IF ISNULL((SELECT UnpaidAbsenceDays FROM @ua), -1) <> 1
+    BEGIN SET @fails += 1; SET @x = CONVERT(NVARCHAR(30), (SELECT UnpaidAbsenceDays FROM @ua)); RAISERROR('05 A: the unpaid absence figure is %s, not the 1 short day the payslip deducts.', 16, 1, @x); END
 /* C. the fractional approval costs 2.5 days, not 3 */
 SELECT @unpaidAmt = ISNULL(SUM(l.Amount), 0) FROM payroll.PAYSLIP_LINE l JOIN payroll.PAYSLIP ps ON ps.PayslipId = l.PayslipId
 JOIN hr.COMPONENT_TYPE c ON c.ComponentTypeId = l.ComponentTypeId AND c.SystemCode = 'UNPAID_LEAVE' WHERE ps.PayrollRunId = @Run AND ps.EmployeeId = @E2;
