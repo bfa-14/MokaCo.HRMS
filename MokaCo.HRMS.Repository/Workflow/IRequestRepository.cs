@@ -50,8 +50,12 @@ public interface IRequestRepository
     /// <summary>Takes a delegated step back (usp_Request_ReclaimDelegation) — only for whoever handed it over.</summary>
     Task ReclaimDelegationAsync(int requestInstanceId, int actedByUserId, string? reason);
 
-    /// <summary><paramref name="signedWithPassword"/> records that the caller proved their identity — the procedure stores the fact, never the password.</summary>
-    Task<ApproveResult?> ApproveAsync(int requestInstanceId, int actedByUserId, string? comment, string? changeSummary = null, bool signedWithPassword = false);
+    /// <summary>
+    /// <paramref name="signedWithPassword"/> records that the caller proved their identity — the procedure stores the fact, never the password.
+    /// <paramref name="expectedStepNo"/> is the step the caller was looking at; when the request has moved past it the
+    /// procedure refuses with the reload sentence instead of signing the next step (QA3 WF-2). Null skips the check.
+    /// </summary>
+    Task<ApproveResult?> ApproveAsync(int requestInstanceId, int actedByUserId, string? comment, string? changeSummary = null, bool signedWithPassword = false, int? expectedStepNo = null);
     Task<RequestClosedResult?> RejectAsync(int requestInstanceId, int actedByUserId, string reason, bool signedWithPassword = false);
     Task<RequestClosedResult?> CancelAsync(int requestInstanceId, int actedByUserId, string reason);
 
@@ -90,7 +94,12 @@ public interface IRequestRepository
     Task<IEnumerable<StaleDraft>> GetStaleDraftsAsync(int olderThanDays);
 
     Task<IEnumerable<OldVersionRequest>> GetOnOldVersionsAsync(int? requestTypeId);
-    Task<MoveVersionResult?> MoveToVersionAsync(int requestInstanceId, int? targetWorkflowDefinitionId, int actedByUserId, string reason);
+    /// <summary>
+    /// Moves a request onto another version of its workflow (usp_Request_MoveToVersion, QA3 WF-10). A move that
+    /// would leave nothing to sign is refused unless <paramref name="confirmClose"/> — then the request is
+    /// approved and its effects applied.
+    /// </summary>
+    Task<MoveVersionResult?> MoveToVersionAsync(int requestInstanceId, int? targetWorkflowDefinitionId, int actedByUserId, string reason, bool confirmClose = false);
 
     /// <summary>The FROZEN signature image for one signed step. Null when there is no signed image for it.</summary>
     Task<FrozenSignatureImage?> GetSignatureImageAsync(int requestInstanceId, int stepNo);
@@ -123,13 +132,14 @@ public interface IRequestRepository
         int requestInstanceId, int stepNo, int actedByUserId, bool undo);
 
     /// <summary>
-    /// Reopens a REJECTED or CANCELLED request (usp_Request_ReopenClosed), returning it to the step
-    /// that closed it. The proc refuses an approved request and demands a reason, raising otherwise.
+    /// Reopens a CANCELLED request (usp_Request_ReopenClosed), returning it to the step that was
+    /// waiting. Since QA3 WF-14 the proc refuses an approved or rejected one (their decisions stand:
+    /// retract the same day, or the GM + Owner reopen) and demands a reason, raising otherwise.
     /// </summary>
     Task<ApproveResult?> ReopenClosedAsync(int requestInstanceId, int actedByUserId, string reason);
 
     /// <summary>
-    /// The last signer takes their own decision back, same UTC day
+    /// The last signer takes their own decision back, the same Beirut day, on a request it closed
     /// (usp_Request_RetractLastDecision). The proc owns every rule — own signature, last one
     /// standing, same day, effects not yet consumed — and names which one failed.
     /// </summary>
@@ -144,5 +154,8 @@ public interface IRequestRepository
     /// the first of the two to sign and nothing has moved yet, or 'Reopened' with the request's new
     /// standing when it completed.
     /// </summary>
-    Task<ReopenResult?> ReopenAsync(int requestInstanceId, int actedByUserId, string reason);
+    /// <param name="signedWithPassword">
+    /// The verified fact that this half was signed. The procedure refuses an unsigned half (QA3 WF-14).
+    /// </param>
+    Task<ReopenResult?> ReopenAsync(int requestInstanceId, int actedByUserId, string reason, bool signedWithPassword = false);
 }

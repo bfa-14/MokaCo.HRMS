@@ -56,6 +56,18 @@ public class WorkflowController : ControllerBase
     public async Task<IActionResult> GetRaisableRequestTypes()
         => Ok(await _definitions.GetRaisableRequestTypesAsync());
 
+    /// <summary>
+    /// Every ACTIVE request type, for filtering lists of requests (QA3 WEB-13) — the Requests hub's
+    /// type filter. Not gated on WORKFLOW_CONFIGURE for the same reason as raisable: an approver
+    /// filters the requests in front of them by type without configuring anything, and may approve
+    /// types they cannot raise themselves, so the raisable list is not enough. Codes and names only
+    /// travel; the configuration stays behind request-types.
+    /// </summary>
+    [HttpGet("request-types/active")]
+    [Authorize]
+    public async Task<IActionResult> GetActiveRequestTypes()
+        => Ok(await _definitions.GetActiveRequestTypesAsync());
+
     [HttpPost("request-types")]
     [HasPermission("WORKFLOW_CONFIGURE")]
     public async Task<IActionResult> UpsertRequestType([FromBody] RequestTypeUpsertRequest request)
@@ -280,12 +292,13 @@ public class WorkflowController : ControllerBase
 
     /* ---- reversals: taking a decision back ----
        Both need NO permission, exactly like approve and reject. The database decides who may act —
-       the last signer on the same UTC day for a retract, the General Manager and the Owner together
-       for a reopen — and refuses everybody else with a sentence that names the path that would
-       work. Those sentences reach the client untouched. */
+       the last signer on the same Beirut day for a retract, the General Manager and the Owner (two
+       different people, each signing) for a reopen — and refuses everybody else with a sentence
+       that names the path that would work. Those sentences reach the client untouched. */
 
     /// <summary>
-    /// The last signer takes their own decision back, on the same UTC day.
+    /// The last signer takes back the decision that CLOSED a request (approved or rejected), on the
+    /// same Beirut day. An open request's decision is changed by withdrawing it instead.
     ///
     /// The rules are the procedure's and are NOT duplicated here: it must be your own signature, it
     /// must be the last one standing, it must be from today, and the request's effects must not have
@@ -296,8 +309,8 @@ public class WorkflowController : ControllerBase
     /// the refusal explains what to do instead, and no disabled control could say that much.
     ///
     /// The password is OPTIONAL on the wire: whether this particular retract must be signed depends on
-    /// what is being struck, which the service works out. Sending none where one is demanded is a 401
-    /// that changes nothing.
+    /// what is being struck, which the service works out. Sending none where one is demanded — or a
+    /// wrong one — is a 400 that changes nothing (not a 401: the client signs out on a 401).
     /// </summary>
     [HttpPost("requests/{id:int}/retract")]
     [Authorize]
@@ -333,6 +346,10 @@ public class WorkflowController : ControllerBase
     /// The reason is required on the first signature; the second inherits it, which is why an empty
     /// reason is not rejected here — the procedure knows which half this is and asks only when it
     /// needs to.
+    ///
+    /// EACH HALF IS SIGNED (QA3 WF-14): the password is required on both, verified before anything is
+    /// written, and the two halves must come from two different people. A missing or wrong password
+    /// is a 400 that changes nothing.
     /// </summary>
     [HttpPost("requests/{id:int}/reopen")]
     [Authorize]
@@ -340,7 +357,7 @@ public class WorkflowController : ControllerBase
     {
         try
         {
-            var result = await _requests.ReopenAsync(id, User.UserId(), request?.Reason?.Trim() ?? string.Empty);
+            var result = await _requests.ReopenAsync(id, User.UserId(), request?.Reason?.Trim() ?? string.Empty, request?.Password);
             if (result is null) return NotFound();
 
             // Signalled on BOTH outcomes. A half-signed reopen changes nothing about the request,

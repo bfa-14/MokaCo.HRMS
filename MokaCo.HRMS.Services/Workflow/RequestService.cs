@@ -250,7 +250,7 @@ public class RequestService : IRequestService
     /// password check on purpose: there is no point putting the caller through a signature for a call
     /// that was never going to be honoured. Untyped/simple types keep the plain engine behaviour.
     /// </summary>
-    public async Task<ApproveResult?> ApproveAsync(int requestInstanceId, int actedByUserId, string? comment, string? changeSummary = null, string? password = null)
+    public async Task<ApproveResult?> ApproveAsync(int requestInstanceId, int actedByUserId, string? comment, string? changeSummary = null, string? password = null, int? expectedStepNo = null)
     {
         var detail = await _repo.GetByIdAsync(requestInstanceId);
         if (detail is null)
@@ -260,7 +260,7 @@ public class RequestService : IRequestService
             throw new WorkflowException(409, "Use the typed decide endpoint for this request type.");
 
         var signed = await VerifySignatureAsync(requestInstanceId, actedByUserId, password);
-        return await WorkflowSqlErrors.MapAsync(() => _repo.ApproveAsync(requestInstanceId, actedByUserId, comment, changeSummary, signed));
+        return await WorkflowSqlErrors.MapAsync(() => _repo.ApproveAsync(requestInstanceId, actedByUserId, comment, changeSummary, signed, expectedStepNo));
     }
 
     public async Task<RequestClosedResult?> RejectAsync(int requestInstanceId, int actedByUserId, string reason, string? password = null)
@@ -389,9 +389,14 @@ public class RequestService : IRequestService
     public Task<IEnumerable<OldVersionRequest>> GetOnOldVersionsAsync(int? requestTypeId)
         => _repo.GetOnOldVersionsAsync(requestTypeId);
 
+    /// <summary>
+    /// A move that would leave nothing to sign approves the request, so the database refuses it unless
+    /// <see cref="MoveVersionRequest.ConfirmClose"/> says the caller means it (QA3 WF-10) — and then
+    /// applies what the approval does.
+    /// </summary>
     public Task<MoveVersionResult?> MoveToVersionAsync(int requestInstanceId, MoveVersionRequest request, int actedByUserId)
         => WorkflowSqlErrors.MapAsync(() =>
-            _repo.MoveToVersionAsync(requestInstanceId, request.TargetWorkflowDefinitionId, actedByUserId, request.Reason));
+            _repo.MoveToVersionAsync(requestInstanceId, request.TargetWorkflowDefinitionId, actedByUserId, request.Reason, request.ConfirmClose));
 
     /// <summary>
     /// The frozen signature image for a step — behind the SAME visibility rule as the request itself,
@@ -486,8 +491,9 @@ public class RequestService : IRequestService
     /*
      * THE TWO REVERSALS. Neither checks a permission and neither re-checks a rule.
      *
-     * Who may retract (the last signer, same UTC day, their own signature) and who may reopen (the
-     * General Manager and the Owner, together) are decided by the procedures, in the same way and
+     * Who may retract (the last signer, same Beirut day, their own signature, a closed request) and who
+     * may reopen (the General Manager and the Owner: two people, each signing) are decided by the
+     * procedures, in the same way and
      * for the same reason as approve and reject: the database is the single authority on who may act
      * on a request, and a second copy of the rule in C# would drift from it.
      *
@@ -510,7 +516,10 @@ public class RequestService : IRequestService
             actedByUserId,
             password,
             await RetractNeedsSignatureAsync(requestInstanceId, actedByUserId),
-            "Retracting this decision must be signed with your password.");
+            "Retracting this decision must be signed with your password.",
+            // 400, NOT 401 — the same reason as a withdrawal: the client signs a user OUT on a 401,
+            // and a mistyped password is not an expired session.
+            failureStatus: 400);
 
         return await WorkflowSqlErrors.MapAsync(() => _repo.RetractLastDecisionAsync(requestInstanceId, actedByUserId, reason, signed));
     }
@@ -541,6 +550,22 @@ public class RequestService : IRequestService
         return requirement?.SignatureRequired ?? false;
     }
 
-    public Task<ReopenResult?> ReopenAsync(int requestInstanceId, int actedByUserId, string reason)
-        => WorkflowSqlErrors.MapAsync(() => _repo.ReopenAsync(requestInstanceId, actedByUserId, reason));
+    /// <summary>
+    /// EACH HALF IS SIGNED (QA3 WF-14). Reopening puts a closed request — often one whose money or
+    /// leave already happened — back in flight, so the General Manager and the Owner each prove who
+    /// they are with their own password; the procedure refuses an unsigned half, so this cannot be
+    /// skipped by a caller that sends none. Verified BEFORE the procedure runs: a wrong password
+    /// writes nothing (400, not 401 — see RetractLastDecisionAsync).
+    /// </summary>
+    public async Task<ReopenResult?> ReopenAsync(int requestInstanceId, int actedByUserId, string reason, string? password = null)
+    {
+        var signed = await VerifyPasswordAsync(
+            actedByUserId,
+            password,
+            required: true,
+            "Reopening a closed request must be signed with your password.",
+            failureStatus: 400);
+
+        return await WorkflowSqlErrors.MapAsync(() => _repo.ReopenAsync(requestInstanceId, actedByUserId, reason, signed));
+    }
 }

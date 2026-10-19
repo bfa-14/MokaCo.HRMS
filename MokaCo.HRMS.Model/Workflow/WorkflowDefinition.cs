@@ -93,6 +93,13 @@ public class ActiveDefinitionStep
     public string Name { get; set; } = string.Empty;
     public string ApproverType { get; set; } = string.Empty;
     public int? ApproverRoleId { get; set; }
+
+    /// <summary>
+    /// The approving role's name for a Role step (QA3 WEB-12) — the procedure always returned it, but without
+    /// this property it was dropped here and the requester's preview could only say "A role".
+    /// </summary>
+    public string? ApproverRoleName { get; set; }
+
     public bool IsMandatory { get; set; }
 
     /// <summary>For a LineManager step: how many levels up the reporting line it climbs (1 = direct manager).</summary>

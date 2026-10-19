@@ -66,8 +66,12 @@ public interface IRequestService
     /// (leave, advances, adjustments, overtime, swaps, hires, separations, exit permissions…) is
     /// refused with a <see cref="WorkflowException"/> 409 telling the caller to use its typed endpoint
     /// — the generic engine call would close the request without ever applying them.
+    ///
+    /// <paramref name="expectedStepNo"/> is the step the caller was deciding (QA3 WF-2): when somebody
+    /// else moved the request on in the meantime the database refuses with "This step was decided a
+    /// moment ago — reload." instead of signing the NEXT step on the strength of a stale screen.
     /// </summary>
-    Task<ApproveResult?> ApproveAsync(int requestInstanceId, int actedByUserId, string? comment, string? changeSummary = null, string? password = null);
+    Task<ApproveResult?> ApproveAsync(int requestInstanceId, int actedByUserId, string? comment, string? changeSummary = null, string? password = null, int? expectedStepNo = null);
     Task<RequestClosedResult?> RejectAsync(int requestInstanceId, int actedByUserId, string reason, string? password = null);
     /// <summary>
     /// Cancels an open request. Refused with a <see cref="WorkflowException"/> 403 unless the caller
@@ -141,11 +145,16 @@ public interface IRequestService
     Task<DeputyDelegationResult?> DelegateStepToDeputyAsync(
         int requestInstanceId, int stepNo, int actedByUserId, bool undo);
 
-    /// <summary>Reopens a rejected/cancelled request. The database refuses an approved one and demands a reason; that comes back as a WorkflowException.</summary>
+    /// <summary>
+    /// HR's single-signature reopen — for a CANCELLED request only (QA3 WF-14). A rejected or approved
+    /// one has decisions that stand: its last signer retracts the same day, after that the General
+    /// Manager and the Owner reopen it together. The database refuses the rest with that sentence.
+    /// </summary>
     Task<ApproveResult?> ReopenClosedAsync(int requestInstanceId, int actedByUserId, string reason);
 
     /// <summary>
-    /// The last signer takes their own decision back, same UTC day. NO permission is checked here —
+    /// The last signer takes their own decision back, the same Beirut day, on a request it CLOSED
+    /// (approved or rejected; an open one is changed by withdrawing). NO permission is checked here —
     /// the database decides, exactly as it does for approve and reject, and its refusal (wrong
     /// person, wrong day, already consumed) comes back as a WorkflowException with the message
     /// intact. That message is the entire value of the refusal, so nothing may replace it.
@@ -160,7 +169,12 @@ public interface IRequestService
     /// <summary>
     /// One half of a GM + Owner reopen. Answers 'AwaitingSecond' when this was the first signature —
     /// nothing has moved — or 'Reopened' with the request's new standing when the other role
-    /// completed it. The database owns the role check and refuses anybody else.
+    /// completed it. The database owns the role check and refuses anybody else, including the person
+    /// who signed the first half.
     /// </summary>
-    Task<ReopenResult?> ReopenAsync(int requestInstanceId, int actedByUserId, string reason);
+    /// <param name="password">
+    /// ALWAYS required (QA3 WF-14): each half is a signed act. Verified here before anything runs —
+    /// a missing or wrong one is a 400 that changes nothing — and passed on as the signed fact.
+    /// </param>
+    Task<ReopenResult?> ReopenAsync(int requestInstanceId, int actedByUserId, string reason, string? password = null);
 }
