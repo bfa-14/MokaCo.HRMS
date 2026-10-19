@@ -49,7 +49,7 @@ public class RosterSubmitGuardTests
         var repo = new Mock<IRosterApprovalRepository>(MockBehavior.Strict);
         var support = new Mock<IWorkflowSupportService>();
         support.Setup(s => s.GetEmployeeByUserIdAsync(20)).ReturnsAsync((MyEmployee?)null);
-        var service = new RosterApprovalService(repo.Object, support.Object);
+        var service = new RosterApprovalService(repo.Object, support.Object, Mock.Of<IRosterService>());
 
         var ex = await Assert.ThrowsAsync<WorkflowException>(() => service.CreateAsync(
             new RosterApprovalCreateRequest { BranchId = 1, MonthDate = new DateTime(2026, 8, 1) }, 20));

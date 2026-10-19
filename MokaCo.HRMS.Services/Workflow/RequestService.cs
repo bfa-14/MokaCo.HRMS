@@ -1,6 +1,7 @@
 using MokaCo.HRMS.Model.Workflow;
 using MokaCo.HRMS.Repository.Security;
 using MokaCo.HRMS.Repository.Workflow;
+using MokaCo.HRMS.Services.Attendance;
 using MokaCo.HRMS.Services.Auth;
 
 namespace MokaCo.HRMS.Services.Workflow;
@@ -19,13 +20,27 @@ public class RequestService : IRequestService
     private readonly IRequestRepository _repo;
     private readonly IUserRepository _users;
     private readonly IPasswordHasher _hasher;
+    private readonly IRosterService? _roster;
 
-    public RequestService(IRequestRepository repo, IUserRepository users, IPasswordHasher hasher)
+    public RequestService(IRequestRepository repo, IUserRepository users, IPasswordHasher hasher, IRosterService? roster = null)
     {
         _repo = repo;
         _users = users;
         _hasher = hasher;
+        _roster = roster;
     }
+
+    /* ---- QA3 ROS-2 (unit C, roster) - THE ROSTER HOOK. When an approval CLOSES a ROSTER_APPROVAL request, its month is
+       active from now on: the days already processed against the draft are derived again from the approved roster.
+       Here, after the approve procedure committed - not inside it, whose callers wrap it in INSERT...EXEC. The roster
+       service never throws from this (a failure is logged and the nightly safety net re-derives the month). Any other
+       request type, or an approval that did not close the request, is left alone. ---- */
+    private Task RederiveRosterIfApprovedAsync(int requestInstanceId, string? requestTypeCode, string? status)
+        => _roster is not null
+           && string.Equals(status, "Approved", StringComparison.OrdinalIgnoreCase)
+           && (requestTypeCode is null || string.Equals(requestTypeCode, "ROSTER_APPROVAL", StringComparison.OrdinalIgnoreCase))
+            ? _roster.RederiveApprovedRequestAsync(requestInstanceId)
+            : Task.CompletedTask;
 
     /// <summary>
     /// THE SIGNATURE. Proves the person committing the decision is the account holder, for a step or
@@ -273,7 +288,9 @@ public class RequestService : IRequestService
             throw new WorkflowException(409, "Use the typed decide endpoint for this request type.");
 
         var signed = await VerifySignatureAsync(requestInstanceId, actedByUserId, password);
-        return await WorkflowSqlErrors.MapAsync(() => _repo.ApproveAsync(requestInstanceId, actedByUserId, comment, changeSummary, signed, expectedStepNo));
+        var result = await WorkflowSqlErrors.MapAsync(() => _repo.ApproveAsync(requestInstanceId, actedByUserId, comment, changeSummary, signed, expectedStepNo));
+        await RederiveRosterIfApprovedAsync(requestInstanceId, detail.Header.RequestTypeCode, result?.Status);   // QA3 ROS-2 (unit C)
+        return result;
     }
 
     public async Task<RequestClosedResult?> RejectAsync(int requestInstanceId, int actedByUserId, string reason, string? password = null)
@@ -405,11 +422,15 @@ public class RequestService : IRequestService
     /// <summary>
     /// A move that would leave nothing to sign approves the request, so the database refuses it unless
     /// <see cref="MoveVersionRequest.ConfirmClose"/> says the caller means it (QA3 WF-10) — and then
-    /// applies what the approval does.
+    /// applies what the approval does. QA3 ROS-2 (unit C): a move that closes a roster approval re-derives its month.
     /// </summary>
-    public Task<MoveVersionResult?> MoveToVersionAsync(int requestInstanceId, MoveVersionRequest request, int actedByUserId)
-        => WorkflowSqlErrors.MapAsync(() =>
+    public async Task<MoveVersionResult?> MoveToVersionAsync(int requestInstanceId, MoveVersionRequest request, int actedByUserId)
+    {
+        var result = await WorkflowSqlErrors.MapAsync(() =>
             _repo.MoveToVersionAsync(requestInstanceId, request.TargetWorkflowDefinitionId, actedByUserId, request.Reason, request.ConfirmClose));
+        await RederiveRosterIfApprovedAsync(requestInstanceId, null, result?.Status);
+        return result;
+    }
 
     /// <summary>
     /// The frozen signature image for a step — behind the SAME visibility rule as the request itself,

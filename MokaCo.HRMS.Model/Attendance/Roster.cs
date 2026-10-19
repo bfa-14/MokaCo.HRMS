@@ -42,6 +42,9 @@ public class RosterGap
     public int EmployeeId { get; set; }
     public string FullName { get; set; } = string.Empty;
     public DateTime WorkDate { get; set; }
+
+    /// <summary>QA3 (ROS-8): the employee's branch ON that day — a transferred employee's gaps belong to the branch of the day.</summary>
+    public int? BranchId { get; set; }
 }
 
 /// <summary>
@@ -103,10 +106,44 @@ public class RosterGenerateResult
     public int RowsInserted { get; set; }
 }
 
-/// <summary>How many employees a bulk generation touched (one call per employee under the hood).</summary>
+/// <summary>How many employees a bulk generation touched (one call per employee under the hood), and the rows it wrote.</summary>
 public class RosterBulkResult
 {
     public int EmployeesProcessed { get; set; }
+
+    /// <summary>QA3 (ROS-13): the rows written for all of them together.</summary>
+    public int RowsInserted { get; set; }
+}
+
+/// <summary>
+/// QA3 (ROS-4 / LEV-5): one employee-day of APPROVED leave, for the roster page — read from the leave requests
+/// (FromDate .. the last day the approval covers), not from the ledger, which books a month's leave on one date.
+/// </summary>
+public class RosterLeaveDay
+{
+    public int EmployeeId { get; set; }
+
+    /// <summary>The day. Arrives as a full timestamp; compare it as 'yyyy-MM-dd'.</summary>
+    public DateTime Date { get; set; }
+
+    /// <summary>1.00 a whole day, 0.50 a half day.</summary>
+    public decimal DaysOnLeave { get; set; }
+}
+
+/// <summary>QA3 (REL-16): how many employee-days a "Re-derive month" derived again.</summary>
+public class RosterRederiveResult
+{
+    public int DaysRederived { get; set; }
+}
+
+/// <summary>QA3 (ROS-2): what the nightly safety net re-derived — months approved since they were last derived.</summary>
+public class RosterRederivePendingResult
+{
+    public int MonthsRederived { get; set; }
+    public int MonthsFailed { get; set; }
+
+    /// <summary>The first failure, branch and month first. Null when none failed.</summary>
+    public string? FirstError { get; set; }
 }
 
 /// <summary>

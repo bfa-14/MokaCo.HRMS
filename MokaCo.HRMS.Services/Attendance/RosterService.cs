@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using MokaCo.HRMS.Model.Attendance;
 using MokaCo.HRMS.Repository.Attendance;
 using MokaCo.HRMS.Services.Workflow;
@@ -17,7 +18,13 @@ namespace MokaCo.HRMS.Services.Attendance;
 public class RosterService : IRosterService
 {
     private readonly IRosterRepository _repo;
-    public RosterService(IRosterRepository repo) => _repo = repo;
+    private readonly ILogger<RosterService>? _logger;
+
+    public RosterService(IRosterRepository repo, ILogger<RosterService>? logger = null)
+    {
+        _repo = repo;
+        _logger = logger;
+    }
 
     public Task<IEnumerable<ShiftAssignment>> GetAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId = null, int? callerUserId = null)
         => _repo.GetByDateRangeAsync(fromDate, toDate, employeeId, branchId, callerUserId);
@@ -28,36 +35,71 @@ public class RosterService : IRosterService
        record. The procedure's refusal travels up as a 409 with the sentence intact; the C# side
        re-checks nothing, so the database stays the single authority on what may change. */
 
-    public Task<int> SetDayAsync(RosterDayRequest request)
+    public Task<int> SetDayAsync(RosterDayRequest request, int? callerUserId)
         => WorkflowSqlErrors.MapAsync(() =>
-            _repo.UpsertDayAsync(request.EmployeeId, request.WorkDate, request.ShiftId, request.IsRestDay));
+            _repo.UpsertDayAsync(request.EmployeeId, request.WorkDate, request.ShiftId, request.IsRestDay, callerUserId));
 
-    public Task DeleteAsync(int shiftAssignmentId)
-        => WorkflowSqlErrors.MapAsync(async () => { await _repo.DeleteAsync(shiftAssignmentId); return true; });
+    public Task DeleteAsync(int shiftAssignmentId, int? callerUserId)
+        => WorkflowSqlErrors.MapAsync(async () => { await _repo.DeleteAsync(shiftAssignmentId, callerUserId); return true; });
 
-    public Task<RosterGenerateResult> GenerateAsync(RosterGenerateRequest request)
+    public Task<RosterGenerateResult> GenerateAsync(RosterGenerateRequest request, int? callerUserId)
         => WorkflowSqlErrors.MapAsync(() => _repo.GenerateRangeAsync(request.EmployeeId, request.FromDate, request.ToDate,
-            request.ShiftId, request.Weekdays, request.Overwrite));
+            request.ShiftId, request.Weekdays, request.Overwrite, callerUserId, request.BranchId));
 
     /// <summary>
     /// Rosters a whole team in one action. The procedure takes a comma-separated list rather than a
     /// table type, so the ids are flattened here — the repository stays a dumb parameter-passer.
     /// </summary>
-    public Task<RosterBulkResult> GenerateBulkAsync(RosterGenerateBulkRequest request)
+    public Task<RosterBulkResult> GenerateBulkAsync(RosterGenerateBulkRequest request, int? callerUserId)
         => WorkflowSqlErrors.MapAsync(() => _repo.GenerateRangeBulkAsync(string.Join(',', request.EmployeeIds), request.FromDate,
-            request.ToDate, request.ShiftId, request.Weekdays, request.Overwrite));
+            request.ToDate, request.ShiftId, request.Weekdays, request.Overwrite, callerUserId, request.BranchId));
 
-    /// <summary>Copies a month WEEKDAY-ALIGNED — a Monday shift lands on a Monday, not on the same date number.</summary>
-    public Task<RosterGenerateResult> CopyPeriodAsync(RosterCopyPeriodRequest request)
+    /// <summary>Copies a month WEEKDAY-ALIGNED — a Monday shift lands on a Monday, not on the same date number. One branch (QA3 ROS-3).</summary>
+    public Task<RosterGenerateResult> CopyPeriodAsync(RosterCopyPeriodRequest request, int? callerUserId)
         => WorkflowSqlErrors.MapAsync(() =>
-            _repo.CopyPeriodAsync(request.SourceYearMonth, request.TargetYearMonth, request.EmployeeId, request.Overwrite));
+            _repo.CopyPeriodAsync(request.SourceYearMonth, request.TargetYearMonth, request.EmployeeId, request.Overwrite,
+                request.BranchId, callerUserId));
 
-    public Task<RosterGenerateResult> ApplyPatternAsync(RosterApplyPatternRequest request)
+    public Task<RosterGenerateResult> ApplyPatternAsync(RosterApplyPatternRequest request, int? callerUserId)
         => WorkflowSqlErrors.MapAsync(() =>
-            _repo.ApplyPatternForMonthAsync(request.YearMonth, request.EmployeeId, request.Overwrite));
+            _repo.ApplyPatternForMonthAsync(request.YearMonth, request.EmployeeId, request.Overwrite, request.BranchId, callerUserId));
 
-    public Task<IEnumerable<RosterGap>> GetGapsAsync(DateTime fromDate, DateTime toDate, int? callerUserId = null)
-        => _repo.GetGapsAsync(fromDate, toDate, callerUserId);
+    public Task<IEnumerable<RosterGap>> GetGapsAsync(DateTime fromDate, DateTime toDate, int? callerUserId, int? branchId)
+        => _repo.GetGapsAsync(fromDate, toDate, callerUserId, branchId);
+
+    public Task<IEnumerable<RosterLeaveDay>> GetLeaveDaysAsync(DateTime fromDate, DateTime toDate, int? branchId, int? callerUserId)
+        => WorkflowSqlErrors.MapAsync(() => _repo.GetLeaveDaysAsync(fromDate, toDate, branchId, callerUserId));
+
+    public Task<RosterMonthStatus?> GetMonthAsync(int branchId, DateTime monthDate, int? callerUserId)
+        => WorkflowSqlErrors.MapAsync(() => _repo.GetMonthAsync(branchId, monthDate, callerUserId));
+
+    public Task<RosterRederiveResult> RederiveMonthAsync(int branchId, int year, int month, int? callerUserId)
+        => WorkflowSqlErrors.MapAsync(async () =>
+            new RosterRederiveResult { DaysRederived = await _repo.RederiveMonthAsync(branchId, year, month, callerUserId) });
+
+    /* THE APPROVAL HOOK (QA3 ROS-2). Approving a roster month used to change only its status: every day processed while
+       the roster was a draft kept the default day it had been judged against, and payroll readiness stayed blocked by
+       rostered days with no record. The month is derived again here, right after the approval committed - outside the
+       approve procedure, whose callers wrap it in INSERT...EXEC. A failure here must not turn a committed approval into
+       an error for the approver, so it is logged and left to the nightly safety net (the month's RederivedAt is still
+       older than its ApprovedAt). */
+    public async Task<bool> RederiveApprovedRequestAsync(int requestInstanceId)
+    {
+        try
+        {
+            await _repo.RederiveForRequestAsync(requestInstanceId);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex,
+                "Roster approval {RequestInstanceId}: the month could not be re-derived now; the nightly run will do it.",
+                requestInstanceId);
+            return false;
+        }
+    }
+
+    public Task<RosterRederivePendingResult> RederivePendingMonthsAsync() => _repo.RederivePendingAsync();
 
     public Task<IEnumerable<ShiftPattern>> GetPatternsAsync(int employeeId) => _repo.GetPatternsAsync(employeeId);
 

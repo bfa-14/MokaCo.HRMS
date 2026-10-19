@@ -138,6 +138,12 @@ public class RosterGenerateRequest
 
     /// <summary>OFF by default, and it matters: leaving it off preserves manual changes HR has already made to days in this range.</summary>
     public bool Overwrite { get; set; }
+
+    /// <summary>
+    /// QA3: optional — only the days the employee belongs to THIS branch (by the branch history), so generating from a
+    /// branch's roster never writes into the days a transferred employee spends elsewhere. Null = every day.
+    /// </summary>
+    public int? BranchId { get; set; }
 }
 
 /// <summary>The same generation for a whole team in one action.</summary>
@@ -149,6 +155,9 @@ public class RosterGenerateBulkRequest
     public int ShiftId { get; set; }
     public string Weekdays { get; set; } = "1111100";
     public bool Overwrite { get; set; }
+
+    /// <summary>QA3: optional — only the days each employee belongs to this branch. Null = every day.</summary>
+    public int? BranchId { get; set; }
 }
 
 /// <summary>
@@ -164,10 +173,16 @@ public class RosterCopyPeriodRequest
     /// <summary>e.g. '2026-07'.</summary>
     public string TargetYearMonth { get; set; } = string.Empty;
 
-    /// <summary>NULL = everyone.</summary>
+    /// <summary>NULL = everyone of the branch.</summary>
     public int? EmployeeId { get; set; }
 
     public bool Overwrite { get; set; }
+
+    /// <summary>
+    /// QA3 (ROS-3): REQUIRED. A copy works on ONE branch: the previous month's rows of the days each employee belonged
+    /// to it, onto the days they belong to it in the target month. Without it the copy used to write every branch.
+    /// </summary>
+    public int? BranchId { get; set; }
 }
 
 /// <summary>Expands employees' saved weekly patterns into real dated roster rows for a month.</summary>
@@ -176,6 +191,21 @@ public class RosterApplyPatternRequest
     public string YearMonth { get; set; } = string.Empty;
     public int? EmployeeId { get; set; }
     public bool Overwrite { get; set; }
+
+    /// <summary>QA3 (ROS-3): REQUIRED — the patterns are applied to the days the employees belong to this branch.</summary>
+    public int? BranchId { get; set; }
+}
+
+/// <summary>
+/// QA3 (REL-16): derive a branch-month's attendance again from its roster as it stands — after a settings change,
+/// say. The days from the 1st to yesterday (Beirut) that have a roster row or a record; paid and manual days are left.
+/// </summary>
+public class RosterRederiveRequest
+{
+    public int BranchId { get; set; }
+
+    /// <summary>'yyyy-MM'.</summary>
+    public string YearMonth { get; set; } = string.Empty;
 }
 
 /// <summary>One day of an employee's default week. Sent as a set of seven by the weekly-patterns editor.</summary>

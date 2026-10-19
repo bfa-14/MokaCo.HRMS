@@ -51,7 +51,8 @@ EXEC dbo.QA_Check 'R3-proc', 'usp_ShiftAssignment_Upsert refuses to edit a day o
 /* ---- R5: copy period (weekday-aligned) August -> September for E4 ----
    Source pattern: Mon-Fri Morning except Wed 2026-08-12 = Evening; Sat+Sun rest. ---- */
 DECLARE @copied TABLE (RowsInserted INT);
-INSERT INTO @copied EXEC attendance.usp_ShiftAssignment_CopyPeriod @SourceYearMonth = '2026-08', @TargetYearMonth = '2026-09', @EmployeeId = @E4, @Overwrite = 0;
+DECLARE @E4Branch INT = (SELECT BranchId FROM hr.EMPLOYEE WHERE EmployeeId = @E4);   -- QA3 (ROS-3): a copy works on one branch
+INSERT INTO @copied EXEC attendance.usp_ShiftAssignment_CopyPeriod @SourceYearMonth = '2026-08', @TargetYearMonth = '2026-09', @EmployeeId = @E4, @Overwrite = 0, @BranchId = @E4Branch;
 SELECT @n = COUNT(*) FROM attendance.SHIFT_ASSIGNMENT WHERE EmployeeId = @E4 AND WorkDate BETWEEN '2026-09-01' AND '2026-09-30';
 SELECT @n2 = COUNT(*) FROM attendance.SHIFT_ASSIGNMENT WHERE EmployeeId = @E4 AND WorkDate BETWEEN '2026-09-01' AND '2026-09-30'
   AND ((DATENAME(WEEKDAY, WorkDate) IN ('Saturday','Sunday') AND NOT (IsRestDay = 1 AND ShiftId IS NULL))
@@ -63,7 +64,7 @@ EXEC dbo.QA_Note 'R5 rule found: usp_ShiftAssignment_CopyPeriod copies the MOST 
 SET @act = CONCAT('Evening rows in September=', @n); SET @pass = CASE WHEN @n = 0 THEN 1 ELSE 0 END;
 EXEC dbo.QA_Check 'R5b', 'copy roster carries one-off exceptions exactly (source Wed 12 Aug = Evening)', 'documented rule: exceptions are not copied (majority per weekday) -> 0 Evening rows', @act, @pass;
 DELETE FROM @copied;
-INSERT INTO @copied EXEC attendance.usp_ShiftAssignment_CopyPeriod @SourceYearMonth = '2026-08', @TargetYearMonth = '2026-09', @EmployeeId = @E4, @Overwrite = 0;
+INSERT INTO @copied EXEC attendance.usp_ShiftAssignment_CopyPeriod @SourceYearMonth = '2026-08', @TargetYearMonth = '2026-09', @EmployeeId = @E4, @Overwrite = 0, @BranchId = @E4Branch;
 SELECT @n = RowsInserted FROM @copied;
 SET @act = CAST(@n AS NVARCHAR(10)); SET @pass = CASE WHEN @n = 0 THEN 1 ELSE 0 END;
 EXEC dbo.QA_Check 'R5c', 'copy roster re-run with Overwrite=0 inserts nothing', '0', @act, @pass;
