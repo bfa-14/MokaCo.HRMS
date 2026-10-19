@@ -55,6 +55,12 @@ public interface IRequestService
     /// <summary>Hands the current step to a named person. The database decides whether the caller may.</summary>
     Task DelegateAsync(int requestInstanceId, int actedByUserId, int toUserId, string reason);
 
+    /// <summary>
+    /// The people the waiting step can be handed to — the picker behind "Hand to someone else" (QA3 WEB-7).
+    /// Empty for a caller who cannot act on the step; 403 for one who cannot see the request at all.
+    /// </summary>
+    Task<IEnumerable<DelegateCandidate>> GetDelegateCandidatesAsync(int requestInstanceId, RequestCaller caller);
+
     /// <summary>Takes a delegated step back — for whoever handed it over. Nothing was signed, so no password.</summary>
     Task ReclaimAsync(int requestInstanceId, int actedByUserId, string? reason);
 

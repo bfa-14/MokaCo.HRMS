@@ -207,6 +207,19 @@ public class RequestService : IRequestService
         });
 
     /// <summary>The database decides whether the caller may hand this step over, and to whom.</summary>
+    public async Task<IEnumerable<DelegateCandidate>> GetDelegateCandidatesAsync(int requestInstanceId, RequestCaller caller)
+    {
+        var detail = await _repo.GetByIdAsync(requestInstanceId);
+        if (detail is null)
+            return Array.Empty<DelegateCandidate>();
+
+        if (!await CanSeeAsync(detail, caller))
+            throw new WorkflowException(403, "You do not have access to this request.");
+
+        // The procedure answers only for someone who may act on the waiting step.
+        return await _repo.GetDelegateCandidatesAsync(requestInstanceId, caller.UserId);
+    }
+
     public Task DelegateAsync(int requestInstanceId, int actedByUserId, int toUserId, string reason)
         => WorkflowSqlErrors.MapAsync<object?>(async () =>
         {

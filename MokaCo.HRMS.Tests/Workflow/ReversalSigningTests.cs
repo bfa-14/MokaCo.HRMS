@@ -18,6 +18,7 @@ namespace MokaCo.HRMS.Tests.Workflow;
 ///   WF-3  — a wrong password on a retract is a 400 (the client signs out on a 401);
 ///   WF-2  — the step the approver was looking at travels to the procedure, and a lost race is a 409;
 ///   WF-10 — a version move that would approve the request travels with its confirmation;
+///   WEB-7  — the "Hand to someone else" picker reads its people behind the request's visibility rule;
 ///   WEB-13 — the hub's type filter has a list any signed-in user may read;
 ///   and the suspicion that a refusal reached the screen glued to the errors raised after it.
 /// </summary>
@@ -212,6 +213,41 @@ public class ReversalSigningTests
             "Reopening a closed request needs the General Manager and the Owner.").StatusCode);
         Assert.Equal(400, WorkflowSqlErrors.MapMessage(
             "A cancelled request is reopened by HR (Reopen request), not by the GM and the Owner.").StatusCode);
+    }
+
+    /* ---- WEB-7: the hand-over picker ---- */
+
+    private static RequestDetail Detail(int id, int raisedBy) => new()
+    {
+        Header = new RequestHeader { RequestInstanceId = id, RequestTypeCode = "ROSTER_APPROVAL", RaisedByUserId = raisedBy },
+        Steps = new List<RequestStep>(),
+        History = new List<SignatureLogEntry>(),
+        Reversals = new List<RequestReversal>(),
+    };
+
+    [Fact]
+    public async Task Delegate_candidates_come_from_the_procedure_for_a_caller_who_can_see_the_request()
+    {
+        _repo.Setup(r => r.GetByIdAsync(9)).ReturnsAsync(Detail(9, raisedBy: 20));
+        _repo.Setup(r => r.GetDelegateCandidatesAsync(9, 20))
+             .ReturnsAsync(new[] { new DelegateCandidate { UserId = 31, Username = "hr2", FullName = "Second HR" } });
+
+        var list = await Service().GetDelegateCandidatesAsync(9, new RequestCaller(20, null, false));
+
+        Assert.Equal(31, Assert.Single(list).UserId);
+    }
+
+    [Fact]
+    public async Task Delegate_candidates_are_refused_to_a_caller_who_cannot_see_the_request()
+    {
+        _repo.Setup(r => r.GetByIdAsync(9)).ReturnsAsync(Detail(9, raisedBy: 77));
+        _repo.Setup(r => r.GetPendingForUserAsync(20)).ReturnsAsync(Array.Empty<InboxItem>());
+
+        var ex = await Assert.ThrowsAsync<WorkflowException>(
+            () => Service().GetDelegateCandidatesAsync(9, new RequestCaller(20, null, false)));
+
+        Assert.Equal(403, ex.StatusCode);
+        _repo.Verify(r => r.GetDelegateCandidatesAsync(It.IsAny<int>(), It.IsAny<int>()), Times.Never);
     }
 
     /* ---- WEB-13: the hub's type filter ---- */

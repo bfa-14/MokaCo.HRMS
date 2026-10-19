@@ -47,6 +47,12 @@ public interface IRequestRepository
     /// <summary>Hands the current step to a named person (usp_Request_Delegate); the request does not advance.</summary>
     Task DelegateAsync(int requestInstanceId, int actedByUserId, int toUserId, string reason);
 
+    /// <summary>
+    /// Who the waiting step can be handed to, for <paramref name="forUserId"/> (usp_Request_GetDelegateCandidates).
+    /// Empty when that user cannot act on the step.
+    /// </summary>
+    Task<IEnumerable<DelegateCandidate>> GetDelegateCandidatesAsync(int requestInstanceId, int forUserId);
+
     /// <summary>Takes a delegated step back (usp_Request_ReclaimDelegation) — only for whoever handed it over.</summary>
     Task ReclaimDelegationAsync(int requestInstanceId, int actedByUserId, string? reason);
 

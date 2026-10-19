@@ -43,6 +43,9 @@
    WF-15 a reversal (retract, the completing half of a reopen, HR's reopen) removes the request's earlier outbox rows,
          so the closing mail of its next outcome is queued again instead of being suppressed by the one already sent
          (and a queued "approved" mail of a decision that no longer stands is never sent).
+   WEB-7 NEW workflow.usp_Request_GetDelegateCandidates(@RequestInstanceId, @ForUserId): the people the waiting step can
+         be handed to (usp_Request_Delegate's own rules), for the "Hand to someone else" picker; empty for anybody who
+         cannot act on the step.
    CON-1 usp_ExitPermission_WithdrawDecision committed the restored minutes even when the engine refused, and returned
          the engine's row as its first result set: the engine is now captured with INSERT...EXEC (no row = nothing
          done), and the engine restores the minutes itself, under its lock.
@@ -1654,6 +1657,43 @@ BEGIN
     FROM workflow.REQUEST_INSTANCE r
     WHERE r.RequestInstanceId = @RequestInstanceId;
     RETURN 0;
+END;
+GO
+
+/* ============================================================================
+   12b. WEB-7: who the waiting step can be handed to - the picker behind "Hand to someone else", which used to send
+        user 0 and always failed. NEW workflow.usp_Request_GetDelegateCandidates.
+   ============================================================================ */
+CREATE OR ALTER PROCEDURE workflow.usp_Request_GetDelegateCandidates
+    @RequestInstanceId INT,
+    @ForUserId         INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    /* only somebody who may act on the waiting step gets anybody back: the list is the picker for THEIR hand-over */
+    DECLARE @StepInstId INT, @EmployeeId INT;
+    SELECT @StepInstId = si.RequestStepInstanceId, @EmployeeId = ri.EmployeeId
+    FROM workflow.REQUEST_INSTANCE ri
+    JOIN workflow.REQUEST_STEP_INSTANCE si
+      ON si.RequestInstanceId = ri.RequestInstanceId AND si.StepNo = ri.CurrentStepNo
+    WHERE ri.RequestInstanceId = @RequestInstanceId AND ri.[Status] IN ('Pending', 'OnHold');
+
+    IF @StepInstId IS NOT NULL AND workflow.fn_CanUserActOnStep(@StepInstId, @ForUserId) = 0
+        SET @StepInstId = NULL;          -- same shape, no rows
+
+    /* the rules usp_Request_Delegate applies: an active account, not the caller, not the person the request is about */
+    SELECT u.UserId, u.Username, e.FullName
+    FROM security.[USER] u
+    OUTER APPLY (SELECT TOP 1 x.FullName
+                 FROM hr.EMPLOYEE x
+                 WHERE x.UserId = u.UserId AND ISNULL(x.IsDeleted, 0) = 0
+                 ORDER BY x.EmployeeId) e
+    WHERE @StepInstId IS NOT NULL
+      AND u.IsActive = 1
+      AND u.UserId <> @ForUserId
+      AND NOT EXISTS (SELECT 1 FROM hr.EMPLOYEE r WHERE r.EmployeeId = @EmployeeId AND r.UserId = u.UserId)
+    ORDER BY ISNULL(e.FullName, u.Username), u.UserId;
 END;
 GO
 

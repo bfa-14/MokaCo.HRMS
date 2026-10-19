@@ -235,6 +235,28 @@ public class RequestsController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Who the waiting step can be handed to — the picker behind "Hand to someone else" (QA3 WEB-7). An empty
+    /// array is the normal answer for anybody who cannot act on the step, exactly like the decisions list.
+    /// </summary>
+    [HttpGet("{id:int}/delegate-candidates")]
+    public async Task<IActionResult> DelegateCandidates(int id)
+    {
+        var caller = new RequestCaller(
+            User.UserId(),
+            await ResolveEmployeeIdAsync(),
+            User.HasPermission("REQUEST_VIEW_ALL"));
+
+        try
+        {
+            return Ok(await _requests.GetDelegateCandidatesAsync(id, caller));
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
     /// <summary>Hands the current step to a named person. They decide instead; the request does not advance.</summary>
     [HttpPost("{id:int}/delegate")]
     public async Task<IActionResult> Delegate(int id, [FromBody] DelegateRequest request)

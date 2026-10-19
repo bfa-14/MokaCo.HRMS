@@ -185,6 +185,15 @@ public class RequestRepository : IRequestRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    public async Task<IEnumerable<DelegateCandidate>> GetDelegateCandidatesAsync(int requestInstanceId, int forUserId)
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<DelegateCandidate>(
+            "workflow.usp_Request_GetDelegateCandidates",
+            new { RequestInstanceId = requestInstanceId, ForUserId = forUserId },
+            commandType: CommandType.StoredProcedure);
+    }
+
     /// <summary>Takes a delegated step back. Nothing was signed, so this asks for no password.</summary>
     public async Task ReclaimDelegationAsync(int requestInstanceId, int actedByUserId, string? reason)
     {

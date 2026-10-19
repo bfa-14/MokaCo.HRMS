@@ -1,4 +1,4 @@
-/* QA3 workflow scenario (wf_approve_rules): handoff 7.4: overruling an advisory rejection at the final step needs a note */
+/* QA3 workflow scenario (wf_approve_rules): handoff 7.4: overruling an advisory rejection at the final step needs a note; WEB-7: who a step can be handed to */
 /* Runs on a real dev database (MokaCo_HRMS_Dev) or a stand-in: every phase is ONE transaction that is
    rolled back at the end of its phase (a refusal raised under XACT_ABORT dooms the transaction it is caught in, so a
    phase checks at most one refusal, last); rows are seeded with a 'QA3 ' prefix. A wrong result RAISERRORs (run with sqlcmd -I -b);
@@ -163,6 +163,28 @@ DECLARE @r TABLE (RequestInstanceId INT, [Status] VARCHAR(20), CurrentStepNo INT
 INSERT INTO @r EXEC workflow.usp_Request_Approve @RequestInstanceId = @rid, @ActedByUserId = @owner, @Comment = N'QA3 the branch needs it', @SignedWithPassword = 1;
 SET @ok = CASE WHEN (SELECT [Status] FROM @r) = 'Approved' AND (SELECT ClosedReason FROM @r) LIKE N'%overruling a rejection at step 1%' THEN 1 ELSE 0 END;
 EXEC #QA3_Check @ok, N'with a note the final approval overrules the advisory rejection and says so';
+IF @@TRANCOUNT > 0 ROLLBACK;
+GO
+/* ---------------- phase 3 (WEB-7): the hand-over picker lists active people other than the caller and the employee,
+                    and nothing at all for somebody who cannot act on the step ---------------- */
+BEGIN TRAN;
+EXEC #QA3_Seed;
+DECLARE @hr1 INT = (SELECT v FROM #ctx WHERE k = 'hr1'), @hr2 INT = (SELECT v FROM #ctx WHERE k = 'hr2'),
+        @gm INT = (SELECT v FROM #ctx WHERE k = 'gm'), @uEmp INT = (SELECT v FROM #ctx WHERE k = 'emp'),
+        @emp INT = (SELECT v FROM #ctx WHERE k = 'empId'), @rHR INT = (SELECT v FROM #ctx WHERE k = 'rHR'), @rOwner INT = (SELECT v FROM #ctx WHERE k = 'rOwner');
+DECLARE @def INT, @rid INT, @ok BIT;
+EXEC #QA3_Chain 'ROSTER_APPROVAL', @rHR, @rOwner, @DefId = @def OUTPUT;
+EXEC #QA3_NewRequest 'ROSTER_APPROVAL', @emp, @hr1, @rid OUTPUT;
+UPDATE security.[USER] SET IsActive = 0 WHERE UserId = (SELECT v FROM #ctx WHERE k = 'mgr');
+DECLARE @c TABLE (UserId INT, Username NVARCHAR(100), FullName NVARCHAR(150));
+INSERT INTO @c EXEC workflow.usp_Request_GetDelegateCandidates @RequestInstanceId = @rid, @ForUserId = @hr1;
+SET @ok = CASE WHEN EXISTS (SELECT 1 FROM @c WHERE UserId = @hr2) AND EXISTS (SELECT 1 FROM @c WHERE UserId = @gm)
+                AND NOT EXISTS (SELECT 1 FROM @c WHERE UserId IN (@hr1, @uEmp, (SELECT v FROM #ctx WHERE k = 'mgr'))) THEN 1 ELSE 0 END;
+EXEC #QA3_Check @ok, N'the step''s approver gets the active people other than themselves and the employee';
+DELETE FROM @c;
+INSERT INTO @c EXEC workflow.usp_Request_GetDelegateCandidates @RequestInstanceId = @rid, @ForUserId = @gm;
+SET @ok = CASE WHEN NOT EXISTS (SELECT 1 FROM @c) THEN 1 ELSE 0 END;
+EXEC #QA3_Check @ok, N'somebody who cannot act on the step gets nobody';
 IF @@TRANCOUNT > 0 ROLLBACK;
 GO
 PRINT 'ok wf_approve_rules';
