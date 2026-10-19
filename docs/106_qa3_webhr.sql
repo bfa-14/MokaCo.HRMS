@@ -47,7 +47,7 @@
    QA3 WEB-2   THE SHIFT-SWAP FORM LISTED NOBODY FOR STAFF (it read the branch-scoped employee list).
                hr.usp_Employee_GetSwapCounterparts: the requester and the active colleagues of their
                branch in the same position, for the requester themself, somebody who sees them, or
-               somebody who may raise requests for others. GET /api/shift-swaps/counterparts.
+               somebody who may raise requests for others. GET /api/employees/{id}/swap-counterparts.
    Suspicion   DEACTIVATING A BRANCH THAT STILL HAS PEOPLE was allowed. hr.usp_Branch_SetActive and
                hr.usp_Branch_Update refuse it and say how many active employees (including one transferred
                in on a later date) still belong to it.
