@@ -76,7 +76,7 @@ public sealed class BookingLivePublisher : IBookingLivePublisher
         status = b.Status,
         refundStatus = b.RefundStatus,
         paid = b.PaidAmount,
-        balance = b.BalanceDue,
+        balance = BookingBalance.Owed(b.Status, b.BalanceDue),     // a Cancelled / No-show booking owes nothing (QA3 BKG-8)
         changedAt = DateTimeOffset.UtcNow,
     };
 }

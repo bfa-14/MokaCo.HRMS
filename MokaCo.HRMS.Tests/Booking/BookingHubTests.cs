@@ -111,7 +111,11 @@ public class BookingHubTests
             ["ref", "status", "refundStatus", "paid", "balance", "changedAt"],
             guest.RootElement.EnumerateObject().Select(p => p.Name));
         Assert.Equal("Due", guest.RootElement.GetProperty("refundStatus").GetString());
-        Assert.Equal(48m, guest.RootElement.GetProperty("balance").GetDecimal());
+        Assert.Equal(0m, guest.RootElement.GetProperty("balance").GetDecimal());     // a cancelled booking owes nothing (QA3 BKG-8)
         Assert.DoesNotContain("Rami", guest.RootElement.GetRawText());               // the guest channel names nobody
+
+        booking.Status = "Confirmed";
+        using var live = JsonDocument.Parse(JsonSerializer.Serialize(BookingLivePublisher.GuestMessage(booking), options));
+        Assert.Equal(48m, live.RootElement.GetProperty("balance").GetDecimal());
     }
 }

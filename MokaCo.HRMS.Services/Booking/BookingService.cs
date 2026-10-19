@@ -95,7 +95,7 @@ public class BookingService : IBookingService
         DiscountAmount = booking.DiscountAmount,
         Deposit = booking.DepositDue,
         Paid = booking.PaidAmount,
-        Balance = booking.BalanceDue,
+        Balance = BookingBalance.Owed(booking.Status, booking.BalanceDue),     // QA3 BKG-8
         RefundAmount = booking.RefundAmount,
         RefundStatus = booking.RefundStatus,
         CancelledBy = booking.CancelledBy,
@@ -124,8 +124,14 @@ public class BookingService : IBookingService
     public Task<BookingCreated?> CreateManuallyAsync(BookingCreateRequest request, int createdByUserId)
         => _bookings.CreateAsync(request, source: "Manual", createdByUserId);
 
-    public Task<BookingRange> GetForRangeAsync(DateTime fromDate, DateTime toDate, int? roomId, string? status)
-        => _bookings.GetForRangeAsync(fromDate, toDate, roomId, status);
+    /// <summary>A Cancelled or No-show booking owes nothing (QA3 BKG-8): its balance leaves as 0.</summary>
+    public async Task<BookingRange> GetForRangeAsync(DateTime fromDate, DateTime toDate, int? roomId, string? status)
+    {
+        var range = await _bookings.GetForRangeAsync(fromDate, toDate, roomId, status);
+        foreach (var row in range.Bookings)
+            row.BalanceDue = BookingBalance.Owed(row.Status, row.BalanceDue);
+        return range;
+    }
 
     /// <summary>
     /// The receipt is read for its payment lines and for the reference; the row itself comes from
@@ -142,6 +148,7 @@ public class BookingService : IBookingService
         if (booking is null)
             return null;
 
+        booking.BalanceDue = BookingBalance.Owed(booking.Status, booking.BalanceDue);     // QA3 BKG-8
         return new BookingStaffDetail { Booking = booking, Payments = receipt.Payments };
     }
 
@@ -216,8 +223,14 @@ public class BookingService : IBookingService
         return (null, string.Empty, "Say how the money went back: method is a payment method id or name.");
     }
 
-    public Task<BookingReceipt> GetReceiptAsync(int bookingId)
-        => _bookings.GetReceiptAsync(bookingId);
+    /// <summary>The receipt's footer is PAID or BALANCE DUE; a Cancelled or No-show booking is never "due" (QA3 BKG-8).</summary>
+    public async Task<BookingReceipt> GetReceiptAsync(int bookingId)
+    {
+        var receipt = await _bookings.GetReceiptAsync(bookingId);
+        if (receipt.Header is { } header)
+            header.BalanceDue = BookingBalance.Owed(header.Status, header.BalanceDue);
+        return receipt;
+    }
 
     public Task<BlockCreated?> CreateBlockAsync(BlockCreateRequest request, int createdByUserId)
         => _bookings.CreateBlockAsync(request, createdByUserId);
