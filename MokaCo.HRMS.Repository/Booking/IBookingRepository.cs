@@ -68,4 +68,7 @@ public interface IBookingRepository
     Task DeleteBlockAsync(int blockId);
 
     Task<BookingReport> GetReportAsync(DateTime fromDate, DateTime toDate, string groupBy);
+
+    /// <summary>The sender / SMTP account / template of the claimed outbox rows that are booking mail (core.usp_Email_GetBookingSenders).</summary>
+    Task<IReadOnlyList<BookingMailSender>> GetMailSendersAsync(IReadOnlyCollection<int> emailIds);
 }

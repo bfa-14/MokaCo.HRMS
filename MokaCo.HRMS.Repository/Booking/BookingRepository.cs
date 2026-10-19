@@ -273,6 +273,24 @@ public class BookingRepository : IBookingRepository
         };
     }
 
+    /// <summary>
+    /// The booking mail's own sender, SMTP account and template for the outbox rows the e-mail worker has
+    /// just claimed (core.usp_Email_GetBookingSenders, docs/104 — QA3 BKG-7). Rows that are not booking
+    /// mail are not returned.
+    /// </summary>
+    public async Task<IReadOnlyList<BookingMailSender>> GetMailSendersAsync(IReadOnlyCollection<int> emailIds)
+    {
+        if (emailIds.Count == 0)
+            return [];
+
+        using var db = _factory.Create();
+        var rows = await db.QueryAsync<BookingMailSender>(
+            "core.usp_Email_GetBookingSenders",
+            new { EmailIds = string.Join(',', emailIds.Distinct()) },
+            commandType: CommandType.StoredProcedure);
+        return rows.ToList();
+    }
+
     /// <summary>The list-to-string join the procedure's STRING_SPLIT needs. EMPTY BECOMES NULL — null is what "no add-ons" means to the procedure.</summary>
     private static string? JoinAddonIds(List<int>? addonIds)
         => addonIds is null || addonIds.Count == 0
