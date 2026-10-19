@@ -222,6 +222,7 @@ public class SessionEndTests
 
         Assert.Equal(AuthService.InvalidCredentials, result.Error);
         Assert.Null(a.SignedWith);
+        a.Users.Verify(u => u.RegisterLoginSuccessAsync(It.IsAny<int>()), Times.Never());   // not a sign-in
     }
 
     [Fact]

@@ -68,8 +68,12 @@ public class AuthService : IAuthService
                 : AuthResult.Fail(InvalidCredentials);
         }
 
-        await _users.RegisterLoginSuccessAsync(user.UserId);
-        return await IssueTokensAsync(user, ip);
+        // The success is recorded once there is a session: a sign-in refused at issue (the password
+        // changed during the check) must not reset the failure count or stamp LastLoginAt.
+        var result = await IssueTokensAsync(user, ip);
+        if (result.Success)
+            await _users.RegisterLoginSuccessAsync(user.UserId);
+        return result;
     }
 
     /// <summary>
