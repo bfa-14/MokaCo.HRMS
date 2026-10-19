@@ -320,17 +320,17 @@ location = /__mokaco_gate {
 }
 
 # The gate page's own calls (config, Google sign-in, sign-out) always pass, to the API that decides.
-# X-Forwarded-For is the connection's address, not $mokaco_client_ip: the DNS points straight at the
-# VM, so a CF-Connecting-IP header comes from the caller, who could then pick the address that the
-# sign-in limit (10 a minute) counts and the sign-in log shows. A proxy put in front one day would
-# need its own trusted header here.
+# X-Forwarded-For is $mokaco_client_ip like everywhere else: since QA3 SEC-4 it believes a
+# CF-Connecting-IP header only from a Cloudflare edge (conf.d/mokaco-client-ip.conf, deploy-api.sh),
+# so a caller cannot pick the address that the sign-in limit (10 a minute) counts and the sign-in log
+# shows, and behind Cloudflare the limit counts visitors, not Cloudflare's edges.
 location ^~ /api/gate/ {
     auth_request off;
     proxy_pass         http://$mokaco_gate_api;
     proxy_http_version 1.1;
     proxy_set_header   Host              $host;
     proxy_set_header   X-Real-IP         $remote_addr;
-    proxy_set_header   X-Forwarded-For   $remote_addr;
+    proxy_set_header   X-Forwarded-For   $mokaco_client_ip;
     proxy_set_header   X-Forwarded-Proto $mokaco_proto;
 }
 
@@ -341,10 +341,13 @@ location ^~ /gate/ {
 
 # Stopped: a fetch gets a 401 it can recognise (never a redirect into HTML); a page gets the gate
 # page in its place with 200 (deploy-web.sh needs / = 200, deploy-site.sh must never see a 301).
+# This location sets headers of its own, so it does not inherit the site's: HSTS is repeated here
+# (the snippet only ever sits in an HTTPS block; same value as enable-tls.sh puts on the site).
 location @mokaco_gate {
     auth_request off;
     add_header Cache-Control "no-store" always;
     add_header X-Mokaco-Gate "required" always;
+    add_header Strict-Transport-Security "max-age=31536000" always;
     if ($mokaco_gate_api_path) {
         return 401;
     }

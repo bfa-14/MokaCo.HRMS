@@ -193,7 +193,9 @@ Review found ways to lock yourself out or keep an old address passing; these clo
     root, and `sites-enabled` must hold links.
   - The snippet adds `location ^~ /gate/` (404 for a missing file) and a `Cache-Control` map (`no-cache` on
     the app's HTML and `/gate/*`, so a cached app page cannot skip the gate). `/api/gate/` sends
-    `X-Forwarded-For $remote_addr` (the shared `$mokaco_client_ip` trusts a client-sent `CF-Connecting-IP`).
+    `X-Forwarded-For $mokaco_client_ip`, which since QA3 SEC-4 believes `CF-Connecting-IP` only from a
+    Cloudflare edge (it used `$remote_addr` while the shared map trusted the header from anybody). The gate
+    page (`@mokaco_gate`) repeats the site's HSTS header, since its own `add_header`s stop inheritance.
   - `--off` also cleans `mokaco.before-env-switch`; `--test` removes a line an earlier `--all` left in
     `mokaco-test`. Smoke tests roll everything back on failure. Emergency-off exits 1 when 97 is missing.
 - **Operations to remember:** `--test` needs `mokaco-api-test` running; apply 97 again after every

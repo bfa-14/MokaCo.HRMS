@@ -38,6 +38,13 @@ die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 resolves_here() { [[ "$(getent hosts "$1" | awk '{print $1}' | head -1)" == "$IP" ]]; }
 
 [[ -f "$SRC/package.json" ]] || die "$SRC not found — run sync-site.sh on the laptop first"
+# The booking calls carry the visitor's address ($mokaco_client_ip; the API's rate limit counts it),
+# from the map deploy-api.sh writes. Until QA3 SEC-4 that map believed a CF-Connecting-IP header from
+# anybody; the current one believes it only from a Cloudflare edge.
+CLIENT_IP_CONF=/etc/nginx/conf.d/mokaco-client-ip.conf
+[[ -f "$CLIENT_IP_CONF" ]] || die "$CLIENT_IP_CONF missing — run deploy-api.sh first (it writes the visitor-address map this site uses)"
+grep -q 'mokaco_via_cloudflare' "$CLIENT_IP_CONF" \
+  || warn "$CLIENT_IP_CONF believes a CF-Connecting-IP header from anybody: re-run deploy-api.sh to replace it (QA3 SEC-4)"
 command -v node >/dev/null || die "node is not installed"
 [[ $(node -v | sed -E 's/^v([0-9]+).*/\1/') -ge 22 ]] || die "node $(node -v) is too old; the site's .nvmrc asks for 22"
 

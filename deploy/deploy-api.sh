@@ -176,19 +176,65 @@ map $http_upgrade $connection_upgrade {
     ''      close;
 }
 EOF
-# Real visitor address and scheme, whether the request arrives directly (VPN)
-# or through a proxy in front of nginx that sets CF-Connecting-IP and
-# X-Forwarded-Proto. Absent headers fall back to the connection itself.
-sudo tee /etc/nginx/conf.d/mokaco-client-ip.conf >/dev/null <<'EOF'
-map $http_cf_connecting_ip $mokaco_client_ip {
-    ""      $remote_addr;
-    default $http_cf_connecting_ip;
+# Real visitor address and scheme ($mokaco_client_ip, $mokaco_proto), used by every MokaCo site
+# (this one, mokaco-default, mokaco-api, mokanco-site, the Google gate). The API keys its rate limits
+# (sign-in, refresh, public booking, the gate) and the sign-in log on the address it is sent.
+#
+# CF-Connecting-IP and X-Forwarded-Proto are believed ONLY when the connection itself comes from a
+# Cloudflare edge (QA3 SEC-4). Anybody can send those headers: trusted from everyone, a caller picks
+# the address every limit counts. Not proxied by Cloudflare (the DNS points straight at the VM) ->
+# the connection's own address and scheme, whatever the headers say; proxied -> the visitor's.
+# The ranges are fetched from Cloudflare on every run; if that fails, the list built in below is used.
+CF_BUILTIN=(
+  # https://www.cloudflare.com/ips-v4 (unchanged since 2021)
+  173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18
+  190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13
+  104.24.0.0/14 172.64.0.0/13 131.0.72.0/22
+  # https://www.cloudflare.com/ips-v6
+  2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29
+  2c0f:f248::/32
+)
+# Prints Cloudflare's current ranges, one per line, or nothing when the answer is not a plain list
+# of at least 10 IPv4 and 5 IPv6 CIDRs (a captive portal, an error page, a cut transfer).
+cloudflare_ranges_online() {
+  local v4 v6
+  v4=$(curl -fsS -m 10 https://www.cloudflare.com/ips-v4 2>/dev/null | tr -d '\r' | sed '/^[[:space:]]*$/d') || return 0
+  v6=$(curl -fsS -m 10 https://www.cloudflare.com/ips-v6 2>/dev/null | tr -d '\r' | sed '/^[[:space:]]*$/d') || return 0
+  grep -qvE '^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$' <<< "$v4" && return 0
+  grep -qvE '^[0-9a-fA-F:]+:[0-9a-fA-F:]*/[0-9]{1,3}$' <<< "$v6" && return 0
+  [[ $(wc -l <<< "$v4") -ge 10 && $(wc -l <<< "$v6") -ge 5 ]] || return 0
+  printf '%s\n%s\n' "$v4" "$v6"
 }
-map $http_x_forwarded_proto $mokaco_proto {
-    ""      $scheme;
-    default $http_x_forwarded_proto;
+CF_RANGES=$(cloudflare_ranges_online)
+if [[ -n "$CF_RANGES" ]]; then
+  CF_SOURCE="fetched from www.cloudflare.com/ips-v4 and /ips-v6 on $(date -u +%F)"
+else
+  CF_RANGES=$(printf '%s\n' "${CF_BUILTIN[@]}")
+  CF_SOURCE="the list built into deploy-api.sh (the fetch from www.cloudflare.com failed)"
+fi
+echo "    Cloudflare edge ranges: $(wc -l <<< "$CF_RANGES"), $CF_SOURCE"
+{
+  echo "# Written by deploy-api.sh (MokaCo.HRMS) on every run. Cloudflare ranges: $CF_SOURCE."
+  echo "# CF-Connecting-IP / X-Forwarded-Proto count only from these addresses (QA3 SEC-4)."
+  # shellcheck disable=SC2016   # nginx variables, written literally
+  echo 'geo $mokaco_via_cloudflare {'
+  echo '    default 0;'
+  sed 's/^/    /; s/$/ 1;/' <<< "$CF_RANGES"
+  echo '}'
+  cat <<'EOF'
+# From a Cloudflare edge: the visitor's address it reports (an address, nothing else); from anybody
+# else: the connection's own address.
+map "$mokaco_via_cloudflare:$http_cf_connecting_ip" $mokaco_client_ip {
+    default                                   $remote_addr;
+    "~^1:(?<mokaco_cf_ip>[0-9A-Fa-f:.]+)$"   $mokaco_cf_ip;
+}
+map "$mokaco_via_cloudflare:$http_x_forwarded_proto" $mokaco_proto {
+    default   $scheme;
+    "1:https" https;
+    "1:http"  http;
 }
 EOF
+} | sudo tee /etc/nginx/conf.d/mokaco-client-ip.conf >/dev/null
 
 # THE SITE IS WRITTEN ON THE FIRST INSTALL ONLY. After it, enable-https-ip.sh / enable-tls.sh add
 # HTTPS to it and enable-env-switch.sh the test switch; rewriting it here on every redeploy would wipe
