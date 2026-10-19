@@ -122,6 +122,7 @@ public class LeaveRequestsController : ControllerBase
 
     /// <summary>The leave payload behind a request, with the employee's current balance for that type.</summary>
     [HttpGet("{id:int}/payload")]
+    [RequestVisible]
     public async Task<IActionResult> GetPayload(int id)
     {
         var payload = await _leave.GetPayloadAsync(id);

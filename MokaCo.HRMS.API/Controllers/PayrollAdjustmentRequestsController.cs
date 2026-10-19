@@ -114,6 +114,7 @@ public class PayrollAdjustmentRequestsController : ControllerBase
     /// then the payslip that consumed it.
     /// </summary>
     [HttpGet("{id:int}/payload")]
+    [RequestVisible]
     public async Task<IActionResult> GetPayload(int id)
     {
         var payload = await _adjustments.GetPayloadAsync(id);

@@ -87,6 +87,7 @@ public class TipDistributionsController : ControllerBase
 
     /// <summary>The header and the per-person lines, as two halves of one payload. 404 when the request is not a tip one.</summary>
     [HttpGet("{id:int}/payload")]
+    [RequestVisible]
     public async Task<IActionResult> GetPayload(int id)
     {
         var payload = await _tips.GetPayloadAsync(id);
@@ -166,6 +167,8 @@ public class ShiftSwapsController : ControllerBase
     }
 
     [HttpGet("{id:int}/payload")]
+
+    [RequestVisible]
     public async Task<IActionResult> GetPayload(int id)
     {
         var payload = await _swaps.GetPayloadAsync(id);

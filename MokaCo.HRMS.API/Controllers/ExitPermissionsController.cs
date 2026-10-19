@@ -74,6 +74,7 @@ public class ExitPermissionsController : ControllerBase
 
     /// <summary>The payload behind a request, plus what attendance recorded once the day exists.</summary>
     [HttpGet("by-request/{id:int}")]
+    [RequestVisible]
     public async Task<IActionResult> GetByRequest(int id)
     {
         var detail = await _exitPermissions.GetByRequestAsync(id);

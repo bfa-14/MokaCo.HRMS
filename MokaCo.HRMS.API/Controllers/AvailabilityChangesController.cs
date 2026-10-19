@@ -103,6 +103,7 @@ public class AvailabilityChangesController : ControllerBase
     /// an availability change.
     /// </summary>
     [HttpGet("{id:int}/payload")]
+    [RequestVisible]
     public async Task<IActionResult> GetPayload(int id)
     {
         var payload = await _availability.GetPayloadAsync(id);
@@ -117,6 +118,7 @@ public class AvailabilityChangesController : ControllerBase
     /// rewrites the template, not days somebody already published — so this is the manual fix list.
     /// </summary>
     [HttpGet("{id:int}/conflicts")]
+    [RequestVisible]
     public async Task<IActionResult> GetConflicts(int id)
         => Ok(await _availability.GetConflictsAsync(id));
 }

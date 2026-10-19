@@ -107,6 +107,7 @@ public class SalaryAdvanceRequestsController : ControllerBase
     /// today rather than what was borrowed then.
     /// </summary>
     [HttpGet("{id:int}/payload")]
+    [RequestVisible]
     public async Task<IActionResult> GetPayload(int id)
     {
         var payload = await _advances.GetPayloadAsync(id);

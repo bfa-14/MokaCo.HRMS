@@ -143,6 +143,7 @@ public class OnboardingsController : ControllerBase
     /// onboarding.
     /// </summary>
     [HttpGet("{id:int}/payload")]
+    [RequestVisible]
     public async Task<IActionResult> GetPayload(int id)
     {
         var payload = await _onboardings.GetPayloadAsync(id);

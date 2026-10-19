@@ -93,6 +93,7 @@ public class ExpensesController : ControllerBase
 
     /// <summary>The expense payload — the amount, its USD equivalent and rate, the receipt count and the threshold decision.</summary>
     [HttpGet("{id:int}/payload")]
+    [RequestVisible]
     public async Task<IActionResult> GetPayload(int id)
     {
         var payload = await _expenses.GetPayloadAsync(id);

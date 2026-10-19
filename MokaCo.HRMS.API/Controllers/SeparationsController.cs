@@ -167,6 +167,7 @@ public class SeparationsController : ControllerBase
 
     /// <summary>Everything the panel and the printed document need, in one row. 404 when the request is not a separation.</summary>
     [HttpGet("{id:int}/payload")]
+    [RequestVisible]
     public async Task<IActionResult> GetPayload(int id)
     {
         var payload = await _separations.GetPayloadAsync(id);
