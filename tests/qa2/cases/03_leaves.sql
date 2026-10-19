@@ -140,8 +140,9 @@ SET @rid = dbo.QA2_LastRequest(@E11); EXEC dbo.QA2_Approve @rid, 'Leave';
 EXEC attendance.usp_Attendance_ComputeDay @EmployeeId = @E11, @WorkDate = @d;
 SET @bal1 = (SELECT ISNULL(SUM(Days), 0) FROM hr.LEAVE_LEDGER WHERE EmployeeId = @E11 AND LeaveTypeId = 1);
 BEGIN TRY
-    EXEC workflow.usp_Request_Reopen @RequestInstanceId = @rid, @ActedByUserId = @Gm, @Reason = N'QA2 A3f: the dates were wrong';
-    EXEC workflow.usp_Request_Reopen @RequestInstanceId = @rid, @ActedByUserId = @Owner, @Reason = N'QA2 A3f: the dates were wrong';
+    /* QA3 WF-14: each half of the GM + Owner reopen is password-signed (the API verifies it and sets the flag) */
+    EXEC workflow.usp_Request_Reopen @RequestInstanceId = @rid, @ActedByUserId = @Gm, @Reason = N'QA2 A3f: the dates were wrong', @SignedWithPassword = 1;
+    EXEC workflow.usp_Request_Reopen @RequestInstanceId = @rid, @ActedByUserId = @Owner, @Reason = N'QA2 A3f: the dates were wrong', @SignedWithPassword = 1;
     DECLARE @i INT = 1, @u INT;
     WHILE @i <= 3 AND (SELECT [Status] FROM workflow.REQUEST_INSTANCE WHERE RequestInstanceId = @rid) IN ('Pending', 'OnHold')
     BEGIN

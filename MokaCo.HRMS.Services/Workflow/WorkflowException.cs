@@ -36,10 +36,47 @@ public static class WorkflowSqlErrors
         {
             return await call();
         }
-        catch (SqlException ex) when (ex.Number == 50000)
+        catch (SqlException ex) when (Translate(ErrorsOf(ex)) is { } mapped)
         {
-            throw MapMessage(ex.Message);
+            throw mapped;
         }
+    }
+
+    /// <summary>
+    /// What a decision says when it lost a race (QA3 WF-2): the procedures raise it when the step was
+    /// decided by somebody else between the screen loading and the click, and it is also what a
+    /// deadlock victim is told — in both cases nothing of the caller's was saved.
+    /// </summary>
+    public const string DecidedAMomentAgo = "This step was decided a moment ago — reload.";
+
+    private const int RaisedByProcedure = 50000;
+    private const int DeadlockVictim = 1205;
+
+    private static IEnumerable<(int Number, string Message)> ErrorsOf(SqlException ex)
+        => ex.Errors.Cast<SqlError>().Select(e => (e.Number, e.Message));
+
+    /// <summary>
+    /// Picks the sentence to show from everything SQL Server sent back — public so it can be tested
+    /// without a database. A procedure's refusal often arrives with company: an INSERT-EXEC or
+    /// transaction-count error raised on the way out, or the calling procedure's own wrapper sentence.
+    /// SqlException.Message joins ALL of them; only the FIRST error, the procedure's RAISERROR, is the
+    /// sentence written for people (QA3 suspicion: the join leaked "Transaction count after EXECUTE…"
+    /// into the UI). A deadlock victim (1205) — the other side of a concurrent decision — is a 409
+    /// with the reload sentence. Anything else is not ours to translate: null, so it bubbles as a 500.
+    /// </summary>
+    public static WorkflowException? Translate(IEnumerable<(int Number, string Message)> errors)
+    {
+        var list = errors.ToList();
+        if (list.Count == 0)
+            return null;
+
+        if (list[0].Number == RaisedByProcedure)
+            return MapMessage(list[0].Message);
+
+        if (list.Any(e => e.Number == DeadlockVictim))
+            return new WorkflowException(409, DecidedAMomentAgo);
+
+        return null;
     }
 
     /// <summary>
@@ -48,6 +85,18 @@ public static class WorkflowSqlErrors
     /// </summary>
     public static WorkflowException MapMessage(string message)
     {
+        // Lost a race with another decision (QA3 WF-2): what the caller saw is stale. A conflict, so
+        // the screen reloads instead of offering the same click again.
+        if (message.StartsWith("This step was decided a moment ago", StringComparison.OrdinalIgnoreCase))
+            return new WorkflowException(409, message);
+
+        // A version move that would approve the request at once (QA3 WF-10) is refused until the caller
+        // confirms it. A conflict with what the request has become, not a bad request: the UI asks for
+        // the confirmation on this sentence and sends the move again with ConfirmClose.
+        if (message.StartsWith("Moving this request to version", StringComparison.OrdinalIgnoreCase)
+            && message.Contains("Confirm the move", StringComparison.OrdinalIgnoreCase))
+            return new WorkflowException(409, message);
+
         // "You are not the approver for this step." — the authorisation failure the DB owns.
         if (message.Contains("not the approver", StringComparison.OrdinalIgnoreCase))
             return new WorkflowException(403, message);
@@ -58,7 +107,8 @@ public static class WorkflowSqlErrors
         // that WOULD work (the GM + Owner route, or the other of the two).
         if (message.Contains("may retract it", StringComparison.OrdinalIgnoreCase)
             || message.Contains("needs the General Manager and the Owner", StringComparison.OrdinalIgnoreCase)
-            || message.Contains("already signed the reopen", StringComparison.OrdinalIgnoreCase))
+            || message.Contains("already signed the reopen", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("already signed this reopen", StringComparison.OrdinalIgnoreCase))
             return new WorkflowException(403, message);
 
         // A CONFLICT with what already exists, not a bad request: a roster already waiting for
