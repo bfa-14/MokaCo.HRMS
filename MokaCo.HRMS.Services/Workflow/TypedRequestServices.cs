@@ -10,9 +10,12 @@ public interface ITipDistributionService
     Task<TipDistributionPayload> GetPayloadAsync(int requestInstanceId);
 }
 
+/// <summary>The caller's identity and right to raise for others, as resolved from the token.</summary>
+public record ShiftSwapCaller(int UserId, int? EmployeeId, bool HasRaiseOthers);
+
 public interface IShiftSwapService
 {
-    Task<ShiftSwapCreated?> CreateAsync(ShiftSwapCreateRequest request, int raisedByUserId);
+    Task<ShiftSwapCreated?> CreateAsync(ShiftSwapCreateRequest request, ShiftSwapCaller caller);
     Task<TypedDecisionResult?> DecideAsync(int requestInstanceId, int actedByUserId, TypedDecideRequest request);
     Task<ShiftSwapPayload?> GetPayloadAsync(int requestInstanceId);
 }
@@ -75,7 +78,10 @@ public class TipDistributionService : ITipDistributionService
 
 /// <summary>
 /// Shift swaps. As above, a pass-through with two jobs: map the procedure's refusals to statuses
-/// with their wording intact, and verify the signature before any write.
+/// with their wording intact, and verify the signature before any write — plus the one rule the
+/// database cannot know, WHO the swap may be raised FOR (QA3 WF-12): the requester's employee id is in
+/// the body, so without REQUEST_RAISE_OTHERS it must be the caller's own, as for every other typed
+/// request. (Before, anybody could put a colleague's shift up for swap in the colleague's name.)
 ///
 /// The consent tick is NOT re-checked here. The procedure refuses a false one, and its sentence
 /// ("A swap needs the counterpart's agreement first…") is better than anything this layer would
@@ -92,11 +98,30 @@ public class ShiftSwapService : IShiftSwapService
         _signature = signature;
     }
 
-    public Task<ShiftSwapCreated?> CreateAsync(ShiftSwapCreateRequest request, int raisedByUserId)
-        => WorkflowSqlErrors.MapAsync(() => _repo.CreateAsync(
-            request.EmployeeId, raisedByUserId, request.CounterpartEmployeeId,
+    public Task<ShiftSwapCreated?> CreateAsync(ShiftSwapCreateRequest request, ShiftSwapCaller caller)
+    {
+        // RAISING FOR SOMEONE ELSE. Without REQUEST_RAISE_OTHERS the only employee id a caller may
+        // file against is their own — resolved from the token, never trusted from the body. The
+        // counterpart is the OTHER party of the swap and is the procedure's to check (same role,
+        // consent, both rostered).
+        if (!caller.HasRaiseOthers)
+        {
+            if (caller.EmployeeId is not int self)
+                throw new WorkflowException(
+                    403,
+                    "Your account is not linked to an employee, so you cannot raise a request for yourself.");
+
+            if (request.EmployeeId != self)
+                throw new WorkflowException(
+                    403,
+                    "You may only raise a request for yourself. Raising on another employee's behalf needs additional permission.");
+        }
+
+        return WorkflowSqlErrors.MapAsync(() => _repo.CreateAsync(
+            request.EmployeeId, caller.UserId, request.CounterpartEmployeeId,
             request.RequesterDate, request.CounterpartDate, request.CounterpartHasAgreed,
             string.IsNullOrWhiteSpace(request.Title) ? null : request.Title.Trim()));
+    }
 
     public async Task<TypedDecisionResult?> DecideAsync(int requestInstanceId, int actedByUserId, TypedDecideRequest request)
     {
