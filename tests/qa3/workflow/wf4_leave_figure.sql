@@ -139,9 +139,9 @@ BEGIN
     INSERT INTO attendance.SHIFT (Name, StartTime, EndTime, GraceMinutes, CrossesMidnight, BreakMinutes, IsActive)
     VALUES (N'QA3 WF4 Day', '08:00', '16:00', NULL, 0, 30, 1);
     DECLARE @Shift INT = SCOPE_IDENTITY();
-    INSERT INTO hr.LEAVE_TYPE (Name, IsPaid, AccrualPerMonth, CarryOver, RequiresCertificate, MinServiceMonthsToUse, NoticePreferredDays,
+    INSERT INTO hr.LEAVE_TYPE (Name, IsPaid, CarryOver, RequiresCertificate, MinServiceMonthsToUse, NoticePreferredDays,
                                FixedEntitlementDays, IsDiscretionary, IsActive)
-    VALUES (N'QA3 WF4 Unpaid', 0, 0, 0, 0, 0, 0, NULL, 0, 1);
+    VALUES (N'QA3 WF4 Unpaid', 0, 0, 0, 0, 0, NULL, 0, 1);
     SET @LeaveTypeId = SCOPE_IDENTITY();
     SET @Mon = '2097-06-01';
     WHILE DATEDIFF(DAY, '19000101', @Mon) % 7 <> 0 SET @Mon = DATEADD(DAY, 1, @Mon);      -- a Monday

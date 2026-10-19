@@ -36,8 +36,8 @@ public class LeaveDbTests
             """
             INSERT INTO hr.BRANCH (Name, IsActive) VALUES (N'QA3 Leave Db Branch', 1);
             DECLARE @B INT = SCOPE_IDENTITY();
-            INSERT INTO hr.LEAVE_TYPE (Name, IsPaid, AccrualPerMonth, CarryOver, RequiresCertificate, MinServiceMonthsToUse, NoticePreferredDays, FixedEntitlementDays, IsDiscretionary, IsActive)
-            VALUES (N'QA3 Db Annual', 1, 0, 1, 0, 0, 0, NULL, 0, 1);
+            INSERT INTO hr.LEAVE_TYPE (Name, IsPaid, CarryOver, RequiresCertificate, MinServiceMonthsToUse, NoticePreferredDays, FixedEntitlementDays, IsDiscretionary, IsActive)
+            VALUES (N'QA3 Db Annual', 1, 1, 0, 0, 0, NULL, 0, 1);
             DECLARE @A INT = SCOPE_IDENTITY();
             INSERT INTO hr.EMPLOYEE (BranchId, DepartmentId, PositionId, FullName, HireDate, TerminationDate, ApprovalTier, PreferredLanguage)
             VALUES (@B, (SELECT TOP 1 DepartmentId FROM hr.DEPARTMENT ORDER BY DepartmentId), (SELECT TOP 1 PositionId FROM hr.[POSITION] ORDER BY PositionId),
@@ -59,8 +59,8 @@ public class LeaveDbTests
             """
             INSERT INTO hr.BRANCH (Name, IsActive) VALUES (N'QA3 Leave Db Paid Branch', 1);
             DECLARE @B INT = SCOPE_IDENTITY();
-            INSERT INTO hr.LEAVE_TYPE (Name, IsPaid, AccrualPerMonth, CarryOver, RequiresCertificate, MinServiceMonthsToUse, NoticePreferredDays, FixedEntitlementDays, IsDiscretionary, IsActive)
-            VALUES (N'QA3 Db Unpaid', 0, 0, 0, 0, 0, 0, NULL, 0, 1);
+            INSERT INTO hr.LEAVE_TYPE (Name, IsPaid, CarryOver, RequiresCertificate, MinServiceMonthsToUse, NoticePreferredDays, FixedEntitlementDays, IsDiscretionary, IsActive)
+            VALUES (N'QA3 Db Unpaid', 0, 0, 0, 0, 0, NULL, 0, 1);
             DECLARE @A INT = SCOPE_IDENTITY();
             INSERT INTO hr.EMPLOYEE (BranchId, DepartmentId, PositionId, FullName, HireDate, TerminationDate, ApprovalTier, PreferredLanguage)
             VALUES (@B, (SELECT TOP 1 DepartmentId FROM hr.DEPARTMENT ORDER BY DepartmentId), (SELECT TOP 1 PositionId FROM hr.[POSITION] ORDER BY PositionId),

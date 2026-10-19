@@ -31,8 +31,8 @@ BEGIN
     INSERT INTO attendance.SHIFT (Name, StartTime, EndTime, GraceMinutes, CrossesMidnight, BreakMinutes, IsActive)
     VALUES (N'QA3 Day', '08:00', '16:00', NULL, 0, 30, 1);
     DECLARE @Shift INT = SCOPE_IDENTITY();
-    INSERT INTO hr.LEAVE_TYPE (Name, IsPaid, AccrualPerMonth, CarryOver, RequiresCertificate, MinServiceMonthsToUse, NoticePreferredDays, FixedEntitlementDays, IsDiscretionary, IsActive)
-    VALUES (N'QA3 Paid', 1, 0, 0, 0, 0, 0, NULL, 0, 1), (N'QA3 Unpaid', 0, 0, 0, 0, 0, 0, NULL, 0, 1);
+    INSERT INTO hr.LEAVE_TYPE (Name, IsPaid, CarryOver, RequiresCertificate, MinServiceMonthsToUse, NoticePreferredDays, FixedEntitlementDays, IsDiscretionary, IsActive)
+    VALUES (N'QA3 Paid', 1, 0, 0, 0, 0, NULL, 0, 1), (N'QA3 Unpaid', 0, 0, 0, 0, 0, NULL, 0, 1);
     SET @Paid = (SELECT LeaveTypeId FROM hr.LEAVE_TYPE WHERE Name = N'QA3 Paid');
     SET @Unpaid = (SELECT LeaveTypeId FROM hr.LEAVE_TYPE WHERE Name = N'QA3 Unpaid');
     INSERT INTO hr.EMPLOYEE (BranchId, DepartmentId, PositionId, FullName, HireDate, TerminationDate, ApprovalTier, PreferredLanguage)

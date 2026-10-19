@@ -1423,6 +1423,16 @@ BEGIN
 END;
 GO
 
+/* The move keeps the version a request started on in REQUEST_INSTANCE.OriginalWorkflowDefinitionId, a column only the
+   unnumbered workflow_core.sql creates. Added here (nullable) when the live table lacks it, so the procedure below
+   compiles there too: SQL Server refuses a procedure naming a column its table does not have. */
+IF COL_LENGTH('workflow.REQUEST_INSTANCE', 'OriginalWorkflowDefinitionId') IS NULL
+BEGIN
+    ALTER TABLE workflow.REQUEST_INSTANCE ADD OriginalWorkflowDefinitionId INT NULL;
+    PRINT 'QA3 WF-10: workflow.REQUEST_INSTANCE.OriginalWorkflowDefinitionId added (the version a request started on)';
+END
+GO
+
 /* Stale-copy guard (CON-7): the API passes RequestInstanceId, TargetWorkflowDefinitionId, ActedByUserId, Reason (and now
    ConfirmClose) and reads RequestInstanceId, Status, CurrentStepNo, MovedFromVersion, MovedToVersion, VersionMovedAt,
    VersionMovedBy - as workflow_core.sql did. */

@@ -36,10 +36,10 @@ BEGIN
     INSERT INTO attendance.SHIFT (Name, StartTime, EndTime, GraceMinutes, CrossesMidnight, BreakMinutes, IsActive)
     VALUES (N'QA3 Day', '08:00', '16:00', NULL, 0, 30, 1);
     DECLARE @Shift INT = SCOPE_IDENTITY();
-    INSERT INTO hr.LEAVE_TYPE (Name, IsPaid, AccrualPerMonth, CarryOver, RequiresCertificate, MinServiceMonthsToUse, NoticePreferredDays, FixedEntitlementDays, IsDiscretionary, IsActive)
-    VALUES (N'QA3 Annual', 1, 0, 1, 0, 0, 0, NULL, 0, 1), (N'QA3 Fixed', 1, 0, 0, 0, 0, 0, 70, 0, 1),
-           (N'QA3 Unpaid', 0, 0, 0, 0, 0, 0, NULL, 0, 1), (N'QA3 Gone', 1, 0, 0, 0, 0, 0, NULL, 0, 0),
-           (N'QA3 Gated', 0, 0, 0, 0, 1, 0, NULL, 0, 1);
+    INSERT INTO hr.LEAVE_TYPE (Name, IsPaid, CarryOver, RequiresCertificate, MinServiceMonthsToUse, NoticePreferredDays, FixedEntitlementDays, IsDiscretionary, IsActive)
+    VALUES (N'QA3 Annual', 1, 1, 0, 0, 0, NULL, 0, 1), (N'QA3 Fixed', 1, 0, 0, 0, 0, 70, 0, 1),
+           (N'QA3 Unpaid', 0, 0, 0, 0, 0, NULL, 0, 1), (N'QA3 Gone', 1, 0, 0, 0, 0, NULL, 0, 0),
+           (N'QA3 Gated', 0, 0, 0, 1, 0, NULL, 0, 1);
     SET @Annual = (SELECT LeaveTypeId FROM hr.LEAVE_TYPE WHERE Name = N'QA3 Annual');
     SET @Fixed = (SELECT LeaveTypeId FROM hr.LEAVE_TYPE WHERE Name = N'QA3 Fixed');
     SET @Unpaid = (SELECT LeaveTypeId FROM hr.LEAVE_TYPE WHERE Name = N'QA3 Unpaid');

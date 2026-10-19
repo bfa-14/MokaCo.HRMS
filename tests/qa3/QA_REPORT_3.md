@@ -48,6 +48,9 @@ diagram, is the "MokaCo HRMS deep test" document. Nothing here has been deployed
 - **Stale repo copies (CON-7):** unnumbered scripts are older than production for at least 16 procedures. A script
   redefines such a procedure only behind a guard that stops the whole script if the live copy has a parameter it does
   not know; 107 edits the live text instead of redefining it.
+- **Found on the test VM:** production also dropped `hr.LEAVE_TYPE.AccrualPerMonth` (decision D7), which the rebuilt
+  database still had, so 99's leave-balance report stopped there (Msg 207). Fixed in 99; the rebuild now drops the
+  column like production, and 101 adds `REQUEST_INSTANCE.OriginalWorkflowDefinitionId` if a database lacks it.
 
 ## 3. Business-logic defects (wrong rules and calculations)
 

@@ -1345,7 +1345,8 @@ END;
 GO
 
 /* The leave balance report (report_procedures.sql), QA3 LEV-14: with Adjusted (adjustments and expiries), so each row
-   adds up: Remaining = Accrued + CarriedOver - Used + Adjusted. Otherwise unchanged. */
+   adds up: Remaining = Accrued + CarriedOver - Used + Adjusted. A type without movements is listed when the year opening
+   grants it by tenure (hr.LEAVE_ACCRUAL_TIER), not by the dropped AccrualPerMonth. Otherwise unchanged. */
 CREATE OR ALTER PROCEDURE report.usp_Report_LeaveBalance
     @AsOfYearMonth CHAR(7),            -- include all periods up to and incl. this one
     @EmployeeId    INT = NULL,
@@ -1389,7 +1390,9 @@ BEGIN
     WHERE e.IsDeleted = 0
       AND (@EmployeeId IS NULL OR e.EmployeeId = @EmployeeId)
       AND (@BranchId  IS NULL OR e.BranchId  = @BranchId)
-      AND (bal.Remaining IS NOT NULL OR lt.AccrualPerMonth > 0)   -- skip irrelevant type/emp combos
+      -- skip irrelevant type/emp combos: a type with movements, or one the year opening grants by tenure. Production
+      -- dropped LEAVE_TYPE.AccrualPerMonth with the monthly accrual (D7); the stale copy still read it (Msg 207).
+      AND (bal.Remaining IS NOT NULL OR EXISTS (SELECT 1 FROM hr.LEAVE_ACCRUAL_TIER a WHERE a.LeaveTypeId = lt.LeaveTypeId))
     ORDER BY b.Name, e.FullName, lt.Name;
 END;
 GO

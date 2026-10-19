@@ -33,8 +33,8 @@ BEGIN
     DECLARE @B INT = SCOPE_IDENTITY();
     DECLARE @Dep INT = (SELECT TOP 1 DepartmentId FROM hr.DEPARTMENT ORDER BY DepartmentId);
     DECLARE @Pos INT = (SELECT TOP 1 PositionId FROM hr.[POSITION] ORDER BY PositionId);
-    INSERT INTO hr.LEAVE_TYPE (Name, IsPaid, AccrualPerMonth, CarryOver, RequiresCertificate, MinServiceMonthsToUse, NoticePreferredDays, FixedEntitlementDays, IsDiscretionary, IsActive)
-    VALUES (N'QA3 Tiered', 1, 0, 1, 0, 0, 0, NULL, 0, 1), (N'QA3 Inactive', 1, 0, 1, 0, 0, 0, NULL, 0, 0);
+    INSERT INTO hr.LEAVE_TYPE (Name, IsPaid, CarryOver, RequiresCertificate, MinServiceMonthsToUse, NoticePreferredDays, FixedEntitlementDays, IsDiscretionary, IsActive)
+    VALUES (N'QA3 Tiered', 1, 1, 0, 0, 0, NULL, 0, 1), (N'QA3 Inactive', 1, 1, 0, 0, 0, NULL, 0, 0);
     SET @Tiered = (SELECT LeaveTypeId FROM hr.LEAVE_TYPE WHERE Name = N'QA3 Tiered');
     SET @Inactive = (SELECT LeaveTypeId FROM hr.LEAVE_TYPE WHERE Name = N'QA3 Inactive');
     INSERT INTO hr.LEAVE_ACCRUAL_TIER (LeaveTypeId, MinServiceYears, AnnualDays) VALUES (@Tiered, 1, 10), (@Tiered, 5, 20), (@Inactive, 0, 30);
