@@ -138,6 +138,12 @@ public sealed class OnlineDepositService : IOnlineDepositService
 
     public async Task<PaymentOpening> OpenAsync(string bookingRef, CancellationToken cancellationToken = default)
     {
+        // NO GATEWAY CONFIGURED: answered like a gateway that did not open a session, but before anything
+        // is stamped. A hold here would expire a booking that no session can ever pay; left without one
+        // it stays a Pending request that staff confirm.
+        if (!Gateway.IsConfigured)
+            return new PaymentOpening(PayOpenResult.GatewayError, bookingRef);
+
         // A SECOND /pay FOR THE SAME BOOKING reuses the order id, so the earlier session is SETTLED
         // FIRST, before anything is stamped — through SettleAsync, the path /verify takes, so a paid
         // session has exactly the same effects whoever finds it (Confirmed, the payment line, the
@@ -228,6 +234,11 @@ public sealed class OnlineDepositService : IOnlineDepositService
             // only credential /verify needs, so this is what an anonymous caller could otherwise do.
             return new Settlement(SettlementResult.NotApplicable, bookingRef, false, state.Status, "no payment was opened");
         }
+
+        // A session was opened while the gateway was configured, and its keys have since gone: nobody
+        // can be asked, so nothing is judged or written (the hold stays as it is).
+        if (!Gateway.IsConfigured)
+            return new Settlement(SettlementResult.Unconfirmed, bookingRef, false, state.Status, "online deposits are not configured");
 
         var order = await _gateway.RetrieveOrderAsync(bookingRef, cancellationToken);
         var decision = PaymentDecisionTable.Decide(order, state.DepositDue, state.CurrencyCode);

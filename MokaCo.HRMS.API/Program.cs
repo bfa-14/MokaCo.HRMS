@@ -67,9 +67,11 @@ var jwtOptions = builder.Configuration.GetSection("Jwt").Get<JwtOptions>()
 
 // ONLINE DEPOSITS (MPGS). The gateway's credentials and the two public origins come from the
 // environment — /etc/mokaco/api.env in production, the gitignored appsettings.Local.json in
-// development — never from a tracked file. FAIL FAST: a missing value stops the start here, naming
-// the key (never the value). See MpgsOptions for the 3-D Secure bypass rule (TEST profile + flag).
-var mpgsOptions = MpgsOptions.FromSettings(key => builder.Configuration[key]);
+// development — never from a tracked file. A missing or malformed value does NOT stop the start
+// (handoff open item 1): attendance and payroll must not depend on a payments secret. The gateway is
+// then unconfigured and the start logs an error naming the keys (never the values). See MpgsOptions
+// for the 3-D Secure bypass rule (TEST profile + flag).
+var mpgsOptions = MpgsOptions.FromSettingsOrUnconfigured(key => builder.Configuration[key]);
 var depositTiming = builder.Configuration.GetSection(OnlineDepositOptions.Section).Get<OnlineDepositOptions>() ?? new OnlineDepositOptions();
 depositTiming.Validate();
 
@@ -539,7 +541,10 @@ builder.Services.AddOpenApi();
 var app = builder.Build();
 
 // Everything about the gateway but the password, once, so a wrong host or profile is visible in the log.
-app.Logger.LogInformation("Online deposits: {Gateway}.", mpgsOptions);
+if (mpgsOptions.IsConfigured)
+    app.Logger.LogInformation("Online deposits: {Gateway}.", mpgsOptions);
+else
+    app.Logger.LogError("Online deposits are OFF until the gateway is configured. {Problem}", mpgsOptions.Problem);
 if (mpgsOptions.SendsThreeDsBypass)
     app.Logger.LogWarning("Online deposits: 3-D Secure BYPASS is on (TEST merchant profile, {Flag}). Never in production.", MpgsOptions.TestBypassKey);
 

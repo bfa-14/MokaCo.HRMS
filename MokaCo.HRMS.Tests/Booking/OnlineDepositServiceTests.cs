@@ -37,8 +37,9 @@ public class OnlineDepositServiceTests
         public Mock<IOnlineDepositRepository> Deposits { get; } = new();
         public Mock<IBookingRepository> Bookings { get; } = new();
         public Mock<IMpgsClient> Client { get; } = new(MockBehavior.Strict);
+        public MpgsOptions Options { get; init; } = Gateway;
 
-        public OnlineDepositService Service => new(Deposits.Object, Bookings.Object, Client.Object, Gateway,
+        public OnlineDepositService Service => new(Deposits.Object, Bookings.Object, Client.Object, Options,
             new OnlineDepositOptions { ReconcileAfterMinutes = 10, GiveUpAfterMinutes = 30 },
             NullLogger<OnlineDepositService>.Instance, new FixedClock(Now));
 
@@ -85,6 +86,32 @@ public class OnlineDepositServiceTests
     };
 
     /* ---- /pay -------------------------------------------------------------------------------- */
+
+    [Fact]
+    public async Task Without_a_configured_gateway_pay_opens_nothing_and_puts_no_hold_on_the_booking()
+    {
+        var rig = new Rig { Options = new MpgsOptions { IsConfigured = false, Problem = "MPGS_API_PASSWORD is missing" } };
+        rig.State(opened: false);
+
+        var opening = await rig.Service.OpenAsync(Ref);
+
+        Assert.Equal(PayOpenResult.GatewayError, opening.Result);
+        rig.Deposits.Verify(d => d.StartPaymentAsync(It.IsAny<string>()), Times.Never());
+        rig.NothingWritten();   // the strict gateway mock also proves nothing was sent
+    }
+
+    [Fact]
+    public async Task Without_a_configured_gateway_an_opened_payment_is_left_as_it_is()
+    {
+        var rig = new Rig { Options = new MpgsOptions { IsConfigured = false, Problem = "MPGS_BASE is missing" } };
+        rig.State(openedMinutesAgo: 40);
+
+        var settled = await rig.Service.SettleAsync(Ref, SettleTrigger.Reconciliation);
+
+        Assert.Equal(SettlementResult.Unconfirmed, settled.Result);
+        Assert.False(settled.Changed);
+        rig.NothingWritten();
+    }
 
     [Fact]
     public async Task Pay_charges_the_bookings_own_deposit_and_returns_the_session()
