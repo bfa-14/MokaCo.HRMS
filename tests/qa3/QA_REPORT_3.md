@@ -257,8 +257,9 @@ The first 22 are in the shared document's decisions table. Added while fixing:
 4. **After the API is up:** regenerate each open payroll run once; Operations Managers sign in again; review who is on
    tier 1 (query in 106's header); preview the first leavers' sweep with
    `BEGIN TRAN; EXEC hr.usp_Employee_ApplyDueTerminations; ROLLBACK;`.
-5. **Production ("to production"):** merge `dev` into `main`, `sync-prod.sh`, apply 98–107 in order with
-   `sqlcmd -C -I -b`, then `bash deploy/deploy-api.sh` (it also rewrites the nginx client-IP map and warns if a script is
+5. **Production ("to production"):** merge `dev` into `main`, `sync-prod.sh`, then list what production lacks with
+   the read-only `deploy/check-scripts.sql` (the test copy also lacked 74, 79, 80, 88–90, 93, 96 and 97) and apply
+   the missing scripts in number order with `sqlcmd -C -I -b`, then `bash deploy/deploy-api.sh` (it also rewrites the nginx client-IP map and warns if a script is
    missing), `bash deploy/deploy-web.sh`, `HSTS_ONLY=1 bash deploy/enable-tls.sh`, and re-run
    `enable-google-gate.sh --test|--all` if the gate is on. `/health` must say `"schema":"ok"`.
 
