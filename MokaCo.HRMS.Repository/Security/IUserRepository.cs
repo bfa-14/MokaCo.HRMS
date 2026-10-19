@@ -21,6 +21,12 @@ public interface IUserRepository
     /// refresh tokens were still live. Refuses an unknown user ("User not found.").
     /// </summary>
     Task<int> EndSessionsAsync(int userId);
+
+    /// <summary>
+    /// security.usp_User_ClearLoginFailures (script 105): a password checked right AFTER sign-in (a
+    /// signature) clears the failure count as a login does, without stamping LastLoginAt.
+    /// </summary>
+    Task ClearLoginFailuresAsync(int userId);
     // inline CRUD
     Task<IEnumerable<UserListItem>> GetAllAsync();
     /// <summary>Accounts not yet claimed by any employee — feeds the "link account" picker.</summary>

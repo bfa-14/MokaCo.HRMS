@@ -64,12 +64,17 @@ public class UserService : IUserService
     /// </summary>
     public async Task<ChangePasswordResult> ChangePasswordAsync(int userId, ChangePasswordRequest request)
     {
-        var user = await _users.GetByIdAsync(userId);
-        if (user is null)
-            return ChangePasswordResult.Fail("The current password is incorrect.");
-
-        if (!_hasher.Verify(request.CurrentPassword ?? string.Empty, user.PasswordHash))
-            return ChangePasswordResult.Fail("The current password is incorrect.");
+        // The current password counts against the login lockout, and a locked account is refused
+        // (QA3, item 10): otherwise this form guesses passwords for whoever holds the session.
+        switch (await AccountPassword.CheckAsync(_users, _hasher, userId, request.CurrentPassword))
+        {
+            case PasswordVerdict.Ok:
+                break;
+            case PasswordVerdict.Locked:
+                return ChangePasswordResult.Fail(AuthService.Locked);
+            default:
+                return ChangePasswordResult.Fail("The current password is incorrect.");
+        }
 
         var policyError = ValidateNewPassword(request.NewPassword);
         if (policyError is not null)

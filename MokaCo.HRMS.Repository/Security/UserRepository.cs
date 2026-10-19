@@ -70,6 +70,15 @@ public class UserRepository : IUserRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    public async Task ClearLoginFailuresAsync(int userId)
+    {
+        using var db = _factory.Create();
+        await db.ExecuteAsync(
+            "security.usp_User_ClearLoginFailures",
+            new { UserId = userId },
+            commandType: CommandType.StoredProcedure);
+    }
+
     // ---- inline CRUD ----
 
     public async Task<IEnumerable<UserListItem>> GetAllAsync()

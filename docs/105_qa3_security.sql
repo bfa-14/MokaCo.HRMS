@@ -20,6 +20,14 @@
           (and is refused) - never a token that survives.
           security.usp_RefreshToken_Rotate (base) is left as it is: the API no longer calls it.
 
+   QA3 (item 10) SIGNATURE PASSWORDS COUNT AGAINST THE LOGIN LOCKOUT.
+          A password typed to sign a decision (or to change the password) was checked with no limit:
+          a borrowed session could guess the account's password at Argon2 speed. The API now counts
+          a wrong one with the login's own counter (base usp_User_RegisterLoginFailure: 5 failures,
+          15 minutes) and refuses while the account is locked.
+          - security.usp_User_ClearLoginFailures (NEW): a right password clears the count, like a
+            successful login, WITHOUT stamping LastLoginAt (a signature is not a sign-in).
+
    ATT-16 BRANCH SCOPE FOR THE ATTENDANCE SUMMARIES, RAW PUNCHES AND REPORTS (with REL-15's scoping).
           Script 87 scoped the attendance LISTS; the monthly summaries (one employee, all employees,
           per branch), the raw punches of a day and the printable reports answered every caller
@@ -50,10 +58,11 @@ IF OBJECT_ID('hr.fn_CallerScope') IS NULL
 GO
 
 IF COL_LENGTH('security.[USER]', 'IsActive') IS NULL OR COL_LENGTH('security.[USER]', 'PasswordHash') IS NULL
+   OR COL_LENGTH('security.[USER]', 'FailedLoginAttempts') IS NULL OR COL_LENGTH('security.[USER]', 'LockoutEnd') IS NULL
    OR COL_LENGTH('security.REFRESH_TOKEN', 'UserId') IS NULL OR COL_LENGTH('security.REFRESH_TOKEN', 'TokenHash') IS NULL
    OR COL_LENGTH('security.REFRESH_TOKEN', 'ExpiresAt') IS NULL OR COL_LENGTH('security.REFRESH_TOKEN', 'CreatedByIp') IS NULL
    OR COL_LENGTH('security.REFRESH_TOKEN', 'RevokedAt') IS NULL
-    RAISERROR('105_qa3_security.sql: security.[USER] (IsActive, PasswordHash) or security.REFRESH_TOKEN (UserId, TokenHash, ExpiresAt, CreatedByIp, RevokedAt) is not as the API uses it. Nothing changed.', 16, 1);
+    RAISERROR('105_qa3_security.sql: security.[USER] (IsActive, PasswordHash, FailedLoginAttempts, LockoutEnd) or security.REFRESH_TOKEN (UserId, TokenHash, ExpiresAt, CreatedByIp, RevokedAt) is not as the API uses it. Nothing changed.', 16, 1);
 GO
 
 /* ------------------------- SEC-5: the stamp ------------------------- */
@@ -215,6 +224,21 @@ BEGIN
 END;
 GO
 
+/* ------------------------- item 10: a right signature password clears the count ------------------------- */
+/* What usp_User_RegisterLoginSuccess does to the lockout (FailedLoginAttempts 0, LockoutEnd NULL), for a
+   password checked after sign-in; LastLoginAt is left alone. Nothing to clear: nothing written. */
+CREATE OR ALTER PROCEDURE security.usp_User_ClearLoginFailures
+    @UserId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    UPDATE security.[USER]
+    SET FailedLoginAttempts = 0, LockoutEnd = NULL
+    WHERE UserId = @UserId AND (FailedLoginAttempts <> 0 OR LockoutEnd IS NOT NULL);
+    RETURN 0;
+END;
+GO
+
 /* ------------------------- ATT-16: what one caller may see ------------------------- */
 /* One result set of (Kind, Id) rows - one shape, so a procedure can capture it with INSERT ... EXEC:
      'A', NULL  the caller sees everyone (EMP_VIEW_ALL, or the system when @CallerUserId is NULL);
@@ -260,5 +284,5 @@ BEGIN
 END;
 GO
 
-PRINT 'QA3 security (105): SEC-5 session ending, ATT-16 caller scope in place';
+PRINT 'QA3 security (105): SEC-5 session ending, signature attempts, ATT-16 caller scope in place';
 GO
