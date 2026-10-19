@@ -29,8 +29,23 @@ public class LeaveYearRepository : ILeaveYearRepository
     public async Task<LeaveCarryOverExpired> ExpireCarryOverAsync()
     {
         using var db = _factory.Create();
-        return await db.QuerySingleAsync<LeaveCarryOverExpired>(
-            "hr.usp_LeaveCarryOver_Expire", commandType: CommandType.StoredProcedure);
+        // QA3 (LEV-6): @Problem says why nothing expired when the setting is not an MM-DD date. An OUTPUT parameter is
+        // read once the reader is closed, which QuerySingleAsync has done by the time it returns.
+        var p = new DynamicParameters();
+        p.Add("Problem", dbType: DbType.String, size: 300, direction: ParameterDirection.Output);
+        var result = await db.QuerySingleAsync<LeaveCarryOverExpired>(
+            "hr.usp_LeaveCarryOver_Expire", p, commandType: CommandType.StoredProcedure);
+        result.SettingProblem = p.Get<string?>("Problem");
+        return result;
+    }
+
+    public async Task<LeaveYearUndoSummary> UndoAsync(int year, int? employeeId, int actedByUserId)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleAsync<LeaveYearUndoSummary>(
+            "hr.usp_LeaveYear_Undo",
+            new { Year = year, ActedByUserId = actedByUserId, EmployeeId = employeeId },
+            commandType: CommandType.StoredProcedure);
     }
 
     public async Task<int> ApplyDueBranchTransfersAsync()

@@ -9,9 +9,6 @@ public interface ILeaveTypeService
     /// <summary>Every (leave type, relation) entitlement — which types ask for a relation, and each one's day cap.</summary>
     Task<IEnumerable<LeaveRelationEntitlement>> GetRelationEntitlementsAsync();
 
-    Task<int> CreateAsync(string name, bool isPaid, bool carryOver);
-    Task UpdateAsync(int leaveTypeId, string name, bool isPaid, bool carryOver);
-
     /// <summary>The whole leave policy in one read — types with their accrual tiers, pay tiers and relations.</summary>
     Task<LeavePolicy> GetPolicyAsync();
 
