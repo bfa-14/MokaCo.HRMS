@@ -34,7 +34,11 @@ INSERT INTO workflow.REQUEST_INSTANCE (RequestTypeId, WorkflowDefinitionId, Empl
 SET @Ri = SCOPE_IDENTITY();
 INSERT INTO workflow.LEAVE_REQUEST (RequestInstanceId, EmployeeId, LeaveTypeId, FromDate, ToDate, DaysRequested, DaysApproved, ApprovedToDate)
 VALUES (@Ri, @E3, @LT, '2026-09-09', '2026-09-11', 3, 3, '2026-09-11');
-IF OBJECT_ID('dbo.T_RepriceCalls') IS NOT NULL DELETE FROM dbo.T_RepriceCalls;
+/* the leave is posted as its approval posts it (3 working days); where a stand-in for unit D's re-pricing records its
+   calls (dbo.T_RepriceCalls, stub databases only) the calls are checked, otherwise their effect on the ledger */
+DECLARE @Stand BIT = CASE WHEN OBJECT_ID('dbo.T_RepriceCalls') IS NOT NULL THEN 1 ELSE 0 END, @calls INT, @used DECIMAL(9,2);
+IF OBJECT_ID('hr.usp_LeaveLedger_PostRequest', 'P') IS NOT NULL EXEC hr.usp_LeaveLedger_PostRequest @RequestInstanceId = @Ri;
+IF @Stand = 1 EXEC (N'DELETE FROM dbo.T_RepriceCalls');
 
 /* a holiday recorded ahead, then moved: nothing is written on a day that has not happened */
 EXEC core.usp_Holiday_Upsert @HolidayDate = @Future, @Name = N'QA3 Holiday ahead', @BranchId = @B, @ActedByUserId = @U;
@@ -53,22 +57,36 @@ IF NOT EXISTS (SELECT 1 FROM attendance.ATTENDANCE_RECORD WHERE EmployeeId = @E2
     BEGIN SET @fails += 1; RAISERROR('05: a public holiday on a rest day is not Holiday (handoff precedence).', 16, 1); END
 IF NOT EXISTS (SELECT 1 FROM attendance.ATTENDANCE_RECORD WHERE EmployeeId = @E3 AND WorkDate = @Past AND [Status] = 'Leave')
     BEGIN SET @fails += 1; RAISERROR('05: approved leave did not win over the holiday.', 16, 1); END
-IF OBJECT_ID('dbo.T_RepriceCalls') IS NOT NULL
-   AND NOT EXISTS (SELECT 1 FROM dbo.T_RepriceCalls WHERE EmployeeId = @E3 AND FromDate = @Past AND ToDate = @Past)
-    BEGIN SET @fails += 1; RAISERROR('05: the leave over the new holiday was not re-priced.', 16, 1); END
-IF OBJECT_ID('dbo.T_RepriceCalls') IS NOT NULL
-   AND EXISTS (SELECT 1 FROM dbo.T_RepriceCalls WHERE EmployeeId IN (@E1, @E2))
-    BEGIN SET @fails += 1; RAISERROR('05: an employee with no leave over the holiday was re-priced.', 16, 1); END
-IF OBJECT_ID('dbo.T_RepriceCalls') IS NULL PRINT '05: (the re-pricing calls are checked only where the stand-in for hr.usp_LeaveLedger_Reprice records them)';
+IF @Stand = 1
+BEGIN
+    EXEC sp_executesql N'SELECT @n = COUNT(*) FROM dbo.T_RepriceCalls WHERE EmployeeId = @E3 AND FromDate = @D AND ToDate = @D', N'@n INT OUTPUT, @E3 INT, @D DATE', @calls OUTPUT, @E3, @Past;
+    IF @calls <> 1 BEGIN SET @fails += 1; RAISERROR('05: the leave over the new holiday was not re-priced.', 16, 1); END
+    EXEC sp_executesql N'SELECT @n = COUNT(*) FROM dbo.T_RepriceCalls WHERE EmployeeId IN (@E1, @E2)', N'@n INT OUTPUT, @E1 INT, @E2 INT', @calls OUTPUT, @E1, @E2;
+    IF @calls <> 0 BEGIN SET @fails += 1; RAISERROR('05: an employee with no leave over the holiday was re-priced.', 16, 1); END
+END
+ELSE
+BEGIN
+    SET @used = (SELECT -SUM(l.Days) FROM hr.LEAVE_LEDGER l JOIN workflow.LEAVE_REQUEST lr ON lr.LeaveRequestId = l.LeaveRequestId
+                 WHERE lr.RequestInstanceId = @Ri AND l.MovementType = 'Usage');
+    IF ISNULL(@used, -1) <> 2 BEGIN SET @fails += 1; RAISERROR('05: the leave over the new holiday still costs the holiday (re-priced to 2 days expected).', 16, 1); END
+END
 
 /* removed again: the rest day is a rest day, and the leave is re-priced once more */
-IF OBJECT_ID('dbo.T_RepriceCalls') IS NOT NULL DELETE FROM dbo.T_RepriceCalls;
+IF @Stand = 1 EXEC (N'DELETE FROM dbo.T_RepriceCalls');
 EXEC core.usp_Holiday_Delete @HolidayId = @H2, @ActedByUserId = @U;
 IF NOT EXISTS (SELECT 1 FROM attendance.ATTENDANCE_RECORD WHERE EmployeeId = @E2 AND WorkDate = @Past AND [Status] = 'RestDay')
     BEGIN SET @fails += 1; RAISERROR('05: the rest day did not come back when the holiday was removed.', 16, 1); END
-IF OBJECT_ID('dbo.T_RepriceCalls') IS NOT NULL
-   AND NOT EXISTS (SELECT 1 FROM dbo.T_RepriceCalls WHERE EmployeeId = @E3 AND FromDate = @Past)
-    BEGIN SET @fails += 1; RAISERROR('05: the leave over the removed holiday was not re-priced.', 16, 1); END
+IF @Stand = 1
+BEGIN
+    EXEC sp_executesql N'SELECT @n = COUNT(*) FROM dbo.T_RepriceCalls WHERE EmployeeId = @E3 AND FromDate = @D', N'@n INT OUTPUT, @E3 INT, @D DATE', @calls OUTPUT, @E3, @Past;
+    IF @calls <> 1 BEGIN SET @fails += 1; RAISERROR('05: the leave over the removed holiday was not re-priced.', 16, 1); END
+END
+ELSE
+BEGIN
+    SET @used = (SELECT -SUM(l.Days) FROM hr.LEAVE_LEDGER l JOIN workflow.LEAVE_REQUEST lr ON lr.LeaveRequestId = l.LeaveRequestId
+                 WHERE lr.RequestInstanceId = @Ri AND l.MovementType = 'Usage');
+    IF ISNULL(@used, -1) <> 3 BEGIN SET @fails += 1; RAISERROR('05: the leave over the removed holiday was not re-priced back to 3 days.', 16, 1); END
+END
 
 IF @@TRANCOUNT > 0 ROLLBACK TRAN;
 IF @fails = 0 PRINT 'ok 05_holidays';
