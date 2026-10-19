@@ -14,6 +14,7 @@ namespace MokaCo.HRMS.Tests.Booking;
 /// payment line. Throw-away bookings on 2099-06-22 (a Monday; the QA case uses the 15th). Skipped,
 /// with the reason, when the database is not reachable.
 /// </summary>
+[Collection(DatabaseCollection.Name)]
 public class OnlineDepositDbTests
 {
     private static readonly DateTime Day = new(2099, 6, 22);

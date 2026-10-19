@@ -15,6 +15,7 @@ namespace MokaCo.HRMS.Tests.Attendance;
 /// appsettings.json) and script 77 has been applied; otherwise every test is skipped with the
 /// reason, so <c>dotnet test</c> stays green on a machine without SQL Server.
 /// </summary>
+[Collection(DatabaseCollection.Name)]
 public class AttendanceDayRuleTests
 {
     /* the Morning shift of the QA fixture: 07:00–16:00, break 30, tolerance 10, standard 510 */

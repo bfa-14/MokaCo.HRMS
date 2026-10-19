@@ -11,6 +11,7 @@ namespace MokaCo.HRMS.Tests.Attendance;
 /// employee is touched. The shift is the brief's: 07:00–15:00, no break, tolerance from the setting.
 /// Skipped, with the reason, when the database is not reachable or script 77 is not applied.
 /// </summary>
+[Collection(DatabaseCollection.Name)]
 public class AttendanceAnomalyTests
 {
     private static readonly DateTime Day = new(2026, 8, 3);
