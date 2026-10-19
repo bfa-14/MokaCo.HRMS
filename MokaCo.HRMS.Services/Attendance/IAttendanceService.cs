@@ -52,4 +52,7 @@ public interface IAttendanceService
 
     /// <summary>D9: enrol the PIN to the employee, hand over the quarantined punches and REPLAY them into their days.</summary>
     Task<QuarantineMapResult> MapQuarantinedDeviceUserAsync(QuarantineMapRequest request, int actedByUserId);
+
+    /// <summary>QA3: set aside the waiting punches of a PIN that belongs to nobody, with the reason.</summary>
+    Task<QuarantineDismissResult> DismissQuarantinedDeviceUserAsync(QuarantineDismissRequest request, int actedByUserId);
 }

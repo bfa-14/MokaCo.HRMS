@@ -93,7 +93,7 @@ public class AttendanceService : IAttendanceService
     /// </summary>
     public Task<AttendanceRecord?> SetExitApprovalAsync(long attendanceId, ExitApprovalRequest request)
         => _repo.SetExitApprovalAsync(attendanceId, request.ExitApprovedMinutes, request.ExitPermissionId,
-            request.AlsoSetActual, request.HrNote);
+            request.AlsoSetActual, request.HrNote, request.ClearHrApproval);
 
     /// <summary>
     /// HR rules on the difference between approved and actual: deduct it, offset it against overtime,
@@ -134,4 +134,7 @@ public class AttendanceService : IAttendanceService
 
     public Task<QuarantineMapResult> MapQuarantinedDeviceUserAsync(QuarantineMapRequest request, int actedByUserId)
         => _repo.MapQuarantinedDeviceUserAsync(request, actedByUserId);
+
+    public Task<QuarantineDismissResult> DismissQuarantinedDeviceUserAsync(QuarantineDismissRequest request, int actedByUserId)
+        => _repo.DismissQuarantinedDeviceUserAsync(request, actedByUserId);
 }

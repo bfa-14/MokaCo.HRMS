@@ -250,6 +250,13 @@ public class ExitApprovalRequest
     public bool AlsoSetActual { get; set; }
 
     public string? HrNote { get; set; }
+
+    /// <summary>
+    /// QA3: forget HR's own approved figure, so the day follows its APPROVED exit permissions again (the figure used to
+    /// win for ever once set, even over a permission approved later). ExitApprovedMinutes is ignored when this is set.
+    /// Refused on a manual day, which has no permissions to fall back on.
+    /// </summary>
+    public bool ClearHrApproval { get; set; }
 }
 
 /// <summary>

@@ -29,7 +29,7 @@ public class AttendanceDayRuleTests
         int ExitActualMinutes, int ExitApprovedMinutes, int ExitVarianceMinutes, int OvertimeMinutes,
         int WorkedMinutes, int CoveredMinutes, decimal? DayFraction, bool IsFullDay,
         int ShortfallMinutes, int BreakApplied, int StandardMinutes, int EarlyDeductMinutes, int ToleranceMinutes,
-        int PermEdgeMinutes);
+        int PermEdgeMinutes, int PermGapMinutes, int OvertimeAbsorbedMinutes);
 
     private static async Task<Outcome> RuleAsync(
         DateTime? firstIn, DateTime? lastOut,
@@ -45,7 +45,8 @@ public class AttendanceDayRuleTests
             """
             SELECT [Status], EffectiveInUtc, EffectiveOutUtc, LateMinutes, LateDeductMinutes, EarlyExitMinutes, MidDayGapMinutes,
                    ExitActualMinutes, ExitApprovedMinutes, ExitVarianceMinutes, OvertimeMinutes, WorkedMinutes, CoveredMinutes,
-                   DayFraction, IsFullDay, ShortfallMinutes, BreakApplied, StandardMinutes, EarlyDeductMinutes, ToleranceMinutes, PermEdgeMinutes
+                   DayFraction, IsFullDay, ShortfallMinutes, BreakApplied, StandardMinutes, EarlyDeductMinutes, ToleranceMinutes, PermEdgeMinutes,
+                   PermGapMinutes, OvertimeAbsorbedMinutes
             FROM attendance.fn_AttendanceDayRule(@ShiftStart, @ShiftEnd, @Break, @Tolerance, @Standard, @FirstIn, @LastOut, @Gap,
                                                  @ExitApproved, @Disposition, @OtApproved, @LateDecision, @EarlyDecision,
                                                  @Threshold, @RestDay, @OnLeave, @Holiday, @PermLate, @PermEarly, @DstExtra)
@@ -562,6 +563,69 @@ public class AttendanceDayRuleTests
         Assert.Equal(expected, r.OvertimeMinutes);
         Assert.Equal(1.00m, r.DayFraction);
         Assert.Equal(0, r.LateMinutes + r.EarlyExitMinutes);
+    }
+
+    /* ======================================================================================
+       QA3 (docs/100_qa3_attendance.sql): the variance rulings price the minutes once (ATT-9), and the status
+       precedence of the handoff - leave, public holiday, rest day, punches.
+       ====================================================================================== */
+
+    /* ---- 'Overtime' ("offset overtime"): the uncovered mid-day minutes come OUT OF the overtime worked that day ---- */
+    [DbTheory]
+    [InlineData(17, 60, 0, 60)]     // 75 to offset, 60 worked after the shift: all 60 absorbed, nothing left to pay
+    [InlineData(18, 120, 45, 75)]   // 120 worked after the shift: 75 absorbed, 45 still overtime
+    public async Task The_overtime_ruling_takes_the_variance_out_of_the_overtime_worked(int outHour, int measured, int overtime, int absorbed)
+    {
+        // out 10:00, in 11:45 (gap 105 = 75 beyond the break), out after the shift
+        var r = await RuleAsync(Day.AddHours(7), Day.AddHours(outHour), gapMinutes: 105, disposition: "Overtime");
+
+        Assert.Equal(75, r.ExitVarianceMinutes);
+        Assert.Equal(absorbed, r.OvertimeAbsorbedMinutes);
+        Assert.Equal(overtime, r.OvertimeMinutes);
+        Assert.Equal(measured, r.OvertimeMinutes + r.OvertimeAbsorbedMinutes);
+        Assert.Equal(1.00m, r.DayFraction);          // the variance stays covered: it was paid for with the overtime
+    }
+
+    [DbTheory]
+    [InlineData("UnpaidAbsence", "0.85")]
+    [InlineData("Ignore", "1.00")]
+    [InlineData(null, "0.85")]
+    public async Task Only_the_overtime_ruling_takes_minutes_out_of_the_overtime(string? disposition, string fraction)
+    {
+        var r = await RuleAsync(Day.AddHours(7), Day.AddHours(18), gapMinutes: 105, disposition: disposition);
+
+        Assert.Equal(120, r.OvertimeMinutes);
+        Assert.Equal(0, r.OvertimeAbsorbedMinutes);
+        Assert.Equal(decimal.Parse(fraction, System.Globalization.CultureInfo.InvariantCulture), r.DayFraction);
+    }
+
+    /* ---- the leave conversion takes the permission minutes the day USED (gap + edges), never the variance ---- */
+    [DbFact]
+    public async Task The_permission_minutes_used_in_the_gap_are_reported_apart_from_the_variance()
+    {
+        // 75 beyond the break, 60 approved without a window: 60 of the gap are the permission's, 15 are the variance
+        var r = await RuleAsync(Day.AddHours(7), Day.AddHours(16), gapMinutes: 105, exitApproved: 60, disposition: "UnpaidAbsence");
+
+        Assert.Equal(75, r.ExitActualMinutes);
+        Assert.Equal(60, r.PermGapMinutes);
+        Assert.Equal(15, r.ExitVarianceMinutes);
+        Assert.Equal(0, r.PermEdgeMinutes);
+    }
+
+    /* ---- precedence: approved leave, then a public holiday, then a rostered rest day (handoff 7.2) ---- */
+    [DbTheory]
+    [InlineData(true, false, true, "Holiday")]   // a public holiday on a rest day is the holiday (paid, premium when worked)
+    [InlineData(false, true, true, "Leave")]
+    [InlineData(true, true, false, "Leave")]
+    [InlineData(true, false, false, "RestDay")]
+    public async Task Leave_comes_first_then_the_public_holiday_then_the_rest_day(bool restDay, bool onLeave, bool holiday, string status)
+    {
+        var r = await RuleAsync(Day.AddHours(8), Day.AddHours(12), restDay: restDay, onLeave: onLeave, holiday: holiday,
+                                noShift: restDay, standard: restDay ? 0 : null, breakMinutes: 0);
+
+        Assert.Equal(status, r.Status);
+        Assert.Null(r.DayFraction);
+        Assert.Equal(240, r.WorkedMinutes);          // visible for the holiday-work premium
     }
 }
 
