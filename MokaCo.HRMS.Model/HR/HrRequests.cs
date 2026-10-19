@@ -77,6 +77,12 @@ public class EmployeeCreateRequest
 
     /// <summary>'en' or 'ar'. Omitted means 'en' — the procedure defaults it, so an older caller still works.</summary>
     public string? PreferredLanguage { get; set; }
+
+    /// <summary>
+    /// The seniority tier (hr.APPROVAL_TIER, where 1 is the HEAD — decision D6). Omitted means the LOWEST tier of the
+    /// dictionary, never 1: hr.usp_Employee_Create decides (QA3 LEAD-1), and refuses a tier the dictionary does not have.
+    /// </summary>
+    public int? ApprovalTier { get; set; }
 }
 
 public class EmployeeUpdateRequest
@@ -121,7 +127,7 @@ public class EmployeeBranchHistoryRow
     public string? CreatedByName { get; set; }
 }
 
-/// <summary>Body of PUT /api/employees/{id}/approval-tier — the requester's tier (1/2/3).</summary>
+/// <summary>Body of PUT /api/employees/{id}/approval-tier — a tier of the dictionary (hr.APPROVAL_TIER; 1 = the head).</summary>
 public class ApprovalTierRequest
 {
     public int ApprovalTier { get; set; }

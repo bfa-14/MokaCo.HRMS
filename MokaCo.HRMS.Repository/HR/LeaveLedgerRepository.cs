@@ -23,21 +23,6 @@ public class LeaveLedgerRepository : ILeaveLedgerRepository
             commandType: CommandType.StoredProcedure);
     }
 
-    /// <summary>
-    /// Everybody's approved leave days in a range, one row per employee-day. Backed by
-    /// hr.usp_LeaveLedger_GetDaysInRange, which derives leave from 'Usage' movements using the same
-    /// rule attendance.usp_Attendance_MarkLeaveDays uses — the roster and the processor must never
-    /// disagree about who was on leave.
-    /// </summary>
-    public async Task<IEnumerable<LeaveDay>> GetLeaveDaysInRangeAsync(DateTime fromDate, DateTime toDate)
-    {
-        using var db = _factory.Create();
-        return await db.QueryAsync<LeaveDay>(
-            "hr.usp_LeaveLedger_GetDaysInRange",
-            new { FromDate = fromDate, ToDate = toDate },
-            commandType: CommandType.StoredProcedure);
-    }
-
     public async Task<int> PostMovementAsync(
         int employeeId, int leaveTypeId, string movementType, decimal days, DateTime effectiveDate,
         int? leaveRequestId, string? note, int? createdBy)

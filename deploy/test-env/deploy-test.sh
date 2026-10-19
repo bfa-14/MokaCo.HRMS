@@ -69,6 +69,16 @@ if [ "$what" != web ]; then
     sudo journalctl -u "$UNIT" --since "$since" --no-pager -o cat | tail -n 40 >&2 || true
     die "the new test API did not come up as expected (log above); it has been stopped. /health said: ${health:-nothing}"
   fi
+  # QA3 deploy guard: the API names every docs/NN_*.sql it calls that the test database lacks ("schema":"behind").
+  # A test API running ahead of its SQL fails feature by feature, far from the cause: it is stopped here, with the list.
+  if grep -q '"schema":"behind"' <<< "$health"; then
+    sleep 2   # the console log is written in the background: give the line time to reach the journal
+    sudo journalctl -u "$UNIT" --since "$since" --no-pager -o cat 2>/dev/null \
+      | grep -o 'DATABASE SCRIPTS NOT APPLIED: [^ ]*\( [^ ]*\)*\.sql' | tail -n 1 | sed 's/^/    /' >&2 || true
+    sudo systemctl stop "$UNIT" || true
+    die "MokaCo_HRMS_Test lacks scripts this API calls (listed above); the test API has been stopped. Apply them in number order with apply-sql-test.sh, then run this again."
+  fi
+  grep -q '"schema":"unknown"' <<< "$health" && echo "    WARNING: the API could not check the test database's scripts (see: sudo journalctl -u $UNIT)."
   echo "    $health"
 fi
 

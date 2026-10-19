@@ -1,6 +1,8 @@
 using MokaCo.HRMS.Repository.Security;
 using MokaCo.HRMS.Repository.Workflow;
 using MokaCo.HRMS.Services.Auth;
+using MokaCo.HRMS.Services.Core;
+using MokaCo.HRMS.Services.Security;
 
 namespace MokaCo.HRMS.Services.Workflow;
 
@@ -25,19 +27,22 @@ public interface IDecisionSignatureService
 ///   who simply omits the password cannot skip a signature the policy demands; an unrequested
 ///   password is DROPPED rather than half-checked, because an unrequested signature is not one; and
 ///   a wrong password is a 401 raised before any write, so a mistyped one costs nothing but the
-///   attempt. The password itself is never stored, logged or echoed back.
+///   attempt — which counts against the login lockout (QA3, item 10). The password itself is never
+///   stored, logged or echoed back.
 /// </summary>
 public class DecisionSignatureService : IDecisionSignatureService
 {
     private readonly IRequestRepository _requests;
     private readonly IUserRepository _users;
     private readonly IPasswordHasher _hasher;
+    private readonly MissingScriptWarning? _missingScript;
 
-    public DecisionSignatureService(IRequestRepository requests, IUserRepository users, IPasswordHasher hasher)
+    public DecisionSignatureService(IRequestRepository requests, IUserRepository users, IPasswordHasher hasher, MissingScriptWarning? missingScript = null)
     {
         _requests = requests;
         _users = users;
         _hasher = hasher;
+        _missingScript = missingScript;
     }
 
     public async Task<bool> VerifyAsync(int requestInstanceId, int userId, string? password)
@@ -51,10 +56,12 @@ public class DecisionSignatureService : IDecisionSignatureService
                 401,
                 requirement.Explanation ?? "This decision must be signed with your password.");
 
-        var user = await _users.GetByIdAsync(userId);
-        if (user is null || !_hasher.Verify(password, user.PasswordHash))
-            throw new WorkflowException(401, "That password is not correct.");
-
-        return true;
+        // Counted against the login lockout, and refused while locked (QA3, item 10): see AccountPassword.
+        return await AccountPassword.CheckAsync(_users, _hasher, userId, password, _missingScript) switch
+        {
+            PasswordVerdict.Ok => true,
+            PasswordVerdict.Locked => throw new WorkflowException(401, AuthService.Locked),
+            _ => throw new WorkflowException(401, "That password is not correct."),
+        };
     }
 }

@@ -55,7 +55,7 @@ public class RosterLockTests
     public async Task Set_day_surfaces_the_409_and_the_sentence()
     {
         var roster = new Mock<IRosterService>();
-        roster.Setup(r => r.SetDayAsync(It.IsAny<RosterDayRequest>())).ThrowsAsync(new WorkflowException(409, PastOrRecorded));
+        roster.Setup(r => r.SetDayAsync(It.IsAny<RosterDayRequest>(), It.IsAny<int?>())).ThrowsAsync(new WorkflowException(409, PastOrRecorded));
 
         var result = await Controller(roster).SetDay(new RosterDayRequest
         {
@@ -69,7 +69,7 @@ public class RosterLockTests
     public async Task Delete_surfaces_the_409_and_the_sentence()
     {
         var roster = new Mock<IRosterService>();
-        roster.Setup(r => r.DeleteAsync(77)).ThrowsAsync(new WorkflowException(409, WaitingForApproval));
+        roster.Setup(r => r.DeleteAsync(77, It.IsAny<int?>())).ThrowsAsync(new WorkflowException(409, WaitingForApproval));
 
         AssertConflict(await Controller(roster).Delete(77), WaitingForApproval);
     }
@@ -78,10 +78,10 @@ public class RosterLockTests
     public async Task Generators_surface_the_409_and_the_sentence()
     {
         var roster = new Mock<IRosterService>();
-        roster.Setup(r => r.GenerateAsync(It.IsAny<RosterGenerateRequest>())).ThrowsAsync(new WorkflowException(409, WaitingForApproval));
-        roster.Setup(r => r.GenerateBulkAsync(It.IsAny<RosterGenerateBulkRequest>())).ThrowsAsync(new WorkflowException(409, WaitingForApproval));
-        roster.Setup(r => r.CopyPeriodAsync(It.IsAny<RosterCopyPeriodRequest>())).ThrowsAsync(new WorkflowException(409, PastOrRecorded));
-        roster.Setup(r => r.ApplyPatternAsync(It.IsAny<RosterApplyPatternRequest>())).ThrowsAsync(new WorkflowException(409, PastOrRecorded));
+        roster.Setup(r => r.GenerateAsync(It.IsAny<RosterGenerateRequest>(), It.IsAny<int?>())).ThrowsAsync(new WorkflowException(409, WaitingForApproval));
+        roster.Setup(r => r.GenerateBulkAsync(It.IsAny<RosterGenerateBulkRequest>(), It.IsAny<int?>())).ThrowsAsync(new WorkflowException(409, WaitingForApproval));
+        roster.Setup(r => r.CopyPeriodAsync(It.IsAny<RosterCopyPeriodRequest>(), It.IsAny<int?>())).ThrowsAsync(new WorkflowException(409, PastOrRecorded));
+        roster.Setup(r => r.ApplyPatternAsync(It.IsAny<RosterApplyPatternRequest>(), It.IsAny<int?>())).ThrowsAsync(new WorkflowException(409, PastOrRecorded));
         var controller = Controller(roster);
 
         AssertConflict(await controller.Generate(new RosterGenerateRequest
@@ -92,8 +92,8 @@ public class RosterLockTests
         {
             EmployeeIds = new List<int> { 1, 2 }, FromDate = new DateTime(2026, 8, 1), ToDate = new DateTime(2026, 8, 31), ShiftId = 1, Weekdays = "1111100",
         }), WaitingForApproval);
-        AssertConflict(await controller.CopyPeriod(new RosterCopyPeriodRequest { SourceYearMonth = "2026-07", TargetYearMonth = "2026-08" }), PastOrRecorded);
-        AssertConflict(await controller.ApplyPattern(new RosterApplyPatternRequest { YearMonth = "2026-08" }), PastOrRecorded);
+        AssertConflict(await controller.CopyPeriod(new RosterCopyPeriodRequest { SourceYearMonth = "2026-07", TargetYearMonth = "2026-08", BranchId = 1 }), PastOrRecorded);
+        AssertConflict(await controller.ApplyPattern(new RosterApplyPatternRequest { YearMonth = "2026-08", BranchId = 1 }), PastOrRecorded);
     }
 
     /// <summary>A refusal must leave the live screens alone — nothing changed, so nothing to push.</summary>
@@ -101,7 +101,7 @@ public class RosterLockTests
     public async Task A_refused_write_does_not_notify_the_live_screens()
     {
         var roster = new Mock<IRosterService>();
-        roster.Setup(r => r.SetDayAsync(It.IsAny<RosterDayRequest>())).ThrowsAsync(new WorkflowException(409, PastOrRecorded));
+        roster.Setup(r => r.SetDayAsync(It.IsAny<RosterDayRequest>(), It.IsAny<int?>())).ThrowsAsync(new WorkflowException(409, PastOrRecorded));
         var live = new Mock<ILiveNotifier>(MockBehavior.Strict);
         var controller = new RosterController(roster.Object, live.Object) { ControllerContext = TestPrincipal.For(userId: 20) };
 

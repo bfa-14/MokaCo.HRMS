@@ -21,6 +21,10 @@ namespace MokaCo.HRMS.Api.Controllers;
 /// a day already in the past or already judged by attendance is a record — those come back as a 409
 /// with the procedure's sentence. A future day of an approved month may still be changed by the
 /// roster manager; the month stays Approved and the roster-month read reports ChangedSinceApproval.
+///
+/// QA3 (ROS-14): every write passes the CALLER to the procedure, which refuses a branch they do not manage unless
+/// they hold EMP_VIEW_ALL — a 403 with the sentence. QA3 (ROS-6): HR may still add a MISSING day in the past of an
+/// approved month (no record, not paid); the procedure derives that day at once.
 /// </summary>
 [ApiController]
 [Route("api/roster")]
@@ -64,7 +68,7 @@ public class RosterController : ControllerBase
 
         try
         {
-            var id = await _roster.SetDayAsync(request);
+            var id = await _roster.SetDayAsync(request, User.UserId());
             await NotifyRosterAsync();
             return Ok(new { shiftAssignmentId = id });
         }
@@ -80,7 +84,7 @@ public class RosterController : ControllerBase
     {
         try
         {
-            await _roster.DeleteAsync(id);
+            await _roster.DeleteAsync(id, User.UserId());
             await NotifyRosterAsync();
             return NoContent();
         }
@@ -101,7 +105,7 @@ public class RosterController : ControllerBase
 
         try
         {
-            var generated = await _roster.GenerateAsync(request);
+            var generated = await _roster.GenerateAsync(request, User.UserId());
             await NotifyRosterAsync();
             return Ok(generated);
         }
@@ -125,7 +129,7 @@ public class RosterController : ControllerBase
 
         try
         {
-            var generated = await _roster.GenerateBulkAsync(request);
+            var generated = await _roster.GenerateBulkAsync(request, User.UserId());
             await NotifyRosterAsync();
             return Ok(generated);
         }
@@ -143,9 +147,13 @@ public class RosterController : ControllerBase
         if (!IsYearMonth(request.SourceYearMonth) || !IsYearMonth(request.TargetYearMonth))
             return BadRequest(new { error = "Periods must look like '2026-06'." });
 
+        // QA3 (ROS-3): a copy works on ONE branch. Without one it used to write every branch's month at once.
+        if (request.BranchId is null)
+            return BadRequest(new { error = "Choose a branch — copying a month works on one branch at a time." });
+
         try
         {
-            var copied = await _roster.CopyPeriodAsync(request);
+            var copied = await _roster.CopyPeriodAsync(request, User.UserId());
             await NotifyRosterAsync();
             return Ok(copied);
         }
@@ -163,9 +171,13 @@ public class RosterController : ControllerBase
         if (!IsYearMonth(request.YearMonth))
             return BadRequest(new { error = "Period must look like '2026-06'." });
 
+        // QA3 (ROS-3): the patterns are applied to ONE branch.
+        if (request.BranchId is null)
+            return BadRequest(new { error = "Choose a branch — weekly patterns are applied to one branch at a time." });
+
         try
         {
-            var applied = await _roster.ApplyPatternAsync(request);
+            var applied = await _roster.ApplyPatternAsync(request, User.UserId());
             await NotifyRosterAsync();
             return Ok(applied);
         }
@@ -175,15 +187,65 @@ public class RosterController : ControllerBase
         }
     }
 
-    /// <summary>Employee-days with NO roster row at all. These are the ones that block payroll.</summary>
+    /// <summary>
+    /// Employee-days with NO roster row at all. These are the ones that block payroll. QA3: `branchId` = one branch, by
+    /// the branch each employee belonged to ON the day (ROS-8); a public holiday of that branch is not a gap (ROS-10).
+    /// </summary>
     [HttpGet("gaps")]
     [HasPermission("ATTENDANCE_VIEW")]
-    public async Task<IActionResult> GetGaps([FromQuery] DateTime from, [FromQuery] DateTime to)
+    public async Task<IActionResult> GetGaps([FromQuery] DateTime from, [FromQuery] DateTime to, [FromQuery] int? branchId = null)
     {
         if (from > to)
             return BadRequest(new { error = "'from' must be on or before 'to'." });
 
-        return Ok(await _roster.GetGapsAsync(from, to, User.UserId()));
+        return Ok(await _roster.GetGapsAsync(from, to, User.UserId(), branchId));
+    }
+
+    /// <summary>
+    /// QA3 (ROS-4 / LEV-5): who is on APPROVED leave, by day — the roster grid's leave overlay. Read from the leave
+    /// requests (the days the approval covers, a half day as 0.5), not from the ledger, which books a month of leave
+    /// on one date and also holds exit-permission minutes converted to leave. Scoped like the roster read.
+    /// </summary>
+    [HttpGet("leave-days")]
+    [HasPermission("ATTENDANCE_VIEW")]
+    public async Task<IActionResult> GetLeaveDays([FromQuery] DateTime from, [FromQuery] DateTime to, [FromQuery] int? branchId = null)
+    {
+        if (from > to)
+            return BadRequest(new { error = "'from' must be on or before 'to'." });
+
+        try
+        {
+            return Ok(await _roster.GetLeaveDaysAsync(from, to, branchId, User.UserId()));
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// QA3 (REL-16): "Re-derive month" — the branch-month's completed days (the 1st to yesterday) derived again from the
+    /// roster as it stands, after a settings change for instance. Approving a month does this by itself. Paid and manual
+    /// days are left alone. ATTENDANCE_MANAGE, scoped to the branches the caller may plan.
+    /// </summary>
+    [HttpPost("rederive-month")]
+    [HasPermission("ATTENDANCE_MANAGE")]
+    public async Task<IActionResult> RederiveMonth([FromBody] RosterRederiveRequest request)
+    {
+        if (!IsYearMonth(request.YearMonth))
+            return BadRequest(new { error = "Period must look like '2026-06'." });
+
+        try
+        {
+            var month = DateTime.Parse($"{request.YearMonth}-01", System.Globalization.CultureInfo.InvariantCulture);
+            var result = await _roster.RederiveMonthAsync(request.BranchId, month.Year, month.Month, User.UserId());
+            await NotifyRosterAsync();
+            return Ok(result);
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
     }
 
     [HttpGet("patterns/{employeeId:int}")]

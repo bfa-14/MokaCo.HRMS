@@ -19,4 +19,15 @@ public class ScopeRepository : IScopeRepository
             new { CallerUserId = callerUserId, EmployeeId = employeeId, AttendanceId = attendanceId, DocumentId = documentId },
             commandType: CommandType.StoredProcedure);
     }
+
+    public async Task<CallerScopeSet> CallerEmployeesAsync(int callerUserId, DateTime? fromDate, DateTime? toDate)
+    {
+        using var db = _factory.Create();
+        var rows = await MissingScriptException.GuardAsync(Scripts.Security105, "hr.usp_Scope_CallerEmployees",
+            () => db.QueryAsync<(string Kind, int? Id)>(
+                "hr.usp_Scope_CallerEmployees",
+                new { CallerUserId = callerUserId, FromDate = fromDate?.Date, ToDate = toDate?.Date },
+                commandType: CommandType.StoredProcedure));
+        return CallerScopeSet.From(rows);
+    }
 }
