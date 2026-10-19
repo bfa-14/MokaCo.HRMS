@@ -65,6 +65,12 @@ var connectionString = builder.Configuration.GetConnectionString("MokaCo")
 var jwtOptions = builder.Configuration.GetSection("Jwt").Get<JwtOptions>()
     ?? throw new InvalidOperationException("Missing 'Jwt' configuration.");
 
+// THE SIGNING KEY MUST BE THIS SERVER'S OWN (QA3). The tracked appsettings.json carries a placeholder
+// anybody can read in git; a server left on it (or on a blank or short key) would accept a token
+// forged by anybody, for any user and any permission. The message names the key, never the value.
+if (jwtOptions.SecretKeyProblem() is { } jwtKeyProblem)
+    throw new InvalidOperationException(jwtKeyProblem);
+
 // ONLINE DEPOSITS (MPGS). The gateway's credentials and the two public origins come from the
 // environment — /etc/mokaco/api.env in production, the gitignored appsettings.Local.json in
 // development — never from a tracked file. A missing or malformed value does NOT stop the start
