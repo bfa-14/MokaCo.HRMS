@@ -124,6 +124,32 @@ BEGIN
     RETURN 0;
 END;
 GO
+/* for the leave phases: a leave chain of HR then the Owner, both may adjust (every other active leave chain retires
+   inside the phase's transaction). An unpaid type (no balance to seed) and a Mon-Fri roster for one week of June 2097. */
+IF OBJECT_ID('tempdb..#QA3_LeaveSetup') IS NOT NULL DROP PROCEDURE #QA3_LeaveSetup;
+GO
+CREATE PROCEDURE #QA3_LeaveSetup @LeaveTypeId INT OUTPUT, @Mon DATE OUTPUT AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @emp INT = (SELECT v FROM #ctx WHERE k = 'empId'), @rHR INT = (SELECT v FROM #ctx WHERE k = 'rHR'),
+            @rOwner INT = (SELECT v FROM #ctx WHERE k = 'rOwner'), @def INT;
+    UPDATE workflow.WORKFLOW_DEFINITION SET [Status] = 'Retired'
+    WHERE [Status] = 'Active' AND RequestTypeId = (SELECT RequestTypeId FROM workflow.REQUEST_TYPE WHERE Code = 'LEAVE_REQUEST');
+    EXEC #QA3_Chain 'LEAVE_REQUEST', @rHR, @rOwner, 1, 1, NULL, @def OUTPUT;
+    INSERT INTO attendance.SHIFT (Name, StartTime, EndTime, GraceMinutes, CrossesMidnight, BreakMinutes, IsActive)
+    VALUES (N'QA3 WF4 Day', '08:00', '16:00', NULL, 0, 30, 1);
+    DECLARE @Shift INT = SCOPE_IDENTITY();
+    INSERT INTO hr.LEAVE_TYPE (Name, IsPaid, AccrualPerMonth, CarryOver, RequiresCertificate, MinServiceMonthsToUse, NoticePreferredDays,
+                               FixedEntitlementDays, IsDiscretionary, IsActive)
+    VALUES (N'QA3 WF4 Unpaid', 0, 0, 0, 0, 0, 0, NULL, 0, 1);
+    SET @LeaveTypeId = SCOPE_IDENTITY();
+    SET @Mon = '2097-06-01';
+    WHILE DATEDIFF(DAY, '19000101', @Mon) % 7 <> 0 SET @Mon = DATEADD(DAY, 1, @Mon);      -- a Monday
+    INSERT INTO attendance.SHIFT_ASSIGNMENT (EmployeeId, ShiftId, WorkDate, IsRestDay)
+    SELECT @emp, CASE WHEN v.n < 5 THEN @Shift END, DATEADD(DAY, v.n, @Mon), CASE WHEN v.n < 5 THEN 0 ELSE 1 END
+    FROM (VALUES (0), (1), (2), (3), (4), (5), (6)) v(n);
+END;
+GO
 /* ---------------- phase 1: without a note the final approval over an advisory rejection is refused ---------------- */
 BEGIN TRAN;
 EXEC #QA3_Seed;

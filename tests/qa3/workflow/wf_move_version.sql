@@ -124,6 +124,32 @@ BEGIN
     RETURN 0;
 END;
 GO
+/* for the leave phases: a leave chain of HR then the Owner, both may adjust (every other active leave chain retires
+   inside the phase's transaction). An unpaid type (no balance to seed) and a Mon-Fri roster for one week of June 2097. */
+IF OBJECT_ID('tempdb..#QA3_LeaveSetup') IS NOT NULL DROP PROCEDURE #QA3_LeaveSetup;
+GO
+CREATE PROCEDURE #QA3_LeaveSetup @LeaveTypeId INT OUTPUT, @Mon DATE OUTPUT AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @emp INT = (SELECT v FROM #ctx WHERE k = 'empId'), @rHR INT = (SELECT v FROM #ctx WHERE k = 'rHR'),
+            @rOwner INT = (SELECT v FROM #ctx WHERE k = 'rOwner'), @def INT;
+    UPDATE workflow.WORKFLOW_DEFINITION SET [Status] = 'Retired'
+    WHERE [Status] = 'Active' AND RequestTypeId = (SELECT RequestTypeId FROM workflow.REQUEST_TYPE WHERE Code = 'LEAVE_REQUEST');
+    EXEC #QA3_Chain 'LEAVE_REQUEST', @rHR, @rOwner, 1, 1, NULL, @def OUTPUT;
+    INSERT INTO attendance.SHIFT (Name, StartTime, EndTime, GraceMinutes, CrossesMidnight, BreakMinutes, IsActive)
+    VALUES (N'QA3 WF4 Day', '08:00', '16:00', NULL, 0, 30, 1);
+    DECLARE @Shift INT = SCOPE_IDENTITY();
+    INSERT INTO hr.LEAVE_TYPE (Name, IsPaid, AccrualPerMonth, CarryOver, RequiresCertificate, MinServiceMonthsToUse, NoticePreferredDays,
+                               FixedEntitlementDays, IsDiscretionary, IsActive)
+    VALUES (N'QA3 WF4 Unpaid', 0, 0, 0, 0, 0, 0, NULL, 0, 1);
+    SET @LeaveTypeId = SCOPE_IDENTITY();
+    SET @Mon = '2097-06-01';
+    WHILE DATEDIFF(DAY, '19000101', @Mon) % 7 <> 0 SET @Mon = DATEADD(DAY, 1, @Mon);      -- a Monday
+    INSERT INTO attendance.SHIFT_ASSIGNMENT (EmployeeId, ShiftId, WorkDate, IsRestDay)
+    SELECT @emp, CASE WHEN v.n < 5 THEN @Shift END, DATEADD(DAY, v.n, @Mon), CASE WHEN v.n < 5 THEN 0 ELSE 1 END
+    FROM (VALUES (0), (1), (2), (3), (4), (5), (6)) v(n);
+END;
+GO
 /* ---------------- phase 1: a request stays inside its population - the management chain is not offered nor accepted ---------------- */
 BEGIN TRAN;
 EXEC #QA3_Seed;
@@ -265,6 +291,41 @@ SELECT @what = CONCAT(N'steps after the move: ', (SELECT STRING_AGG(CONCAT(si.St
 SET @ok = CASE WHEN (SELECT CurrentStepNo FROM @mv) = 2
                 AND EXISTS (SELECT 1 FROM workflow.REQUEST_STEP_INSTANCE WHERE RequestInstanceId = @rid AND StepNo = 2 AND Name = N'QA3 GM' AND [Status] = 'Pending')
                 AND EXISTS (SELECT 1 FROM workflow.REQUEST_STEP_INSTANCE WHERE RequestInstanceId = @rid AND StepNo = 3 AND Name = N'QA3 Owner' AND [Status] = 'Pending') THEN 1 ELSE 0 END;
+EXEC #QA3_Check @ok, @what;
+IF @@TRANCOUNT > 0 ROLLBACK;
+GO
+/* ---------------- phase 6: a confirmed move that would approve a leave on paid days is refused with the paid
+                    sentence - unit D's poster fails the move's transaction (script 99), nothing is approved ---------------- */
+BEGIN TRAN;
+EXEC #QA3_Seed;
+DECLARE @hr1 INT = (SELECT v FROM #ctx WHERE k = 'hr1'), @uEmp INT = (SELECT v FROM #ctx WHERE k = 'emp'),
+        @emp INT = (SELECT v FROM #ctx WHERE k = 'empId'), @rHR INT = (SELECT v FROM #ctx WHERE k = 'rHR');
+DECLARE @lt INT, @Mon DATE, @rid INT, @vc INT, @run INT, @err NVARCHAR(400), @what NVARCHAR(600), @ok BIT;
+EXEC #QA3_LeaveSetup @lt OUTPUT, @Mon OUTPUT;
+DECLARE @Wed DATE = DATEADD(DAY, 2, @Mon), @Ym CHAR(7) = CONVERT(CHAR(7), @Mon, 23);
+EXEC workflow.usp_LeaveRequest_Create @EmployeeId = @emp, @RaisedByUserId = @uEmp, @LeaveTypeId = @lt,
+     @FromDate = @Mon, @ToDate = @Wed, @Reason = N'QA3 move on paid days';
+SET @rid = (SELECT TOP 1 RequestInstanceId FROM workflow.LEAVE_REQUEST WHERE EmployeeId = @emp ORDER BY LeaveRequestId DESC);
+EXEC workflow.usp_LeaveRequest_Decide @RequestInstanceId = @rid, @ActedByUserId = @hr1, @Comment = N'QA3 fine', @SignedWithPassword = 1;
+/* the month is paid for the employee meanwhile */
+SET @run = (SELECT PayrollRunId FROM payroll.PAYROLL_RUN WHERE PeriodYearMonth = @Ym AND RunType = 'Primary' AND [Status] <> 'Cancelled');
+IF @run IS NULL
+BEGIN
+    INSERT INTO payroll.PAYROLL_RUN (PeriodYearMonth, PeriodStart, PeriodEnd, PrimaryCurrency, Notes, CreatedByUserId, RunType, [Status])
+    VALUES (@Ym, DATEFROMPARTS(YEAR(@Mon), MONTH(@Mon), 1), EOMONTH(@Mon), 'USD', N'QA3 paid month', @hr1, 'Primary', 'Approved');
+    SET @run = SCOPE_IDENTITY();
+END
+ELSE UPDATE payroll.PAYROLL_RUN SET [Status] = 'Approved' WHERE PayrollRunId = @run;
+INSERT INTO payroll.PAYSLIP (PayrollRunId, EmployeeId, EmployeeName) VALUES (@run, @emp, N'QA3 paid');
+EXEC #QA3_Chain 'LEAVE_REQUEST', @rHR, @DefId = @vc OUTPUT;          -- HR only: after HR's approval nothing is left
+DECLARE @mv TABLE (RequestInstanceId INT, [Status] VARCHAR(20), CurrentStepNo INT, MovedFromVersion INT, MovedToVersion INT, VersionMovedAt DATETIME2, VersionMovedBy INT);
+BEGIN TRY
+    INSERT INTO @mv EXEC workflow.usp_Request_MoveToVersion @RequestInstanceId = @rid, @TargetWorkflowDefinitionId = @vc, @ActedByUserId = @hr1,
+         @Reason = N'QA3 shorter chain', @ConfirmClose = 1;
+END TRY
+BEGIN CATCH SET @err = ERROR_MESSAGE(); END CATCH
+SET @what = CONCAT(N'a confirmed move that would approve a leave on paid days is refused with the paid sentence - got: ', ISNULL(@err, N'accepted'));
+SET @ok = CASE WHEN @err = CONCAT(N'This period is paid ', NCHAR(8212), N' raise a payroll adjustment instead.') THEN 1 ELSE 0 END;
 EXEC #QA3_Check @ok, @what;
 IF @@TRANCOUNT > 0 ROLLBACK;
 GO

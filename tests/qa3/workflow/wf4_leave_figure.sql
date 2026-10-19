@@ -124,8 +124,8 @@ BEGIN
     RETURN 0;
 END;
 GO
-/* the leave chain of these phases: HR then the Owner, both may adjust; every other active leave chain retires inside
-   the phase's transaction. An unpaid type (no balance to seed) and a Mon-Fri roster for one week of June 2097. */
+/* for the leave phases: a leave chain of HR then the Owner, both may adjust (every other active leave chain retires
+   inside the phase's transaction). An unpaid type (no balance to seed) and a Mon-Fri roster for one week of June 2097. */
 IF OBJECT_ID('tempdb..#QA3_LeaveSetup') IS NOT NULL DROP PROCEDURE #QA3_LeaveSetup;
 GO
 CREATE PROCEDURE #QA3_LeaveSetup @LeaveTypeId INT OUTPUT, @Mon DATE OUTPUT AS
@@ -150,7 +150,6 @@ BEGIN
     FROM (VALUES (0), (1), (2), (3), (4), (5), (6)) v(n);
 END;
 GO
-
 /* ---------------- phase 1: HR grants 2 of 3 days, then withdraws: the request asks for 3 again ---------------- */
 BEGIN TRAN;
 EXEC #QA3_Seed;
