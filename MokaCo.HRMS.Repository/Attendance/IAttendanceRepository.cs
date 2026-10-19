@@ -26,7 +26,7 @@ public interface IAttendanceRepository
 
     /* -- HR overrides -- */
     Task<AttendanceRecord?> ManualUpsertAsync(ManualAttendanceRequest request);
-    Task<AttendanceRecord?> SetExitApprovalAsync(long attendanceId, int exitApprovedMinutes, int? exitPermissionId, bool alsoSetActual, string? hrNote);
+    Task<AttendanceRecord?> SetExitApprovalAsync(long attendanceId, int exitApprovedMinutes, int? exitPermissionId, bool alsoSetActual, string? hrNote, bool clearHrApproval = false);
     Task<AttendanceRecord?> SetExitDispositionAsync(long attendanceId, string disposition, int? exitLeaveMinutesOverride, string? hrNote);
     Task<AttendanceRecord?> HrAdjustDayAsync(long attendanceId, int? workedMinutes, decimal? dayFraction, string? status, string hrNote, int? modifiedBy);
 
@@ -57,4 +57,7 @@ public interface IAttendanceRepository
 
     /// <summary>D9: enrol the PIN to the employee, hand over the quarantined punches and REPLAY them into their days.</summary>
     Task<QuarantineMapResult> MapQuarantinedDeviceUserAsync(QuarantineMapRequest request, int actedByUserId);
+
+    /// <summary>QA3: set aside the waiting punches of a PIN that belongs to nobody, with the reason.</summary>
+    Task<QuarantineDismissResult> DismissQuarantinedDeviceUserAsync(QuarantineDismissRequest request, int actedByUserId);
 }

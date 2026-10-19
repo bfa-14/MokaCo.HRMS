@@ -45,6 +45,10 @@ DECLARE @BidA INT, @RefA VARCHAR(12), @BidB INT, @RefB VARCHAR(12), @BidC INT, @
 
 BEGIN TRAN;
 BEGIN TRY
+    /* QA3 BKG-1 (docs/104): a payment is opened only on a DEPOSIT booking while online deposits are on -
+       both are set here, inside the transaction that is rolled back */
+    UPDATE core.SETTING SET SettingValue = '1' WHERE SettingKey = 'BookingDepositRequired';
+
     /* three website bookings waiting for payment: made as staff bookings (no lead-time rules this far out), then turned Pending/Website */
     INSERT INTO @made EXEC booking.usp_Booking_Create @RoomId = @Room, @BookDate = @Day, @StartTime = '10:00', @EndTime = '12:00', @Persons = 1, @GuestName = N'QA Deposit A', @GuestPhone = '+96170000071', @Source = 'Manual';
     INSERT INTO @made EXEC booking.usp_Booking_Create @RoomId = @Room, @BookDate = @Day, @StartTime = '13:00', @EndTime = '14:00', @Persons = 1, @GuestName = N'QA Deposit B', @GuestPhone = '+96170000072', @Source = 'Manual';
@@ -52,7 +56,7 @@ BEGIN TRY
     SELECT @BidA = MIN(BookingId) FROM @made;                        SELECT @RefA = BookingRef FROM @made WHERE BookingId = @BidA;
     SELECT @BidB = MIN(BookingId) FROM @made WHERE BookingId > @BidA;  SELECT @RefB = BookingRef FROM @made WHERE BookingId = @BidB;
     SELECT @BidC = MAX(BookingId) FROM @made;                        SELECT @RefC = BookingRef FROM @made WHERE BookingId = @BidC;
-    UPDATE booking.BOOKING SET [Status] = 'Pending', [Source] = 'Website' WHERE BookingId IN (@BidA, @BidB, @BidC);
+    UPDATE booking.BOOKING SET [Status] = 'Pending', [Source] = 'Website', OnlineDeposit = 1 WHERE BookingId IN (@BidA, @BidB, @BidC);
 
     /* D1 */
     INSERT INTO @sp EXEC booking.usp_Booking_StartPayment @Ref = @RefA;

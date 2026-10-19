@@ -50,6 +50,11 @@ public class ShiftsController : ControllerBase
     [HasPermission("ATTENDANCE_MANAGE")]
     public async Task<IActionResult> Update(int id, [FromBody] ShiftUpdateRequest request)
     {
+        // QA3 (ATT-7): the same checks as Create. Changing the times of a shift that has already been worked is refused
+        // by the procedure (409): create a new shift and roster it from the date it starts.
+        if (request.EndTime == request.StartTime)
+            return BadRequest(new { error = "A shift cannot start and end at the same time." });
+
         if (request.EndTime < request.StartTime && !request.CrossesMidnight)
             return BadRequest(new { error = "This shift ends before it starts. Tick 'crosses midnight' if it is an overnight shift." });
 

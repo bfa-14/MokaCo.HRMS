@@ -16,6 +16,17 @@ public class LeaveLedgerEntry
     public DateTime EffectiveDate { get; set; }
     public string? Note { get; set; }
     public DateTime CreatedAt { get; set; }
+
+    /// <summary>What wrote the row when it was not a leave request or a person: 'LeaveYear' (the year opening),
+    /// 'ExitPermission' (exit-permission time converted to leave). Null for a manual movement.</summary>
+    public string? SourceType { get; set; }
+
+    /// <summary>
+    /// QA3 (LEV-9): only a MANUAL adjustment may be deleted -- every other row is kept right by what wrote it (an
+    /// approved leave, the year opening, the expiry). The rule of hr.usp_LeaveLedger_Delete, so the screen offers the
+    /// delete only where it can work.
+    /// </summary>
+    public bool CanDelete { get; set; }
 }
 
 /// <summary>

@@ -14,11 +14,17 @@ public enum SettleTrigger
     /// <summary>
     /// The Quartz job. An abandoned payment (nothing attempted on the order) is released once the hold
     /// has run out; a failed one after GiveUpAfterMinutes; one it cannot tell about keeps its hold and
-    /// is reported to staff once, after GiveUpAfterMinutes.
+    /// is reported to staff once, after GiveUpAfterMinutes. A booking staff already decided (confirmed,
+    /// cancelled, no-show) is asked about too, for 72 hours (QA3 BKG-4): a captured deposit is
+    /// recorded, nothing else is ever done to it.
     /// </summary>
     Reconciliation,
 
-    /// <summary>POST /{ref}/release — the guest walked away. Released only if the gateway says nothing was paid.</summary>
+    /// <summary>
+    /// POST /{ref}/release — the guest walked away. Released only if a payment was opened on the
+    /// booking and the gateway says nothing was paid (a request taken without a deposit is never
+    /// released this way — QA3 BKG-1).
+    /// </summary>
     GuestRelease,
 
     /// <summary>
@@ -197,7 +203,10 @@ public sealed class OnlineDepositService : IOnlineDepositService
             _log.LogWarning(ex, "Deposit {Ref}: the session id could not be stored (audit only).", bookingRef);
         }
 
-        return new PaymentOpening(PayOpenResult.Opened, bookingRef, sessionId, started.DepositDue, started.CurrencyCode, started.HoldExpiresUtc);
+        // Changed: the hold and PaymentOpenedUtc were stamped, so the staff calendar and the guest's
+        // page are told (QA3 BKG-14: the hold was never announced).
+        return new PaymentOpening(PayOpenResult.Opened, bookingRef, sessionId, started.DepositDue, started.CurrencyCode, started.HoldExpiresUtc,
+            Changed: true);
     }
 
     /// <summary>"Room deposit: Studio, 2026-10-01, 2h (total USD 40.00)" — what the guest sees on the gateway's page.</summary>
@@ -219,19 +228,17 @@ public sealed class OnlineDepositService : IOnlineDepositService
             return new Settlement(state.Status is "Confirmed" or "Completed" ? SettlementResult.Paid : SettlementResult.PaidNeedsStaff,
                 bookingRef, false, state.Status, "already recorded");
 
-        if (trigger is SettleTrigger.Reconciliation or SettleTrigger.PayAgain && state.Status != "Pending")
+        if (trigger is SettleTrigger.PayAgain && state.Status != "Pending")
             return new Settlement(SettlementResult.NotApplicable, bookingRef, false, state.Status, "no longer pending");
 
         if (state.PaymentOpenedUtc is null)
         {
-            // A guest walking away from a booking that never reached the gateway: the old release, unchanged.
-            if (trigger == SettleTrigger.GuestRelease)
-                return await ReleaseAsync(state, "no payment was opened", ifNotReleased: SettlementResult.NotApplicable);
-
             // No session was ever opened for it, so nothing can have been charged and there is nothing to
-            // ask. Above all NOTHING IS WRITTEN: "keeping the hold" here would put an expiry on a booking
-            // that has none — a step-1 request — and hand it to the expiry sweep. The reference is the
-            // only credential /verify needs, so this is what an anonymous caller could otherwise do.
+            // ask. Above all NOTHING IS WRITTEN, whoever asks: "keeping the hold" would put an expiry on a
+            // booking that has none — a step-1 request — and hand it to the expiry sweep, and RELEASING it
+            // (POST /release) would cancel it. The reference is the only credential /verify and /release
+            // need, so that is what an anonymous caller could otherwise do (QA3 BKG-1). A hold is only
+            // ever stamped by /pay, which stamps PaymentOpenedUtc with it.
             return new Settlement(SettlementResult.NotApplicable, bookingRef, false, state.Status, "no payment was opened");
         }
 
@@ -242,6 +249,22 @@ public sealed class OnlineDepositService : IOnlineDepositService
 
         var order = await _gateway.RetrieveOrderAsync(bookingRef, cancellationToken);
         var decision = PaymentDecisionTable.Decide(order, state.DepositDue, state.CurrencyCode);
+
+        // QA3 BKG-4: staff decided the booking while the guest was on the gateway's page. Money the gateway
+        // captured is recorded (usp_Booking_ConfirmOnlinePayment: 'Recorded' on a confirmed booking,
+        // 'PaidButClosed' + Refund Due on a cancelled one, staff alerted either way); anything else is
+        // only noted as checked — a decided booking has no hold to keep and nothing to release.
+        if (trigger == SettleTrigger.Reconciliation && state.Status != "Pending")
+        {
+            _log.LogInformation("Deposit {Ref} (Reconciliation, {Status}): {Outcome}, {Reason}.", bookingRef, state.Status, decision.Outcome, decision.Reason);
+
+            if (decision.Outcome == PaymentOutcome.Paid)
+                return (await RecordPaidAsync(bookingRef, order, state.CurrencyCode)).Settlement;
+
+            await _deposits.PaymentCheckedAsync(bookingRef, keepHold: false);
+            return new Settlement(SettlementResult.NotApplicable, bookingRef, false, state.Status, "no longer pending: " + decision.Reason);
+        }
+
         var now = _clock.GetUtcNow().UtcDateTime;
         var age = state.PaymentOpenedUtc is { } opened ? now - opened : TimeSpan.MaxValue;
         var patienceOver = age >= TimeSpan.FromMinutes(_timing.GiveUpAfterMinutes);
