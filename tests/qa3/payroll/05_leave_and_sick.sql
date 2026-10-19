@@ -1,6 +1,7 @@
 /* QA3 payroll (unit E) - leave on the payslip:
-   PAY-8   unpaid leave is the APPROVED span (ISNULL(ApprovedToDate, ToDate): a partial approval keeps the first days) and the
-           type as approved (ISNULL(PaidSnapshot, IsPaid): flipping the type later never re-prices it); a short day after the
+   PAY-8   unpaid leave is the APPROVED span (ISNULL(ApprovedToDate, ToDate): a partial approval keeps the first days; a
+           fractional approval - 2.5 of 5 - costs its fraction on the last day, as script 99 allocates it) and the type as
+           approved (ISNULL(PaidSnapshot, IsPaid): flipping the type later never re-prices it); a short day after the
            approved span is judged from attendance like any other day;
    LEV-17  the payslip's paid / unpaid leave days are WORKING days of the approved span (a rest day costs nothing, a half
            day is 0.5);
@@ -61,6 +62,11 @@ DECLARE @fails INT = 0, @E INT, @B INT, @Run INT, @Jan INT, @Feb INT, @Unpaid IN
 BEGIN TRAN;
 EXEC #qa3_05_emp N'QA3 Leila Leave', '2024-01-01', @E OUTPUT, @B OUTPUT;
 INSERT INTO hr.LEAVE_TYPE (Name, IsPaid) VALUES (N'QA3 Unpaid', 0); SET @Unpaid = SCOPE_IDENTITY();
+/* (C below) a second employee: 2-6 March requested, 2.5 days approved - the 2nd, the 3rd and half of the 4th */
+DECLARE @E2 INT, @B2 INT, @lr INT;
+EXEC #qa3_05_emp N'QA3 Leila Fraction', '2024-01-01', @E2 OUTPUT, @B2 OUTPUT;
+EXEC #qa3_05_leave @E2, @Unpaid, '2099-03-02', '2099-03-06', '2099-03-04', 0;
+UPDATE workflow.LEAVE_REQUEST SET DaysApproved = 2.5 WHERE EmployeeId = @E2;
 INSERT INTO hr.LEAVE_TYPE (Name, IsPaid) VALUES (N'QA3 Paid then unpaid', 1); SET @Flip = SCOPE_IDENTITY();
 INSERT INTO hr.LEAVE_TYPE (Name, IsPaid) VALUES (N'QA3 Unpaid then paid', 0); SET @Flip2 = SCOPE_IDENTITY();
 INSERT INTO attendance.SHIFT_ASSIGNMENT (EmployeeId, ShiftId, WorkDate, IsRestDay) VALUES (@E, NULL, '2099-03-11', 1), (@E, (SELECT MIN(ShiftId) FROM attendance.SHIFT), '2099-03-15', 0);
@@ -87,6 +93,12 @@ BEGIN
     SET @x = CONCAT('unpaid leave ', @unpaidAmt, ' (expected 250), short days ', @shortAmt, ' (expected 100), header unpaid ', @hdrUnpaid, ' (2.5), paid ', @hdrPaid, ' (2)');
     RAISERROR('05 A: %s.', 16, 1, @x);
 END
+/* C. the fractional approval costs 2.5 days, not 3 */
+SELECT @unpaidAmt = ISNULL(SUM(l.Amount), 0) FROM payroll.PAYSLIP_LINE l JOIN payroll.PAYSLIP ps ON ps.PayslipId = l.PayslipId
+JOIN hr.COMPONENT_TYPE c ON c.ComponentTypeId = l.ComponentTypeId AND c.SystemCode = 'UNPAID_LEAVE' WHERE ps.PayrollRunId = @Run AND ps.EmployeeId = @E2;
+SELECT @hdrUnpaid = UnpaidLeaveDays FROM payroll.PAYSLIP WHERE PayrollRunId = @Run AND EmployeeId = @E2;
+IF @unpaidAmt <> 250 OR @hdrUnpaid <> 2.5
+    BEGIN SET @fails += 1; SET @x = CONCAT('deducted ', @unpaidAmt, ', header ', @hdrUnpaid); RAISERROR('05 C: 2.5 approved days should cost 250 (2.5 days): %s.', 16, 1, @x); END
 ROLLBACK TRAN;
 
 /* ======== B. LEV-16 / LEV-13 / PAY-13: a tiered sick type (not named 'Sick'); hired 31 Dec 2097 = one whole year ======== */

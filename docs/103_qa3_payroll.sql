@@ -1,6 +1,7 @@
 /* ============================================================================
    103_qa3_payroll.sql - QA3 payroll fixes (unit E). Needs 98 (security) and 99 (leave: LEAVE_REQUEST.ApprovedToDate
-   and PaidSnapshot). Apply with sqlcmd -C -I -b, after 99-102.
+   and PaidSnapshot, hr.fn_LeaveRequestDays); reads script 100's set-aside punches when it is applied. Apply with
+   sqlcmd -C -I -b, after 99-102.
 
    WHAT CHANGES, BY QA3 ID
    PAY-6 / REL-2  A salary row is SUPERSEDED by a later-starting row of the same employee, type and currency: section A pays
@@ -37,9 +38,10 @@
                   OF the termination date (usage dated after it is ignored) and is skipped when a separation of the same
                   employment pays the leave, or an approved payslip of this employment already paid it.
    PAY-8 / LEV-16 / LEV-17  Unpaid leave and the leave exclusions use ISNULL(ApprovedToDate, ToDate) and
-                  ISNULL(PaidSnapshot, IsPaid); the payslip's paid/unpaid leave days are working days of the approved
-                  span (half day 0.5); sick pay is numbered DAY BY DAY across the year, so a leave crossing a month end
-                  costs each month its own days.
+                  ISNULL(PaidSnapshot, IsPaid); unpaid leave, sick pay and the payslip's paid/unpaid leave days cost each
+                  day what script 99's allocation of the approved leave says (hr.fn_LeaveRequestDays: working days, half
+                  day 0.5, a fractional approval's fraction); sick pay is numbered DAY BY DAY across the year, so a leave
+                  crossing a month end costs each month its own days.
    PAY-10 / REL-7 / LEV-13  hr.COMPONENT_TYPE.SystemCode: the generator finds its types by code; system types cannot be
                   renamed, re-categorised, deactivated or deleted; Generate refuses when one is missing. Sick-pay tiers are
                   keyed on the leave type's id (a type with LEAVE_PAY_TIER rows), not on the name 'Sick'.
@@ -73,6 +75,9 @@ IF COL_LENGTH('workflow.LEAVE_REQUEST', 'ApprovedToDate') IS NULL
 GO
 IF COL_LENGTH('workflow.LEAVE_REQUEST', 'PaidSnapshot') IS NULL
     RAISERROR('103_qa3_payroll.sql needs workflow.LEAVE_REQUEST.PaidSnapshot - apply 99_qa3_leave.sql first.', 16, 1);
+GO
+IF OBJECT_ID('hr.fn_LeaveRequestDays') IS NULL
+    RAISERROR('103_qa3_payroll.sql needs hr.fn_LeaveRequestDays (an approved leave day by day) - apply 99_qa3_leave.sql first.', 16, 1);
 GO
 IF OBJECT_ID('payroll.fn_IsPeriodPaid') IS NULL OR OBJECT_ID('hr.fn_LeaveDays') IS NULL OR OBJECT_ID('hr.fn_EmployeeBranchOn') IS NULL
     RAISERROR('103_qa3_payroll.sql needs scripts 82-86 (fn_IsPeriodPaid, fn_LeaveDays, fn_EmployeeBranchOn).', 16, 1);
@@ -416,6 +421,10 @@ k AS (
     UNION ALL
     SELECT 'Roster', CONCAT(sa.ShiftAssignmentId, '|', sa.WorkDate, '|', ISNULL(CONVERT(VARCHAR(12), sa.ShiftId), '~'), '|', sa.IsRestDay)
     FROM attendance.SHIFT_ASSIGNMENT sa CROSS JOIN r WHERE sa.EmployeeId = @EmployeeId AND sa.WorkDate BETWEEN r.PeriodStart AND r.PeriodEnd
+    UNION ALL
+    /* the weekly pattern prices a leave day that has no roster row (script 99's hr.fn_LeaveDays) */
+    SELECT 'Roster', CONCAT('P|', p.PatternId, '|', p.DayOfWeek, '|', p.IsRestDay, '|', p.IsActive)
+    FROM attendance.EMPLOYEE_SHIFT_PATTERN p WHERE p.EmployeeId = @EmployeeId
     UNION ALL
     SELECT 'Leave', CONCAT(lr.LeaveRequestId, '|', lr.LeaveTypeId, '|', lr.FromDate, '|', lr.ToDate, '|', ISNULL(CONVERT(VARCHAR(10), lr.ApprovedToDate, 23), '~'),
                            '|', ISNULL(CONVERT(VARCHAR(20), lr.DaysApproved), '~'), '|', ISNULL(CONVERT(VARCHAR(20), lr.DaysRequested), '~'),
@@ -811,9 +820,11 @@ BEGIN
                  ORDER BY CASE WHEN s2.EffectiveTo IS NULL OR s2.EffectiveTo >= x.EmpTo THEN 0 ELSE 1 END,
                           s2.EffectiveFrom DESC, s2.SalaryComponentId DESC) sc;
 
-    /* -- B. unpaid leave: the WORKING days of the APPROVED span inside the period and the employment
-          (QA3 PAY-8: ISNULL(ApprovedToDate, ToDate) - a partial approval keeps the first days; ISNULL(PaidSnapshot, IsPaid)
-          - flipping the type later never re-prices an approved leave); half a day for a half-day request -- */
+    /* -- B. unpaid leave: what the APPROVED leave costs on the days inside the period and the employment, day by day
+          as script 99 allocates it (hr.fn_LeaveRequestDays: the working days of FromDate..ApprovedToDate - a partial
+          approval keeps the first days, a fractional one costs its fraction on the last day, a half-day request 0.5,
+          calendar days for a fixed-entitlement type), unpaid by the type AS APPROVED (QA3 PAY-8: ISNULL(PaidSnapshot,
+          IsPaid) - flipping the type later never re-prices an approved leave) -- */
     INSERT INTO payroll.PAYSLIP_LINE
         (PayslipId,ComponentTypeId,ComponentName,Category,[Sign],Amount,CurrencyCode,
          SourceType,SourceId,Quantity,UnitAmount,Note,SortOrder)
@@ -825,9 +836,8 @@ BEGIN
     JOIN #Emp x ON x.PayslipId=r.PayslipId
     CROSS APPLY (
         SELECT lr.LeaveRequestId,
-               CAST((SELECT CASE WHEN lr.HalfDay IS NOT NULL THEN 0.5 * ISNULL(MAX(CAST(ld.Counts AS INT)), 0)
-                                 ELSE ISNULL(SUM(CAST(ld.Counts AS INT)), 0) END
-                     FROM hr.fn_LeaveDays(lr.EmployeeId, w.F, w.T) ld) AS DECIMAL(6,2)) AS DaysInPeriod
+               CAST((SELECT ISNULL(SUM(ld.Part), 0) FROM hr.fn_LeaveRequestDays(lr.LeaveRequestId, 0) ld
+                     WHERE ld.WorkDate BETWEEN w.F AND w.T) AS DECIMAL(6,2)) AS DaysInPeriod
         FROM workflow.LEAVE_REQUEST lr
         JOIN workflow.REQUEST_INSTANCE ri ON ri.RequestInstanceId=lr.RequestInstanceId AND ri.[Status]='Approved'
         JOIN hr.LEAVE_TYPE lt ON lt.LeaveTypeId=lr.LeaveTypeId
@@ -852,11 +862,11 @@ BEGIN
         WHERE EXISTS (SELECT 1 FROM hr.LEAVE_PAY_TIER pt WHERE pt.LeaveTypeId=lr.LeaveTypeId)
           AND lr.FromDate <= @End AND ISNULL(lr.ApprovedToDate, lr.ToDate) >= @YearStart
     ), sday AS (
-        SELECT s.LeaveRequestId, s.EmployeeId, s.LeaveTypeId, ld.WorkDate,
-               CAST(CASE WHEN s.HalfDay IS NOT NULL THEN 0.5 ELSE 1.0 END AS DECIMAL(9,2)) AS U
+        /* what each day of the approved leave costs, as script 99 allocates it (half day 0.5, a fractional last day) */
+        SELECT s.LeaveRequestId, s.EmployeeId, s.LeaveTypeId, ld.WorkDate, CAST(ld.Part AS DECIMAL(9,2)) AS U
         FROM sreq s
-        CROSS APPLY hr.fn_LeaveDays(s.EmployeeId, s.F, s.T) ld
-        WHERE s.F <= s.T AND ld.Counts = 1
+        CROSS APPLY hr.fn_LeaveRequestDays(s.LeaveRequestId, 0) ld
+        WHERE s.F <= s.T AND ld.WorkDate BETWEEN s.F AND s.T AND ld.Part > 0
     ), numbered AS (
         SELECT d.LeaveRequestId, d.EmployeeId, d.LeaveTypeId, d.WorkDate, d.U,
                SUM(d.U) OVER (PARTITION BY d.EmployeeId, d.LeaveTypeId ORDER BY d.WorkDate, d.LeaveRequestId ROWS UNBOUNDED PRECEDING) - d.U AS Before
@@ -1277,8 +1287,8 @@ BEGIN
     ) t ON t.PayslipId=ps.PayslipId
     WHERE ps.PayrollRunId=@PayrollRunId;
 
-    /* QA3 LEV-17: the payslip's leave days are the WORKING days of the approved span inside the period and the
-       employment (half a day = 0.5), paid or unpaid by the type as approved (PaidSnapshot) */
+    /* QA3 LEV-17: the payslip's leave days are what the approved leaves cost on the days inside the period and the
+       employment (script 99's allocation: working days, half a day = 0.5), paid or unpaid by the type as approved */
     UPDATE ps SET
         NetPrimary = payroll.fn_ToPrimary(@PayrollRunId, ps.NetUsd, 'USD')
                    + CASE WHEN ps.NetLbp = 0 THEN 0 ELSE payroll.fn_ToPrimary(@PayrollRunId, ps.NetLbp, 'LBP') END,
@@ -1296,9 +1306,8 @@ BEGIN
                  JOIN hr.LEAVE_TYPE lt ON lt.LeaveTypeId=lr.LeaveTypeId
                  CROSS APPLY (SELECT CASE WHEN lr.FromDate > x.EmpFrom THEN lr.FromDate ELSE x.EmpFrom END AS F,
                                      CASE WHEN ISNULL(lr.ApprovedToDate, lr.ToDate) < x.EmpTo THEN ISNULL(lr.ApprovedToDate, lr.ToDate) ELSE x.EmpTo END AS T) w
-                 CROSS APPLY (SELECT CAST(CASE WHEN lr.HalfDay IS NOT NULL THEN 0.5 * ISNULL(MAX(CAST(ld.Counts AS INT)), 0)
-                                               ELSE ISNULL(SUM(CAST(ld.Counts AS INT)), 0) END AS DECIMAL(6,2)) AS D
-                              FROM hr.fn_LeaveDays(lr.EmployeeId, w.F, w.T) ld) dd
+                 CROSS APPLY (SELECT CAST(ISNULL(SUM(ld.Part), 0) AS DECIMAL(6,2)) AS D
+                              FROM hr.fn_LeaveRequestDays(lr.LeaveRequestId, 0) ld WHERE ld.WorkDate BETWEEN w.F AND w.T) dd
                  WHERE lr.EmployeeId=ps.EmployeeId AND w.F <= w.T) lv
     OUTER APPLY (SELECT SUM(l.Quantity) AS Mins FROM payroll.PAYSLIP_LINE l
                  WHERE l.PayslipId=ps.PayslipId AND l.SourceType='Overtime') ot
