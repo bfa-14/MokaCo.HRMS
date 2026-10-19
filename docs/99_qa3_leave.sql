@@ -42,7 +42,8 @@
                     by the nightly job).
    LEV-11 WF-16     create, decide and the ledger posting refuse days already paid for the employee
                     ("This period is paid -- raise a payroll adjustment instead.", with an em dash); a manual Usage
-                    movement too.
+                    movement too. Inside a caller's transaction the poster's refusal fails that transaction, so a caller
+                    that ignores its return code cannot commit an approval nothing was posted for.
    REL-4 (part)     create and decide refuse dates after the employee's TerminationDate.
    LEV-12           whole years / months of service (year opening tier, usage gate).
    LEV-13           an inactive leave type is not granted at year open and not accepted by create.
@@ -360,8 +361,10 @@ GO
 /* Posts an approved leave to the ledger once (AppliedToLedgerAt): Usage per month from hr.fn_LeaveRequestDays (the
    discretionary give-back mirrors it), stamps ApprovedToDate (the last day of the approved span) and PaidSnapshot (the
    type's IsPaid now), then re-derives the attendance days. QA3: refuses (RETURN 1, nothing written) when a day of the
-   approved span is in a period already paid for the employee. The claim on AppliedToLedgerAt is the first write, so two
-   posters racing post once. No result set. */
+   approved span is in a period already paid for the employee; inside a caller's transaction the refusal fails that
+   transaction (THROW), so a caller that does not check the return code -- the engine's ApplyApprovalEffects, run by a
+   move to a new workflow version that closes the request -- cannot commit an approval that posted nothing. The claim on
+   AppliedToLedgerAt is the first write, so two posters racing post once. No result set. */
 CREATE OR ALTER PROCEDURE hr.usp_LeaveLedger_PostRequest
     @RequestInstanceId INT, @ActorUserId INT = NULL, @UsageNote NVARCHAR(300) = N'Approved leave request.'
 AS
@@ -381,6 +384,7 @@ BEGIN
     IF hr.fn_LeaveFirstPaidMonth(@Emp, (SELECT MIN(WorkDate) FROM @alloc), @End) IS NOT NULL
     BEGIN
         DECLARE @Paid NVARCHAR(200) = CONCAT(N'This period is paid ', NCHAR(8212), N' raise a payroll adjustment instead.');
+        IF @@TRANCOUNT > 0 THROW 50000, @Paid, 1;          -- nested: the caller's transaction fails with the refusal
         RAISERROR(@Paid, 16, 1);
         RETURN 1;
     END

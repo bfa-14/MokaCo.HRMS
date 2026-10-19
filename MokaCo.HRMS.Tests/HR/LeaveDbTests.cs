@@ -11,7 +11,8 @@ namespace MokaCo.HRMS.Tests.HR;
 /// The leave procedures of docs/99_qa3_leave.sql as the API reads them (QA3 unit D): the ledger read says which row may be
 /// deleted and the delete refuses the others with a sentence (LEV-9); the leave balance report's rows add up with
 /// Adjusted (LEV-14); the per-year card defaults to Beirut's year; the expiry reports a setting that is not MM-DD (LEV-6);
-/// the re-pricing contract returns no result set (safe inside INSERT..EXEC, units B and C call it). Every test runs INSIDE
+/// the re-pricing contract returns no result set (safe inside INSERT..EXEC, units B and C call it); the poster's paid-month
+/// refusal fails a caller's transaction even when the caller ignores the return code (LEV-11). Every test runs INSIDE
 /// A TRANSACTION THAT IS ROLLED BACK; seeded rows start with 'QA3 ' and dates are in 2097. Skipped without a database.
 /// </summary>
 [Collection("LeaveDb")]
@@ -49,6 +50,44 @@ public class LeaveDbTests
                    (@E, @A, '2097-03', 'Usage',      -2,   '2097-03-10', N'QA3 manual usage', NULL, NULL),
                    (@E, @A, '2097-03', 'Expiry',     -1,   '2097-03-31', N'QA3 expiry', NULL, NULL);
             SELECT @E, @A;
+            """, transaction: Tx);
+
+        /// <summary>An Approved, not yet posted leave of a QA3 employee in March 2097, a month already paid for them (the
+        /// month's Primary run approved, with their payslip). The LEAVE_REQUEST request type is added when the database
+        /// has none (the rebuilt stand-in); everything goes with the rollback.</summary>
+        public Task<int> SeedApprovedLeaveInPaidMonthAsync() => Db.QuerySingleAsync<int>(
+            """
+            INSERT INTO hr.BRANCH (Name, IsActive) VALUES (N'QA3 Leave Db Paid Branch', 1);
+            DECLARE @B INT = SCOPE_IDENTITY();
+            INSERT INTO hr.LEAVE_TYPE (Name, IsPaid, AccrualPerMonth, CarryOver, RequiresCertificate, MinServiceMonthsToUse, NoticePreferredDays, FixedEntitlementDays, IsDiscretionary, IsActive)
+            VALUES (N'QA3 Db Unpaid', 0, 0, 0, 0, 0, 0, NULL, 0, 1);
+            DECLARE @A INT = SCOPE_IDENTITY();
+            INSERT INTO hr.EMPLOYEE (BranchId, DepartmentId, PositionId, FullName, HireDate, TerminationDate, ApprovalTier, PreferredLanguage)
+            VALUES (@B, (SELECT TOP 1 DepartmentId FROM hr.DEPARTMENT ORDER BY DepartmentId), (SELECT TOP 1 PositionId FROM hr.[POSITION] ORDER BY PositionId),
+                    N'QA3 Leave Db Paid E', '2020-01-01', NULL, 5, 'en');
+            DECLARE @E INT = SCOPE_IDENTITY();
+            DECLARE @U INT = (SELECT TOP 1 UserId FROM security.[USER] ORDER BY UserId);
+            IF NOT EXISTS (SELECT 1 FROM workflow.REQUEST_TYPE WHERE Code = 'LEAVE_REQUEST')
+                INSERT INTO workflow.REQUEST_TYPE (Code, Name, IsActive) VALUES ('LEAVE_REQUEST', N'Leave request', 1);
+            DECLARE @T INT = (SELECT RequestTypeId FROM workflow.REQUEST_TYPE WHERE Code = 'LEAVE_REQUEST');
+            IF NOT EXISTS (SELECT 1 FROM workflow.WORKFLOW_DEFINITION WHERE RequestTypeId = @T)
+                INSERT INTO workflow.WORKFLOW_DEFINITION (RequestTypeId, Version, [Status]) VALUES (@T, 1, 'Active');
+            DECLARE @Def INT = (SELECT TOP 1 WorkflowDefinitionId FROM workflow.WORKFLOW_DEFINITION WHERE RequestTypeId = @T ORDER BY Version DESC);
+            INSERT INTO workflow.REQUEST_INSTANCE (RequestTypeId, WorkflowDefinitionId, EmployeeId, RaisedByUserId, [Status], Title, ClosedAt)
+            VALUES (@T, @Def, @E, @U, 'Approved', N'QA3 leave in a paid month', SYSUTCDATETIME());
+            DECLARE @R INT = SCOPE_IDENTITY();
+            INSERT INTO workflow.LEAVE_REQUEST (RequestInstanceId, EmployeeId, LeaveTypeId, FromDate, ToDate, DaysRequested, IsDiscretionary)
+            VALUES (@R, @E, @A, '2097-03-03', '2097-03-04', 2, 0);
+            DECLARE @Run INT = (SELECT PayrollRunId FROM payroll.PAYROLL_RUN WHERE PeriodYearMonth = '2097-03' AND RunType = 'Primary' AND [Status] <> 'Cancelled');
+            IF @Run IS NULL
+            BEGIN
+                INSERT INTO payroll.PAYROLL_RUN (PeriodYearMonth, PeriodStart, PeriodEnd, PrimaryCurrency, Notes, CreatedByUserId, RunType, [Status])
+                VALUES ('2097-03', '2097-03-01', '2097-03-31', 'USD', N'QA3 paid month', @U, 'Primary', 'Approved');
+                SET @Run = SCOPE_IDENTITY();
+            END
+            ELSE UPDATE payroll.PAYROLL_RUN SET [Status] = 'Approved' WHERE PayrollRunId = @Run;
+            INSERT INTO payroll.PAYSLIP (PayrollRunId, EmployeeId, EmployeeName) VALUES (@Run, @E, N'QA3 paid');
+            SELECT @R;
             """, transaction: Tx);
 
         public async ValueTask DisposeAsync()
@@ -153,5 +192,26 @@ public class LeaveDbTests
             """, new { E = employee }, f.Tx);
 
         Assert.Equal(0, captured);
+    }
+
+    [DbFact]
+    public async Task A_paid_month_refusal_of_the_poster_fails_the_callers_transaction()
+    {
+        await using var f = await Fixture.OpenAsync();
+        var request = await f.SeedApprovedLeaveInPaidMonthAsync();
+
+        // A caller that does not look at the poster's return code and carries on, as the engine's approval effects do
+        // when a move to a new workflow version closes the request: it must not be able to commit an approval with
+        // nothing posted.
+        var ex = await Assert.ThrowsAsync<SqlException>(() => f.Db.ExecuteAsync(
+            """
+            EXEC hr.usp_LeaveLedger_PostRequest @RequestInstanceId = @R;
+            UPDATE workflow.REQUEST_INSTANCE SET Title = N'QA3 carried on' WHERE RequestInstanceId = @R;
+            """, new { R = request }, f.Tx));
+
+        Assert.Equal(50000, ex.Number);
+        Assert.Equal("This period is paid — raise a payroll adjustment instead.", ex.Message);
+        // the transaction is gone (rolled back by the refusal): a command without it runs, and none is open
+        Assert.Equal(0, await f.Db.QuerySingleAsync<int>("SELECT @@TRANCOUNT"));
     }
 }
