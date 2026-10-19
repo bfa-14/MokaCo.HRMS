@@ -379,21 +379,26 @@ builder.Services.AddAuthorization(options =>
         .Build();
 });
 
-// --- Rate limiting: the fingerprint terminals' push endpoints only ---
+// --- Rate limiting: the endpoints a caller reaches without a token ---
 //
-// Scoped to /iclock/* by the [EnableRateLimiting] attribute on IclockController, because that is
-// the one part of the API that is not behind a JWT: it is reachable by anyone who can guess a
-// registered serial, and the serial is printed on the back of the machine. Everything else in the
+// Per endpoint, by [EnableRateLimiting]: the fingerprint terminals' /iclock, the public booking API,
+// the Google gate's sign-in, and sign-in and refresh themselves (QA3 SEC-6). Everything else in the
 // API is protected by having to log in first, and a limiter there would only ever punish real users.
+// Every limit counts the CLIENT ADDRESS, which behind nginx is X-Forwarded-For — believable since
+// QA3 SEC-4, when nginx stopped taking CF-Connecting-IP from anybody.
 //
-// PARTITIONED BY SERIAL, so one terminal (or one leaked serial) cannot starve the others. Falls
-// back to the remote IP when there is no SN — a caller that has not even said who it claims to be
-// still must not get an unlimited number of guesses.
+// /iclock is reachable by anyone who can guess a registered serial, and the serial is printed on the
+// back of the machine. It is limited PER ADDRESS (the endpoint policy) AND PER SERIAL (the global
+// limiter below). It used to be partitioned by the serial alone — a value the caller types — so a
+// caller sending a new SN with every request got a fresh bucket every time: no limit at all on
+// guessing serials, one database lookup each (QA3).
 //
-// The ceiling is deliberately generous. A real terminal with Realtime=1 sends one small request per
+// The ceilings are deliberately generous. A real terminal with Realtime=1 sends one small request per
 // punch plus a command poll every few seconds; a busy door at shift change might produce a few
-// dozen requests in a minute, and a device flushing a backlog after an outage produces a burst.
-// This is sized to be invisible to all of that and to still cap a flood.
+// dozen requests in a minute, and a device flushing a backlog after an outage produces a burst. The
+// terminals of one branch share the branch's public address, hence 600 a minute per address and 240
+// per serial: invisible to all of that, and still a cap on a flood.
+builder.Services.AddSingleton<LoginThrottle>();
 builder.Services.AddRateLimiter(options =>
 {
     // 429 is not in a fingerprint terminal's vocabulary. 503 is a "try later" it already handles by
@@ -406,13 +411,20 @@ builder.Services.AddRateLimiter(options =>
     // and 503 reads as "the site is down". This runs after the middleware has applied the default,
     // so the assignment wins; the terminals keep the 503 their retry logic already understands.
     // The Google sign-in gate's page is a browser too.
-    options.OnRejected = (context, _) =>
+    options.OnRejected = async (context, cancellationToken) =>
     {
-        var path = context.HttpContext.Request.Path;
+        var http = context.HttpContext;
+        var path = http.Request.Path;
         if (path.StartsWithSegments("/api/public/booking") || path.StartsWithSegments("/api/gate"))
-            context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+            http.Response.StatusCode = StatusCodes.Status429TooManyRequests;
 
-        return ValueTask.CompletedTask;
+        // The sign-in page shows the "error" of a refusal: a sentence, not an empty 429 (QA3 SEC-6).
+        if (path.StartsWithSegments("/api/auth"))
+        {
+            http.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+            http.Response.Headers.RetryAfter = "60";
+            await http.Response.WriteAsJsonAsync(new { error = AuthController.TooManyAttempts }, cancellationToken);
+        }
     };
 
     // --- The public booking endpoints: per IP, and read and write counted SEPARATELY ---
@@ -456,18 +468,47 @@ builder.Services.AddRateLimiter(options =>
             QueueLimit = 0
         }));
 
-    options.AddPolicy(IclockController.RateLimitPolicy, context =>
-    {
-        var serial = context.Request.Query["SN"].ToString();
-        var partition = string.IsNullOrWhiteSpace(serial)
-            ? $"ip:{context.Connection.RemoteIpAddress}"
-            : $"sn:{serial}";
+    // Sign-in and refresh, per address (QA3 SEC-6). The per-username half of the sign-in limit is
+    // LoginThrottle, asked by the controller once the body is read.
+    options.AddPolicy(AuthController.LoginRateLimitPolicy, context =>
+        RateLimitPartition.GetFixedWindowLimiter(ClientPartition(context), _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 60,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0
+        }));
 
-        return RateLimitPartition.GetFixedWindowLimiter(partition, _ => new FixedWindowRateLimiterOptions
+    options.AddPolicy(AuthController.RefreshRateLimitPolicy, context =>
+        RateLimitPartition.GetFixedWindowLimiter(ClientPartition(context), _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 120,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0
+        }));
+
+    // /iclock, per ADDRESS: the bucket a caller cannot change by changing what it types.
+    options.AddPolicy(IclockController.RateLimitPolicy, context =>
+        RateLimitPartition.GetFixedWindowLimiter($"ip:{ClientPartition(context)}", _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 600,                     // the terminals of a branch share its address
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0                         // refuse immediately; the device's own retry IS the queue
+        }));
+
+    // /iclock, per SERIAL as well, so one leaked serial cannot flood from many addresses. The global
+    // limiter runs before the endpoint's, for every request; everything but /iclock passes through
+    // it untouched. The serial in the key is cut short: it is whatever the caller sent.
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+    {
+        var serial = context.Request.Path.StartsWithSegments("/iclock") ? context.Request.Query["SN"].ToString().Trim() : "";
+        if (serial.Length == 0)
+            return RateLimitPartition.GetNoLimiter("");
+
+        return RateLimitPartition.GetFixedWindowLimiter($"sn:{(serial.Length > 64 ? serial[..64] : serial)}", _ => new FixedWindowRateLimiterOptions
         {
             PermitLimit = 240,                     // ~4/second sustained, per terminal
             Window = TimeSpan.FromMinutes(1),
-            QueueLimit = 0                         // refuse immediately; the device's own retry IS the queue
+            QueueLimit = 0
         });
     });
 });

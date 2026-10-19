@@ -23,27 +23,49 @@ public class AuthService : IAuthService
         _users = users; _tokens = tokens; _hasher = hasher; _jwt = jwt; _opt = opt;
     }
 
+    public const string InvalidCredentials = "Invalid username or password.";
+    public const string Locked = "Account is temporarily locked. Try again later.";
+    public const string Disabled = "Account is disabled.";
+
+    /// <summary>
+    /// EVERY ANSWER COSTS ONE ARGON2 VERIFICATION (QA3 SEC-6). The hash is the slow part of a login
+    /// (a few hundred milliseconds by design), so a refusal that skipped it — an unknown username, a
+    /// locked or disabled account — came back measurably faster than a wrong password and told a
+    /// stranger which usernames exist. Those paths now verify against the hasher's decoy.
+    ///
+    /// The same generic sentence for an unknown user and a wrong password; "disabled" is said only to
+    /// someone who has just proved the password, so it reveals nothing to anyone else. "Locked" stays
+    /// as it was: it is what the real owner needs to read, and it is only reached after failures.
+    /// </summary>
     public async Task<AuthResult> LoginAsync(LoginRequest request, string? ip)
     {
+        var password = request.Password ?? string.Empty;
         var user = await _users.GetForLoginAsync(request.Username);
 
-        // Same generic message whether the user is missing or the password is wrong,
-        // so the API doesn't reveal which usernames exist.
         if (user is null)
-            return AuthResult.Fail("Invalid username or password.");
-
-        if (!user.IsActive)
-            return AuthResult.Fail("Account is disabled.");
+        {
+            _hasher.Verify(password, _hasher.DecoyHash);
+            return AuthResult.Fail(InvalidCredentials);
+        }
 
         if (user.LockoutEnd is not null && user.LockoutEnd > DateTime.UtcNow)
-            return AuthResult.Fail("Account is temporarily locked. Try again later.");
+        {
+            // Not the real hash: while locked, the password is not checked at all.
+            _hasher.Verify(password, _hasher.DecoyHash);
+            return AuthResult.Fail(Locked);
+        }
 
-        if (!_hasher.Verify(request.Password, user.PasswordHash))
+        var passwordOk = _hasher.Verify(password, user.PasswordHash);
+
+        if (!user.IsActive)
+            return AuthResult.Fail(passwordOk ? Disabled : InvalidCredentials);
+
+        if (!passwordOk)
         {
             var f = await _users.RegisterLoginFailureAsync(user.UserId);
             return (f.LockoutEnd is not null && f.LockoutEnd > DateTime.UtcNow)
-                ? AuthResult.Fail("Account is temporarily locked. Try again later.")
-                : AuthResult.Fail("Invalid username or password.");
+                ? AuthResult.Fail(Locked)
+                : AuthResult.Fail(InvalidCredentials);
         }
 
         await _users.RegisterLoginSuccessAsync(user.UserId);
