@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Model.HR;
@@ -114,7 +115,8 @@ public class EmployeesController : ControllerBase
     /// <summary>
     /// Sets the employee's approval tier — which published chain their requests follow. Kept separate
     /// from the main edit because it is a workflow decision (management/executive get shorter chains),
-    /// not a demographic field, and it has its own validation. EMP_EDIT, the same trust as any edit.
+    /// not a demographic field, and it has its own validation: any tier of the dictionary
+    /// (hr.APPROVAL_TIER, 1 = the head), refused otherwise (SQL 106). EMP_EDIT, the same trust as any edit.
     /// </summary>
     [HttpPut("{id:int}/approval-tier")]
     [HasPermission("EMP_EDIT")]
@@ -193,6 +195,29 @@ public class EmployeesController : ControllerBase
     }
 
     /// <summary>
+    /// QA3 WEB-2: who this employee can swap a rostered day with — the active colleagues of their branch in the same
+    /// position, and the employee themself for the form's wording. The shift-swap form used to filter GET /api/employees,
+    /// which is branch-scoped (script 87): a barista saw nobody to swap with.
+    ///
+    /// No permission beyond being signed in: the PROCEDURE decides, and answers only the employee themself, somebody who
+    /// sees them (EMP_VIEW_ALL or their branch's manager) or somebody who raises requests for others — anyone else gets
+    /// its sentence as a 400.
+    /// </summary>
+    [HttpGet("{id:int}/swap-counterparts")]
+    [Authorize]
+    public async Task<IActionResult> GetSwapCounterparts(int id)
+    {
+        try
+        {
+            return Ok(await _employees.GetSwapCounterpartsAsync(id, User.UserId()));
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// This employee's leave requests, newest first. The date bounds OVERLAP rather than contain, so
     /// a request spanning the window is included — which is what someone checking a date needs.
     /// </summary>
@@ -239,6 +264,11 @@ public class EmployeesController : ControllerBase
         return balance is null ? NotFound() : Ok(balance);
     }
 
+    /// <remarks>
+    /// QA3 REL-5: the procedure refuses — in a sentence that travels as it is — anybody still employed, and a
+    /// leaver with a month no locked primary run has paid or an adjustment or advance still open: a removed employee is
+    /// invisible to payroll from then on.
+    /// </remarks>
     [HttpDelete("{id:int}")]
     [HasPermission("EMP_EDIT")]
     public async Task<IActionResult> Delete(int id)

@@ -35,7 +35,9 @@ public class EmployeeService : IEmployeeService
         return WorkflowSqlErrors.MapAsync(() => _repo.CreateAsync(
             request.UserId, request.BranchId, request.DepartmentId, request.PositionId,
             request.FullName, request.NationalId, request.NssfNumber, request.HireDate, createdBy,
-            request.Email.Trim(), phone, request.PreferredLanguage));
+            request.Email.Trim(), phone, request.PreferredLanguage,
+            // QA3 LEAD-1: passed as sent; null is the procedure's to resolve (the lowest tier), never a 1 chosen here.
+            request.ApprovalTier));
     }
 
     public Task UpdateAsync(int employeeId, EmployeeUpdateRequest request, int? modifiedBy)
@@ -90,4 +92,10 @@ public class EmployeeService : IEmployeeService
 
     public Task<int> GetOrgMaxDepthAsync()
         => _repo.GetOrgMaxDepthAsync();
+
+    public Task<TerminationSweepResult> ApplyDueTerminationsAsync() => _repo.ApplyDueTerminationsAsync();
+
+    /// <summary>A caller who may not ask for this employee gets the procedure's sentence as a 400, nothing listed.</summary>
+    public async Task<SwapCounterparts> GetSwapCounterpartsAsync(int employeeId, int callerUserId)
+        => SwapCounterparts.From(await WorkflowSqlErrors.MapAsync(() => _repo.GetSwapCounterpartsAsync(employeeId, callerUserId)));
 }

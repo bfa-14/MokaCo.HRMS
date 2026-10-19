@@ -32,6 +32,7 @@ public class NightlyAttendanceJob : IJob
     private readonly IOvertimeService _overtime;
     private readonly IRequestService _requests;
     private readonly ILeaveYearService _leaveYear;
+    private readonly IEmployeeService _employees;
     private readonly ILogger<NightlyAttendanceJob> _logger;
 
     public NightlyAttendanceJob(
@@ -41,9 +42,11 @@ public class NightlyAttendanceJob : IJob
         IOvertimeService overtime,
         IRequestService requests,
         ILeaveYearService leaveYear,
+        IEmployeeService employees,
         ILogger<NightlyAttendanceJob> logger)
     {
         _leaveYear = leaveYear;
+        _employees = employees;
         _attendance = attendance;
         _exitPermissions = exitPermissions;
         _overtime = overtime;
@@ -92,6 +95,16 @@ public class NightlyAttendanceJob : IJob
             _logger.LogInformation(
                 "Nightly housekeeping: {Moved} employee(s) moved to the branch of a transfer that took effect today; carried-over leave expired for {Employees} employee(s) ({Days} day(s)).",
                 moved, expired.EmployeesExpired, expired.DaysExpired);
+
+        // QA3 REL-4 (SQL 106): access ends the day after the termination date — the login is disabled, the branch-manager
+        // post vacated, the device PINs unmapped (each in hr.EMPLOYEE_TERMINATION_EFFECT), once per termination. AFTER the
+        // punches above were processed, so nothing a leaver punched before leaving is stranded by the unmapping.
+        var leavers = await _employees.ApplyDueTerminationsAsync();
+        if (leavers.EmployeesApplied > 0)
+            _logger.LogWarning(
+                "Terminations applied for {Count} leaver(s): {Disabled} login(s) disabled, {Kept} kept, {Branches} branch-manager post(s) vacated, {Pins} PIN mapping(s) removed; {Steps} open request step(s) still wait on them and {Open} open request(s) were raised for them (reported, not changed).\n{Summary}",
+                leavers.EmployeesApplied, leavers.UsersDisabled, leavers.UsersKept, leavers.BranchManagersCleared,
+                leavers.PinMappingsRemoved, leavers.StepsWaiting, leavers.OpenRequests, leavers.Summary);
 
         _logger.LogInformation(
             "Nightly attendance: processed {Days} employee-day(s), marked {Absentees} absentee(s) for {Yesterday:yyyy-MM-dd}, reclassified {Leave} day(s) as approved leave in {Period}, applied {Applied} exit permission(s) and stamped {Overtime} overtime request(s) to attendance.",
