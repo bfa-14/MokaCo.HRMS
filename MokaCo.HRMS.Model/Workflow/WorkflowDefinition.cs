@@ -26,9 +26,10 @@ public class WorkflowDefinition
     public DateTime CreatedAt { get; set; }
 
     /// <summary>
-    /// Which population this chain serves: NULL = everyone (the default chain), 2 = management and
-    /// above, 3 = executive only. A requester follows the most specific active chain their tier
-    /// qualifies for, so two active chains per type is normal, not a conflict.
+    /// Which population this chain serves: NULL = everyone (the default chain); X = tier X and every
+    /// more senior tier, 1..X (1 = the head, D6). A requester follows the NARROWEST active chain that
+    /// serves them, the default chain last, so several active chains per type is normal, not a
+    /// conflict (docs/107_qa3_tier_chains.sql, QA3 LEAD-2).
     /// </summary>
     public int? MinRequesterTier { get; set; }
 
@@ -93,6 +94,13 @@ public class ActiveDefinitionStep
     public string Name { get; set; } = string.Empty;
     public string ApproverType { get; set; } = string.Empty;
     public int? ApproverRoleId { get; set; }
+
+    /// <summary>
+    /// The approving role's name for a Role step (QA3 WEB-12) — the procedure always returned it, but without
+    /// this property it was dropped here and the requester's preview could only say "A role".
+    /// </summary>
+    public string? ApproverRoleName { get; set; }
+
     public bool IsMandatory { get; set; }
 
     /// <summary>For a LineManager step: how many levels up the reporting line it climbs (1 = direct manager).</summary>
@@ -197,7 +205,8 @@ public class DefinitionCopySource
     public int? MinRequesterTier { get; set; }
 
     /// <summary>
-    /// MinRequesterTier in words — "Everyone", "Management+", "Executive".
+    /// MinRequesterTier in words, as the live procedure composes them (still the first model's "Everyone",
+    /// "Management+", "Executive"); the builder words the tier itself and compares tiers, not these words.
     ///
     /// Read as its own field rather than derived from the tier, because the SOURCE's audience is
     /// needed after a copy to say plainly that it did NOT come along: applies-to belongs to the
@@ -241,7 +250,7 @@ public class DefinitionCopyResult
     public int StepsReplaced { get; set; }
 }
 
-/// <summary>Body of PUT /api/workflow/definitions/{id}/min-tier — 2, 3, or null for the default (everyone) chain.</summary>
+/// <summary>Body of PUT /api/workflow/definitions/{id}/min-tier — a tier of the dictionary but the lowest, or null for the default (everyone) chain.</summary>
 public class MinTierRequest
 {
     public int? MinRequesterTier { get; set; }

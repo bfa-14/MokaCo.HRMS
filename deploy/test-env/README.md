@@ -203,6 +203,60 @@ Two branches in both repos: **`main` is what production runs**; **`dev` is where
 - **Stop it when nobody is testing:** `sudo systemctl stop mokaco-api-test`. Check memory with
   `systemctl status mokaco-api-test` and disk with `df -h`.
 
+## Google sign-in gate (nginx)
+
+The gate (`docs/GOOGLE_SIGNIN_GATE.md`) needs one nginx change on the VM, made by `deploy/enable-google-gate.sh`.
+It writes `/etc/nginx/conf.d/mokaco-gate.conf` and `/etc/nginx/snippets/mokaco-gate.conf`, and adds one line
+tagged `# mokaco-gate` to the HTTPS block of `sites-available/mokaco`. Nothing goes into `sites-enabled`.
+
+| Mode | Who goes through the gate | Which API decides |
+|---|---|---|
+| `--test` | only browsers with the login page's Test switch on | the test API (5079): Settings in `MokaCo_HRMS_Test` |
+| `--all` | everyone, and `test.hrms.mokanco.com.lb` too when that site is enabled | production's API (5078); the test copy's switch has no effect |
+| `--off` | nobody: the nginx part is removed | — |
+
+```bash
+sudo bash ~/src-test/MokaCo.HRMS/deploy/enable-google-gate.sh --test   # while it is tried on test
+sudo bash ~/src/MokaCo.HRMS/deploy/enable-google-gate.sh --all         # after "to production"
+bash ~/src/MokaCo.HRMS/deploy/enable-google-gate.sh --status           # which mode is on
+```
+
+- Nothing changes for users until someone turns the switch on in Settings → Google sign-in. Setting it up
+  (Google client ID, roll-out order): `docs/GOOGLE_SIGNIN_SETUP.md`.
+- The script changes nothing until all of these hold: the API that decides answers `/api/gate/check` (deploy
+  the API first) and has read its settings (`docs/97_google_signin_gate.sql` applied to its database; without
+  it the API keeps the gate closed for everyone it asks), the web roots have `gate/index.html` (deploy the
+  front end first), and, for `--test`, the Test switch is on (step 7).
+- It runs `nginx -t`, reloads, then checks `/health`, `/`, `/__mokaco_gate` and `/api/gate/config` through
+  nginx. If anything fails, it puts every file back. A second run changes nothing; `--test` ↔ `--all`
+  rewrites only the maps (and the line in `mokaco-test`).
+- With the gate in nginx, the app's pages and the gate's files are sent with `Cache-Control: no-cache`, so a
+  browser cannot skip the gate with a copy it kept. A missing file under `/gate/` is a 404.
+- `enable-env-switch.sh --undo` puts back the whole site as it was before the switch, so the gate line goes
+  too. Run `enable-google-gate.sh --off` first; it also takes the line out of the copy `--undo` puts back.
+- It warns when `sites-enabled/mokaco-api` exists: `api.mokanco.com.lb` would serve the whole API without
+  the gate.
+- `deploy-api.sh` and `deploy-web.sh` keep working with the gate on: `/health` always passes, and `/`
+  answers 200 with the gate page.
+- The API that decides must keep running. If it does not answer, the browsers it decides for get a 500 page
+  from nginx. Under `--test`, keep `mokaco-api-test` running, or run `--off` before you stop it (`/env/prod`
+  still leaves test). Before deploying a production build without the gate (a revert), run `--off`.
+  `--status` warns when the API that decides does not answer or cannot read its settings.
+- During the `--test` trial production has no 97 yet, so `refresh-test-db.sh` brings back a copy without it.
+  Apply 97 again with `apply-sql-test.sh` after each refresh.
+- Enabling `test.hrms.mokanco.com.lb` (step 8) after `--all` leaves it outside the gate: run `--all` again.
+  `--status` warns until you do.
+
+**Locked out** (Google down, a wrong client ID):
+```bash
+bash ~/src/MokaCo.HRMS/deploy/google-gate-emergency-off.sh          # production's switch off, in SQL
+bash ~/src/MokaCo.HRMS/deploy/google-gate-emergency-off.sh --test   # the test copy's switch
+sudo bash ~/src/MokaCo.HRMS/deploy/enable-google-gate.sh --off      # and, if needed, the nginx part
+```
+The site opens with the normal login within 20 seconds. Under `--all` only production's switch counts, so
+run it without `--test`. If `google-gate-emergency-off.sh` says 97 is not applied, the switch cannot help:
+run `--off`.
+
 ## Never on test
 
 - A real mail server or WhatsApp token. Once the test API has a channel, it queues mail for every closed request

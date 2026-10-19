@@ -228,3 +228,49 @@ public class PayrollRunCancelRequest
 {
     public string? Reason { get; set; }
 }
+
+/// <summary>
+/// POST /api/payroll/runs/{id}/approve — the body is optional.
+///
+/// <see cref="AllowEarlyLock"/> is the Owner's explicit answer to "lock this month before it is over?"
+/// (QA3 PAY-3). Without it the procedure refuses to lock a primary whose last day has not ended, and its
+/// sentence says what an early lock leaves out: the days after the run's attendance cut-off are paid as
+/// scheduled, and absences, overtime, holiday work or tips dated after it are not paid by this run.
+/// </summary>
+public class PayrollRunApproveRequest
+{
+    public bool AllowEarlyLock { get; set; }
+}
+
+/// <summary>
+/// GET /api/payroll/runs/{id}/staleness — what changed since the run was generated (QA3 PAY-5 / REL-3).
+///
+/// The procedure keeps a fingerprint of everything each payslip was computed from; Approve refuses a run
+/// whose fingerprints no longer match ("Regenerate the run"), and this read lets the run page say so —
+/// and say WHAT changed — before anybody presses Approve.
+/// </summary>
+public class PayrollRunStaleness
+{
+    public int PayrollRunId { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public string RunType { get; set; } = PayrollRunTypes.Primary;
+    public DateTime PeriodEnd { get; set; }
+    public DateTime? GeneratedAt { get; set; }
+    /// <summary>The last COMPLETED day the generation counted; later days were paid as scheduled.</summary>
+    public DateTime? GeneratedUpTo { get; set; }
+    public bool? LockedEarly { get; set; }
+    public List<PayrollRunStaleInput> Items { get; set; } = [];
+}
+
+/// <summary>
+/// One changed input. <see cref="Source"/> is Attendance, Roster, Leave, Salary, Overtime, Tips, Expenses,
+/// Adjustments, Advances, Separation, Payout or Employee; "Missing" (belongs in the run now, has no
+/// payslip), "NotInRun" (has a payslip, no longer belongs) or "Settings" (a run-wide input: settings,
+/// NSSF / tax tables, component or leave types, holidays, roster approvals — EmployeeId null).
+/// </summary>
+public class PayrollRunStaleInput
+{
+    public int? EmployeeId { get; set; }
+    public string? EmployeeName { get; set; }
+    public string Source { get; set; } = string.Empty;
+}

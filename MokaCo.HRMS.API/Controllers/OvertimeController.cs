@@ -92,6 +92,7 @@ public class OvertimeController : ControllerBase
     /// — that is a real state ("awaiting the worked day"), not missing data.
     /// </summary>
     [HttpGet("{id:int}/payload")]
+    [RequestVisible]
     public async Task<IActionResult> GetPayload(int id)
     {
         var payload = await _overtime.GetPayloadAsync(id);

@@ -29,68 +29,26 @@ public class SalaryComponentsController : ControllerBase
 
     [HttpGet("by-employee/{employeeId:int}")]
     [HasPermission("EMP_VIEW")]
+
+    [InCallerScope(ScopeTarget.Employee, RouteKey = "employeeId", Salary = true)]
     public async Task<IActionResult> GetByEmployee(int employeeId)
         => Ok(await _salaryComponents.GetByEmployeeAsync(employeeId));
 
-    /* THE TIER BAND IS ENFORCED BY A TRIGGER, so it can refuse any of the three writes below with a
-       sentence naming what the basic must be between. Each one catches, or that sentence becomes a
-       500 and the user is told "something went wrong" about a rule they could have satisfied. */
-
-    [HttpPost]
-    [HasPermission("EMP_EDIT")]
-    public async Task<IActionResult> Create([FromBody] SalaryComponentCreateRequest request)
-    {
-        try
-        {
-            var id = await _salaryComponents.CreateAsync(request);
-            await NotifyPayAsync();
-            return CreatedAtAction(nameof(GetByEmployee), new { employeeId = request.EmployeeId },
-                new { salaryComponentId = id });
-        }
-        catch (WorkflowException ex)
-        {
-            return StatusCode(ex.StatusCode, new { error = ex.Message });
-        }
-    }
-
-    [HttpPut("{id:int}")]
-    [HasPermission("EMP_EDIT")]
-    public async Task<IActionResult> Update(int id, [FromBody] SalaryComponentUpdateRequest request)
-    {
-        try
-        {
-            await _salaryComponents.UpdateAsync(id, request);
-            await NotifyPayAsync();
-            return NoContent();
-        }
-        catch (WorkflowException ex)
-        {
-            return StatusCode(ex.StatusCode, new { error = ex.Message });
-        }
-    }
-
-    [HttpDelete("{id:int}")]
-    [HasPermission("EMP_EDIT")]
-    public async Task<IActionResult> Delete(int id)
-    {
-        try
-        {
-            await _salaryComponents.DeleteAsync(id);
-            await NotifyPayAsync();
-            return NoContent();
-        }
-        catch (WorkflowException ex)
-        {
-            return StatusCode(ex.StatusCode, new { error = ex.Message });
-        }
-    }
+    /* THE RAW WRITES ARE RETIRED (QA3 PAY-6 / REL-2). POST, PUT and DELETE on this resource used to
+       insert, edit in place and hard-delete hr.SALARY_COMPONENT rows: no locked-month check, the
+       standing row never closed (a raise from the 16th was paid on top of the old salary, both in
+       full), and a deleted row rewrote what a paid month had paid. Nothing calls them any more — the
+       Salary tab sets a value FROM a date through PUT /api/employees/{id}/salary-components (which
+       closes the standing row the day before, refuses a locked month and names the earliest date that
+       works) and closes a row with the End action below. A raw route left in place would be the next
+       way round both rules, so they are gone rather than patched. */
 
     /// <summary>
     /// CLOSES a standing row on a date — the honest way to remove a component.
     ///
-    /// Not the same act as <see cref="Delete"/> above, which erases the row: a component that was
-    /// paid for six months and then stopped is history, and deleting it would rewrite what those
-    /// months paid. Ending it says when it stopped and leaves the record intact.
+    /// Not the same act as the retired DELETE, which erased the row: a component that was paid for
+    /// six months and then stopped is history, and deleting it would rewrite what those months paid.
+    /// Ending it says when it stopped and leaves the record intact.
     ///
     /// The procedure refuses an already-closed row, an end before the start, and any date inside a
     /// locked month. HR (or Admin) only, checked in SQL.

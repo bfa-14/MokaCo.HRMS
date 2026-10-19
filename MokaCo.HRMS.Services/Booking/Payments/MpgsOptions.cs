@@ -7,9 +7,12 @@ namespace MokaCo.HRMS.Services.Booking.Payments;
 /// origins its redirects point at — read from the ENVIRONMENT, never from a tracked file.
 ///
 /// Production sets these in /etc/mokaco/api.env; a developer puts them in the gitignored
-/// appsettings.Local.json (top-level keys, same names). THE API DOES NOT START WITHOUT THEM
-/// (<see cref="FromSettings"/> throws naming the missing keys, never a value): a booking site that
-/// silently cannot take a deposit is worse than a service that refuses to boot.
+/// appsettings.Local.json (top-level keys, same names). A MISSING OR MALFORMED KEY NO LONGER STOPS
+/// THE START (handoff open item 1, QA3): attendance, payroll, leave and the device receiver must not
+/// depend on a payments secret. <see cref="FromSettingsOrUnconfigured"/> then gives an UNCONFIGURED
+/// gateway: the start logs an error naming the keys (never a value), /pay answers gateway_error
+/// without putting a hold on the booking, and the reconciliation job does nothing.
+/// <see cref="FromSettings"/> still throws, for callers that need the gateway.
 ///
 /// THE 3-D SECURE BYPASS. The test profiles carry only retired 3DS1 schemes, so every
 /// authentication attempt fails and poisons the payment; the website's proven flow
@@ -58,6 +61,12 @@ public sealed class MpgsOptions
 
     /// <summary>The raw developer flag. Read <see cref="SendsThreeDsBypass"/>, never this.</summary>
     public bool TestBypassRequested { get; init; }
+
+    /// <summary>False when a key is missing or malformed; <see cref="Problem"/> names the keys.</summary>
+    public bool IsConfigured { get; init; } = true;
+
+    /// <summary>Why the gateway is unconfigured: key names only, never a value.</summary>
+    public string? Problem { get; init; }
 
     public bool IsTestProfile => MerchantId.StartsWith(TestProfilePrefix, StringComparison.OrdinalIgnoreCase);
 
@@ -126,6 +135,22 @@ public sealed class MpgsOptions
         };
     }
 
+    /// <summary>
+    /// What the API starts with: <see cref="FromSettings"/>, or — when a key is missing or malformed —
+    /// an unconfigured gateway carrying the same message, so the rest of the system still starts.
+    /// </summary>
+    public static MpgsOptions FromSettingsOrUnconfigured(Func<string, string?> read)
+    {
+        try
+        {
+            return FromSettings(read);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return new MpgsOptions { IsConfigured = false, Problem = ex.Message };
+        }
+    }
+
     private static bool IsOn(string? value)
         => value?.Trim().ToLowerInvariant() is "1" or "true" or "yes" or "on";
 
@@ -145,7 +170,8 @@ public sealed class MpgsOptions
 
     /// <summary>Everything but the password.</summary>
     public override string ToString()
-        => $"MPGS {BaseUrl} v{ApiVersion} merchant {MerchantId}{(SendsThreeDsBypass ? " (TEST, 3DS BYPASS)" : IsTestProfile ? " (TEST)" : string.Empty)}; site {SiteUrl}; api {ApiPublicUrl}";
+        => !IsConfigured ? "MPGS not configured"
+         : $"MPGS {BaseUrl} v{ApiVersion} merchant {MerchantId}{(SendsThreeDsBypass ? " (TEST, 3DS BYPASS)" : IsTestProfile ? " (TEST)" : string.Empty)}; site {SiteUrl}; api {ApiPublicUrl}";
 }
 
 /// <summary>

@@ -1,6 +1,8 @@
 using MokaCo.HRMS.Model.Security;
+using MokaCo.HRMS.Repository.Common;
 using MokaCo.HRMS.Repository.Security;
 using MokaCo.HRMS.Services.Auth;
+using MokaCo.HRMS.Services.Core;
 using MokaCo.HRMS.Services.HR;
 
 namespace MokaCo.HRMS.Services.Security;
@@ -10,10 +12,12 @@ public class UserService : IUserService
 {
     private readonly IUserRepository _users;
     private readonly IPasswordHasher _hasher;
+    private readonly ISessionGuard _sessions;
+    private readonly MissingScriptWarning? _missingScript;
 
-    public UserService(IUserRepository users, IPasswordHasher hasher)
+    public UserService(IUserRepository users, IPasswordHasher hasher, ISessionGuard sessions, MissingScriptWarning? missingScript = null)
     {
-        _users = users; _hasher = hasher;
+        _users = users; _hasher = hasher; _sessions = sessions; _missingScript = missingScript;
     }
 
     public Task<IEnumerable<UserListItem>> GetAllAsync() => _users.GetAllAsync();
@@ -29,8 +33,44 @@ public class UserService : IUserService
         return userId;
     }
 
-    public Task SetActiveAsync(int userId, bool isActive, int modifiedBy)
-        => _users.SetActiveAsync(userId, isActive, modifiedBy).ContinueWith(_ => { });
+    /// <summary>
+    /// Disabling ENDS THE ACCOUNT'S SESSIONS (QA3 SEC-5): its refresh tokens are revoked — before, they
+    /// worked again the moment the account was re-enabled — and its access tokens stop at the next
+    /// request. Enabling ends nothing: the person signs in again, and the session guard reads the
+    /// account again at once — it may still hold the "disabled" reading, which would otherwise refuse
+    /// the new sign-in for the rest of its window.
+    /// </summary>
+    public async Task SetActiveAsync(int userId, bool isActive, int modifiedBy)
+    {
+        var rows = await _users.SetActiveAsync(userId, isActive, modifiedBy);
+        if (rows != 1)
+            return;
+        if (isActive)
+            _sessions.Forget(userId);
+        else
+            await EndSessionsAsync(userId);
+    }
+
+    /// <summary>
+    /// security.usp_User_EndSessions, then this process stops trusting its cached reading of the account.
+    ///
+    /// WHILE SCRIPT 105 IS NOT APPLIED (the API deployed first) there is nothing to end the sessions
+    /// with: as before it, the password is changed (the account disabled) and the other sessions run on —
+    /// the change itself must not fail. A disabled account is still refused at its next request (the
+    /// session guard reads it again after Forget) and at refresh.
+    /// </summary>
+    private async Task EndSessionsAsync(int userId)
+    {
+        try
+        {
+            await _users.EndSessionsAsync(userId);
+        }
+        catch (MissingScriptException missing)
+        {
+            _missingScript?.FellBack(missing, "a password change or a disable does not end the account's other sessions");
+        }
+        _sessions.Forget(userId);
+    }
 
     /// <summary>
     /// Self-service password change. The order is deliberate: the current password is verified
@@ -40,19 +80,24 @@ public class UserService : IUserService
     /// here logs in exactly like one set anywhere else, and a later change of Argon2 cost applies to
     /// all three at once.
     ///
-    /// Nothing is revoked on success. The access token is a signed JWT that says who the caller is
-    /// and what they may do; it makes no claim about their password, so changing the password cannot
-    /// make it untrue. Forcing a re-login would only be meaningful if the token were derived from
-    /// the password — it is not — so the user stays where they are.
+    /// A CHANGED PASSWORD ENDS EVERY SESSION OF THE ACCOUNT (QA3 SEC-5), this one included: the refresh
+    /// tokens are revoked and the access tokens stop at the next request, so whoever held the account
+    /// with the old password — the usual reason to change it — is out. (Before, nothing was revoked: a
+    /// stolen refresh token kept rotating for ever.) The person signs in again with the new password.
     /// </summary>
     public async Task<ChangePasswordResult> ChangePasswordAsync(int userId, ChangePasswordRequest request)
     {
-        var user = await _users.GetByIdAsync(userId);
-        if (user is null)
-            return ChangePasswordResult.Fail("The current password is incorrect.");
-
-        if (!_hasher.Verify(request.CurrentPassword ?? string.Empty, user.PasswordHash))
-            return ChangePasswordResult.Fail("The current password is incorrect.");
+        // The current password counts against the login lockout, and a locked account is refused
+        // (QA3, item 10): otherwise this form guesses passwords for whoever holds the session.
+        switch (await AccountPassword.CheckAsync(_users, _hasher, userId, request.CurrentPassword, _missingScript))
+        {
+            case PasswordVerdict.Ok:
+                break;
+            case PasswordVerdict.Locked:
+                return ChangePasswordResult.Fail(AuthService.Locked);
+            default:
+                return ChangePasswordResult.Fail("The current password is incorrect.");
+        }
 
         var policyError = ValidateNewPassword(request.NewPassword);
         if (policyError is not null)
@@ -60,10 +105,11 @@ public class UserService : IUserService
 
         var hash = _hasher.Hash(request.NewPassword);
         var rows = await _users.ChangePasswordAsync(userId, hash);
+        if (rows != 1)
+            return ChangePasswordResult.Fail("The password could not be changed. Please try again.");
 
-        return rows == 1
-            ? ChangePasswordResult.Ok()
-            : ChangePasswordResult.Fail("The password could not be changed. Please try again.");
+        await EndSessionsAsync(userId);
+        return ChangePasswordResult.Ok();
     }
 
     /// <summary>The new-password policy, in one place. Null means it passes.</summary>

@@ -29,7 +29,4 @@ public interface ISalaryComponentRepository
     /// </summary>
     Task<IEnumerable<EmployeeSalaryComponent>> EndAsync(
         int salaryComponentId, DateTime effectiveTo, int actedByUserId);
-    Task<int> CreateAsync(int employeeId, int componentTypeId, decimal amount, string currencyCode, DateTime effectiveFrom, DateTime? effectiveTo);
-    Task UpdateAsync(int salaryComponentId, decimal amount, string currencyCode, DateTime effectiveFrom, DateTime? effectiveTo);
-    Task DeleteAsync(int salaryComponentId);
 }

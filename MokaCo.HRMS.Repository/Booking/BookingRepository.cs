@@ -88,6 +88,29 @@ public class BookingRepository : IBookingRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    /// <summary>
+    /// The same procedure as the website's quote, by room id and as STAFF (Source 'Manual': no
+    /// lead-time window), so the New booking form shows what the booking will store (WEB-9). The end
+    /// follows the manual create's rule: at or before the start is the next morning.
+    /// </summary>
+    public async Task<BookingQuote?> QuoteForStaffAsync(StaffQuoteRequest request)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleOrDefaultAsync<BookingQuote>(
+            "booking.usp_Booking_Quote",
+            new
+            {
+                RoomCode = (string?)null,
+                request.RoomId,
+                BookDate = request.BookDate.Date,
+                StartMin = (int)request.StartTime.TotalMinutes,
+                EndMin = MinuteClock.EndMinOf(request.StartTime, request.EndTime),
+                AddonIds = JoinAddonIds(request.AddonIds),
+                Source = "Manual",
+            },
+            commandType: CommandType.StoredProcedure);
+    }
+
     public async Task<BookingRefDetail?> GetByRefAsync(string bookingRef)
     {
         using var db = _factory.Create();
@@ -227,11 +250,16 @@ public class BookingRepository : IBookingRepository
         };
     }
 
+    /// <summary>
+    /// booking.usp_Block_Add (docs/104, QA3 BKG-2), not the base usp_Block_Create: an end at or before
+    /// the start is the next morning (up to 06:00), and live bookings are checked in absolute time,
+    /// across midnight. Same parameters, same answer (BlockId).
+    /// </summary>
     public async Task<BlockCreated?> CreateBlockAsync(BlockCreateRequest request, int createdByUserId)
     {
         using var db = _factory.Create();
         return await db.QuerySingleOrDefaultAsync<BlockCreated>(
-            "booking.usp_Block_Create",
+            "booking.usp_Block_Add",
             new
             {
                 request.RoomId,
@@ -271,6 +299,24 @@ public class BookingRepository : IBookingRepository
             Buckets = (await multi.ReadAsync<BookingReportBucket>()).ToList(),
             Rooms = (await multi.ReadAsync<BookingReportRoom>()).ToList(),
         };
+    }
+
+    /// <summary>
+    /// The booking mail's own sender, SMTP account and template for the outbox rows the e-mail worker has
+    /// just claimed (core.usp_Email_GetBookingSenders, docs/104 — QA3 BKG-7). Rows that are not booking
+    /// mail are not returned.
+    /// </summary>
+    public async Task<IReadOnlyList<BookingMailSender>> GetMailSendersAsync(IReadOnlyCollection<int> emailIds)
+    {
+        if (emailIds.Count == 0)
+            return [];
+
+        using var db = _factory.Create();
+        var rows = await db.QueryAsync<BookingMailSender>(
+            "core.usp_Email_GetBookingSenders",
+            new { EmailIds = string.Join(',', emailIds.Distinct()) },
+            commandType: CommandType.StoredProcedure);
+        return rows.ToList();
     }
 
     /// <summary>The list-to-string join the procedure's STRING_SPLIT needs. EMPTY BECOMES NULL — null is what "no add-ons" means to the procedure.</summary>

@@ -13,6 +13,9 @@ public interface IDefinitionService
     /// </summary>
     Task<IEnumerable<RaisableRequestType>> GetRaisableRequestTypesAsync();
 
+    /// <summary>Every active request type — for filtering lists of requests by type (QA3 WEB-13).</summary>
+    Task<IEnumerable<RequestType>> GetActiveRequestTypesAsync();
+
     Task<int> UpsertRequestTypeAsync(RequestTypeUpsertRequest request);
 
     Task<IEnumerable<WorkflowDefinition>> GetDefinitionsAsync(int? requestTypeId);

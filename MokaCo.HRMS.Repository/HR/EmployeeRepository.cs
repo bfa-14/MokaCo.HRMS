@@ -39,7 +39,7 @@ public class EmployeeRepository : IEmployeeRepository
     public async Task<int> CreateAsync(
         int? userId, int branchId, int departmentId, int positionId, string fullName,
         string? nationalId, string? nssfNumber, DateTime hireDate, int? createdBy,
-        string? email, string? phoneNumber, string? preferredLanguage)
+        string? email, string? phoneNumber, string? preferredLanguage, int? approvalTier)
     {
         using var db = _factory.Create();
         return await db.ExecuteScalarAsync<int>(
@@ -57,7 +57,9 @@ public class EmployeeRepository : IEmployeeRepository
                 CreatedBy = createdBy,
                 Email = email,
                 PhoneNumber = phoneNumber,
-                PreferredLanguage = preferredLanguage
+                PreferredLanguage = preferredLanguage,
+                // QA3 LEAD-1 (SQL 106): null = the lowest tier of the dictionary, decided by the procedure — never 1 (the head).
+                ApprovalTier = approvalTier
             },
             commandType: CommandType.StoredProcedure);
     }
@@ -153,7 +155,7 @@ public class EmployeeRepository : IEmployeeRepository
     public async Task<EmployeeApprovalTier?> SetApprovalTierAsync(int employeeId, int approvalTier)
     {
         using var db = _factory.Create();
-        // Validates 1..3 and RAISERRORs otherwise; on success returns the employee's new tier row.
+        // RAISERRORs on a tier hr.APPROVAL_TIER does not have (SQL 106); on success returns the employee's new tier row.
         return await db.QuerySingleOrDefaultAsync<EmployeeApprovalTier>(
             "hr.usp_Employee_SetApprovalTier",
             new { EmployeeId = employeeId, ApprovalTier = approvalTier },
@@ -194,6 +196,24 @@ public class EmployeeRepository : IEmployeeRepository
         // Single scalar: the deepest ReportsTo chain among current employees, 0 when nobody reports to anyone.
         return await db.ExecuteScalarAsync<int>(
             "hr.usp_Org_GetMaxDepth",
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<TerminationSweepResult> ApplyDueTerminationsAsync()
+    {
+        using var db = _factory.Create();
+        // Always exactly one row (zeros on an ordinary night). Today is Beirut's, decided by the procedure.
+        return await db.QuerySingleAsync<TerminationSweepResult>(
+            "hr.usp_Employee_ApplyDueTerminations",
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<IEnumerable<SwapCounterpartRow>> GetSwapCounterpartsAsync(int employeeId, int? callerUserId)
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<SwapCounterpartRow>(
+            "hr.usp_Employee_GetSwapCounterparts",
+            new { EmployeeId = employeeId, CallerUserId = callerUserId },
             commandType: CommandType.StoredProcedure);
     }
 }

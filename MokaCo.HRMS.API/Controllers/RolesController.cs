@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
 using MokaCo.HRMS.Api.Auth;
@@ -28,6 +29,14 @@ public class RolesController : ControllerBase
     [HttpGet]
     [HasPermission("ROLE_MANAGE")]
     public async Task<IActionResult> GetRoles() => Ok(await _roles.GetAllAsync());
+
+    /// <summary>
+    /// Every role as a pick-list — id and name only. For the chain builder, which names a role approver from it:
+    /// WORKFLOW_CONFIGURE, as its other reads (OrgController), not ROLE_MANAGE, which its holder need not have.
+    /// </summary>
+    [HttpGet("names")]
+    [HasPermission("WORKFLOW_CONFIGURE")]
+    public async Task<IActionResult> GetNames() => Ok(PickLists.Roles(await _roles.GetAllAsync()));
 
     [HttpGet("permissions")]
     [HasPermission("ROLE_MANAGE")]

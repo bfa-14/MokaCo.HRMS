@@ -21,6 +21,7 @@ using MokaCo.HRMS.Repository.Payroll;
 using MokaCo.HRMS.Repository.Booking;
 using MokaCo.HRMS.Services.Auth;
 using MokaCo.HRMS.Services.Security;
+using MokaCo.HRMS.Services.Security.Gate;
 using MokaCo.HRMS.Services.Core;
 using MokaCo.HRMS.Services.HR;
 using MokaCo.HRMS.Services.Attendance;
@@ -64,13 +65,26 @@ var connectionString = builder.Configuration.GetConnectionString("MokaCo")
 var jwtOptions = builder.Configuration.GetSection("Jwt").Get<JwtOptions>()
     ?? throw new InvalidOperationException("Missing 'Jwt' configuration.");
 
+// THE SIGNING KEY MUST BE THIS SERVER'S OWN (QA3). The tracked appsettings.json carries a placeholder
+// anybody can read in git; a server left on it (or on a blank or short key) would accept a token
+// forged by anybody, for any user and any permission. The message names the key, never the value.
+if (jwtOptions.SecretKeyProblem() is { } jwtKeyProblem)
+    throw new InvalidOperationException(jwtKeyProblem);
+
 // ONLINE DEPOSITS (MPGS). The gateway's credentials and the two public origins come from the
 // environment — /etc/mokaco/api.env in production, the gitignored appsettings.Local.json in
-// development — never from a tracked file. FAIL FAST: a missing value stops the start here, naming
-// the key (never the value). See MpgsOptions for the 3-D Secure bypass rule (TEST profile + flag).
-var mpgsOptions = MpgsOptions.FromSettings(key => builder.Configuration[key]);
+// development — never from a tracked file. A missing or malformed value does NOT stop the start
+// (handoff open item 1): attendance and payroll must not depend on a payments secret. The gateway is
+// then unconfigured and the start logs an error naming the keys (never the values). See MpgsOptions
+// for the 3-D Secure bypass rule (TEST profile + flag).
+var mpgsOptions = MpgsOptions.FromSettingsOrUnconfigured(key => builder.Configuration[key]);
 var depositTiming = builder.Configuration.GetSection(OnlineDepositOptions.Section).Get<OnlineDepositOptions>() ?? new OnlineDepositOptions();
 depositTiming.Validate();
+
+// GOOGLE SIGN-IN GATE (docs/GOOGLE_SIGNIN_GATE.md). Google:MetadataAddress is optional — Google's own
+// discovery document by default; tests point it at a local fake. Anything but https (plain http only
+// on loopback) stops the start here, naming the key.
+var googleMetadataAddress = GoogleTokenValidator.ResolveMetadataAddress(builder.Configuration[GoogleTokenValidator.MetadataAddressKey]);
 
 // --- DI: infrastructure ---
 builder.Services.AddSingleton<IDbConnectionFactory>(new SqlConnectionFactory(connectionString));
@@ -82,6 +96,7 @@ builder.Services.AddScoped<IUserSignatureRepository, UserSignatureRepository>();
 builder.Services.AddScoped<IRoleRepository, RoleRepository>();
 builder.Services.AddScoped<IPermissionRepository, PermissionRepository>();
 builder.Services.AddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
+builder.Services.AddScoped<IGateRepository, GateRepository>();
 
 // --- DI: repositories (Core) ---
 builder.Services.AddScoped<ICurrencyRepository, CurrencyRepository>();
@@ -98,6 +113,7 @@ builder.Services.AddScoped<IEmployeeRepository, EmployeeRepository>();
 builder.Services.AddScoped<ILeaveTypeRepository, LeaveTypeRepository>();
 builder.Services.AddScoped<ISalaryComponentRepository, SalaryComponentRepository>();
 builder.Services.AddScoped<IDocumentRepository, DocumentRepository>();
+builder.Services.AddScoped<IScopeRepository, ScopeRepository>();
 builder.Services.AddScoped<ILeaveLedgerRepository, LeaveLedgerRepository>();
 builder.Services.AddScoped<ILeaveYearRepository, LeaveYearRepository>();
 builder.Services.AddScoped<IPayrollTierRepository, PayrollTierRepository>();
@@ -110,6 +126,7 @@ builder.Services.AddScoped<ISystemRepository, SystemRepository>();
 builder.Services.AddScoped<IDeviceRepository, DeviceRepository>();
 builder.Services.AddScoped<IShiftRepository, ShiftRepository>();
 builder.Services.AddScoped<IRosterRepository, RosterRepository>();
+builder.Services.AddScoped<IAutoRosterRepository, AutoRosterRepository>();
 builder.Services.AddScoped<IIngestionRepository, IngestionRepository>();
 builder.Services.AddScoped<IAttendanceRepository, AttendanceRepository>();
 builder.Services.AddScoped<ICorrectionRepository, CorrectionRepository>();
@@ -148,7 +165,28 @@ builder.Services.AddSingleton<IPasswordHasher, Argon2PasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IUserService, UserService>();
+// QA3 SEC-5: a singleton, because it is the per-user cache every authenticated request is checked against.
+builder.Services.AddSingleton<ISessionGuard, SessionGuard>();
+// An API deployed before docs/105_qa3_security.sql keeps working the way it did before that script, and
+// says so ONCE per process (a singleton for that reason): AuthService, UserService, the signature checks
+// and the caller-scope lookups (CallerScopes) report their fallbacks here.
+builder.Services.AddSingleton<MissingScriptWarning>();
+// QA3 deploy guard: which numbered scripts this API calls are missing from the database - logged at startup,
+// shown on /health. A singleton: one reading shared by every /health call, rechecked at most every 30 s.
+builder.Services.AddScoped<ISchemaRepository, SchemaRepository>();
+builder.Services.AddSingleton<SchemaCheck>();
 builder.Services.AddScoped<IUserSignatureService, UserSignatureService>();
+
+// The Google sign-in gate. The STATE is a singleton and must stay one: it is the 20-second cache every
+// gate check reads — nginx asks for every request — and a scoped one would read the database each time.
+// The validator is a singleton for the same reason: it holds Google's signing keys between sign-ins.
+builder.Services.AddScoped<IGateService, GateService>();
+builder.Services.AddSingleton<IGateState, GateState>();
+builder.Services.AddHttpClient(GoogleTokenValidator.HttpClientName, client => client.Timeout = GoogleTokenValidator.HttpTimeout);
+builder.Services.AddSingleton<IGoogleTokenValidator>(sp => new GoogleTokenValidator(
+    googleMetadataAddress,
+    sp.GetRequiredService<IHttpClientFactory>(),
+    sp.GetRequiredService<ILogger<GoogleTokenValidator>>()));
 
 // --- DI: services (Core) ---
 builder.Services.AddScoped<ICurrencyService, CurrencyService>();
@@ -183,6 +221,7 @@ builder.Services.AddScoped<ISettingService, SettingService>();
 builder.Services.AddScoped<IDeviceService, DeviceService>();
 builder.Services.AddScoped<IShiftService, ShiftService>();
 builder.Services.AddScoped<IRosterService, RosterService>();
+builder.Services.AddScoped<IAutoRosterService, AutoRosterService>();
 builder.Services.AddScoped<IImportService, ImportService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
 builder.Services.AddScoped<ICorrectionService, CorrectionService>();
@@ -321,7 +360,12 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
                     context.Token = accessToken;
 
                 return Task.CompletedTask;
-            }
+            },
+
+            // A GOOD SIGNATURE IS NOT ENOUGH (QA3 SEC-5): a token issued before its account's sessions
+            // were ended (a password change, a disable) is refused here, at most SessionGuard.CacheFor
+            // after a change made elsewhere and at once after one made through this API.
+            OnTokenValidated = SessionCheck.OnTokenValidated
         };
     });
 
@@ -339,6 +383,8 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 //     ZKTeco protocol and cannot send a bearer token; they are gated by serial + rate limiter;
 //   - AttendanceIngestion punch ([AllowAnonymous]) — [DeviceApiKey] is an action FILTER, not an
 //     authentication scheme, so the fallback would demand a JWT the device does not have;
+//   - GateController ([AllowAnonymous] on the class) — the Google sign-in gate is in front of the HRMS
+//     login, and nginx's per-request check carries no token;
 //   - the Development-only OpenAPI/Scalar endpoints.
 builder.Services.AddSingleton<IAuthorizationPolicyProvider, PermissionPolicyProvider>();
 builder.Services.AddAuthorization(options =>
@@ -348,21 +394,26 @@ builder.Services.AddAuthorization(options =>
         .Build();
 });
 
-// --- Rate limiting: the fingerprint terminals' push endpoints only ---
+// --- Rate limiting: the endpoints a caller reaches without a token ---
 //
-// Scoped to /iclock/* by the [EnableRateLimiting] attribute on IclockController, because that is
-// the one part of the API that is not behind a JWT: it is reachable by anyone who can guess a
-// registered serial, and the serial is printed on the back of the machine. Everything else in the
+// Per endpoint, by [EnableRateLimiting]: the fingerprint terminals' /iclock, the public booking API,
+// the Google gate's sign-in, and sign-in and refresh themselves (QA3 SEC-6). Everything else in the
 // API is protected by having to log in first, and a limiter there would only ever punish real users.
+// Every limit counts the CLIENT ADDRESS, which behind nginx is X-Forwarded-For — believable since
+// QA3 SEC-4, when nginx stopped taking CF-Connecting-IP from anybody.
 //
-// PARTITIONED BY SERIAL, so one terminal (or one leaked serial) cannot starve the others. Falls
-// back to the remote IP when there is no SN — a caller that has not even said who it claims to be
-// still must not get an unlimited number of guesses.
+// /iclock is reachable by anyone who can guess a registered serial, and the serial is printed on the
+// back of the machine. It is limited PER ADDRESS (the endpoint policy) AND PER SERIAL (the global
+// limiter below). It used to be partitioned by the serial alone — a value the caller types — so a
+// caller sending a new SN with every request got a fresh bucket every time: no limit at all on
+// guessing serials, one database lookup each (QA3).
 //
-// The ceiling is deliberately generous. A real terminal with Realtime=1 sends one small request per
+// The ceilings are deliberately generous. A real terminal with Realtime=1 sends one small request per
 // punch plus a command poll every few seconds; a busy door at shift change might produce a few
-// dozen requests in a minute, and a device flushing a backlog after an outage produces a burst.
-// This is sized to be invisible to all of that and to still cap a flood.
+// dozen requests in a minute, and a device flushing a backlog after an outage produces a burst. The
+// terminals of one branch share the branch's public address, hence 600 a minute per address and 240
+// per serial: invisible to all of that, and still a cap on a flood.
+builder.Services.AddSingleton<LoginThrottle>();
 builder.Services.AddRateLimiter(options =>
 {
     // 429 is not in a fingerprint terminal's vocabulary. 503 is a "try later" it already handles by
@@ -374,12 +425,21 @@ builder.Services.AddRateLimiter(options =>
     // value, and the public booking endpoints are talked to by browsers, where "try later" is 429
     // and 503 reads as "the site is down". This runs after the middleware has applied the default,
     // so the assignment wins; the terminals keep the 503 their retry logic already understands.
-    options.OnRejected = (context, _) =>
+    // The Google sign-in gate's page is a browser too.
+    options.OnRejected = async (context, cancellationToken) =>
     {
-        if (context.HttpContext.Request.Path.StartsWithSegments("/api/public/booking"))
-            context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        var http = context.HttpContext;
+        var path = http.Request.Path;
+        if (path.StartsWithSegments("/api/public/booking") || path.StartsWithSegments("/api/gate"))
+            http.Response.StatusCode = StatusCodes.Status429TooManyRequests;
 
-        return ValueTask.CompletedTask;
+        // The sign-in page shows the "error" of a refusal: a sentence, not an empty 429 (QA3 SEC-6).
+        if (path.StartsWithSegments("/api/auth"))
+        {
+            http.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+            http.Response.Headers.RetryAfter = "60";
+            await http.Response.WriteAsJsonAsync(new { error = AuthController.TooManyAttempts }, cancellationToken);
+        }
     };
 
     // --- The public booking endpoints: per IP, and read and write counted SEPARATELY ---
@@ -412,18 +472,58 @@ builder.Services.AddRateLimiter(options =>
             QueueLimit = 0
         }));
 
-    options.AddPolicy(IclockController.RateLimitPolicy, context =>
-    {
-        var serial = context.Request.Query["SN"].ToString();
-        var partition = string.IsNullOrWhiteSpace(serial)
-            ? $"ip:{context.Connection.RemoteIpAddress}"
-            : $"sn:{serial}";
+    // The Google sign-in (POST api/gate/google): a person presses the button once; ten in a minute from
+    // one address is somebody trying tokens. The per-request check is NOT limited — nginx asks it for
+    // every file of every page.
+    options.AddPolicy(GateController.SignInRateLimitPolicy, context =>
+        RateLimitPartition.GetFixedWindowLimiter(ClientPartition(context), _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 10,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0
+        }));
 
-        return RateLimitPartition.GetFixedWindowLimiter(partition, _ => new FixedWindowRateLimiterOptions
+    // Sign-in and refresh, per address (QA3 SEC-6). The per-username half of the sign-in limit is
+    // LoginThrottle, asked by the controller once the body is read.
+    options.AddPolicy(AuthController.LoginRateLimitPolicy, context =>
+        RateLimitPartition.GetFixedWindowLimiter(ClientPartition(context), _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 60,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0
+        }));
+
+    options.AddPolicy(AuthController.RefreshRateLimitPolicy, context =>
+        RateLimitPartition.GetFixedWindowLimiter(ClientPartition(context), _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 120,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0
+        }));
+
+    // /iclock, per ADDRESS: the bucket a caller cannot change by changing what it types.
+    options.AddPolicy(IclockController.RateLimitPolicy, context =>
+        RateLimitPartition.GetFixedWindowLimiter($"ip:{ClientPartition(context)}", _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 600,                     // the terminals of a branch share its address
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0                         // refuse immediately; the device's own retry IS the queue
+        }));
+
+    // /iclock, per SERIAL as well, so one leaked serial cannot flood from many addresses. The global
+    // limiter runs before the endpoint's, for every request; everything but /iclock passes through
+    // it untouched. The serial in the key is cut short: it is whatever the caller sent.
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+    {
+        var serial = context.Request.Path.StartsWithSegments("/iclock") ? context.Request.Query["SN"].ToString().Trim() : "";
+        if (serial.Length == 0)
+            return RateLimitPartition.GetNoLimiter("");
+
+        return RateLimitPartition.GetFixedWindowLimiter($"sn:{(serial.Length > 64 ? serial[..64] : serial)}", _ => new FixedWindowRateLimiterOptions
         {
             PermitLimit = 240,                     // ~4/second sustained, per terminal
             Window = TimeSpan.FromMinutes(1),
-            QueueLimit = 0                         // refuse immediately; the device's own retry IS the queue
+            QueueLimit = 0
         });
     });
 });
@@ -504,7 +604,10 @@ builder.Services.AddOpenApi();
 var app = builder.Build();
 
 // Everything about the gateway but the password, once, so a wrong host or profile is visible in the log.
-app.Logger.LogInformation("Online deposits: {Gateway}.", mpgsOptions);
+if (mpgsOptions.IsConfigured)
+    app.Logger.LogInformation("Online deposits: {Gateway}.", mpgsOptions);
+else
+    app.Logger.LogError("Online deposits are OFF until the gateway is configured. {Problem}", mpgsOptions.Problem);
 if (mpgsOptions.SendsThreeDsBypass)
     app.Logger.LogWarning("Online deposits: 3-D Secure BYPASS is on (TEST merchant profile, {Flag}). Never in production.", MpgsOptions.TestBypassKey);
 
@@ -542,9 +645,10 @@ if (app.Environment.IsDevelopment())
 // the serial and every punch travel in clear text, and the serial is the only credential this
 // protocol has.
 // /iclock is exempt because the terminals speak plain HTTP on the LAN and do not follow 307s; every
-// other endpoint keeps the redirect.
+// other endpoint keeps the redirect. So is the gate check: nginx asks it over plain HTTP on loopback,
+// and auth_request treats any answer but 2xx, 401 and 403 as an error for the visitor.
 app.UseWhen(
-    ctx => !ctx.Request.Path.StartsWithSegments("/iclock"),
+    ctx => !ctx.Request.Path.StartsWithSegments("/iclock") && !ctx.Request.Path.StartsWithSegments("/api/gate/check"),
     branch => branch.UseHttpsRedirection());
 app.UseCors(CorsPolicy);
 
@@ -582,13 +686,21 @@ app.MapGet("/", () => isDevelopment
    .AllowAnonymous()
    .ExcludeFromDescription();
 
-app.MapGet("/health", () => Results.Ok(new
+// "schema" (QA3 deploy guard): "ok", "behind" while a script this API calls is missing from the database (the log
+// names it), "unknown" when the database could not be asked. Either of the last two makes the status "degraded",
+// still HTTP 200: the process is alive. Only the word is public; the script names are in the log.
+app.MapGet("/health", async (SchemaCheck schema) =>
    {
-       status = "ok",
-       service = "MokaCo.HRMS.API",
-       environment = app.Environment.EnvironmentName,
-       utc = DateTime.UtcNow
-   }))
+       var scripts = await schema.CurrentAsync();
+       return Results.Ok(new
+       {
+           status = scripts.IsOk ? "ok" : "degraded",
+           service = "MokaCo.HRMS.API",
+           environment = app.Environment.EnvironmentName,
+           schema = scripts.Status,
+           utc = DateTime.UtcNow
+       });
+   })
    .AllowAnonymous()
    .ExcludeFromDescription();
 
@@ -628,6 +740,10 @@ app.Lifetime.ApplicationStarted.Register(() =>
     app.Logger.LogInformation(
         "iclock receiver listening — point terminals at {Target} (device Cloud Server / ADMS " +
         "setting), serial must be registered on Attendance > Devices.", target);
+
+    // QA3 deploy guard: the scripts check runs once now, so a missing script is in the log at startup (the deploy
+    // scripts read it there), not only when somebody opens /health. It never throws.
+    _ = app.Services.GetRequiredService<SchemaCheck>().CurrentAsync();
 });
 
 app.Run();

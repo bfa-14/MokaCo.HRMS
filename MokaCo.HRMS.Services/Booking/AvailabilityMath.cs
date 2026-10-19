@@ -35,7 +35,9 @@ public static class AvailabilityMath
         }
 
         day.EarliestStartMin = EarliestStart(openMin, onDate, day.LocalNow, day.LeadMinHours, day.SlotMinutes);
-        day.Free = FreeRanges(openMin, closeMin, day.Taken, day.EarliestStartMin, day.MinHours * 60, day.TurnaroundMinutes);
+        // NOT the turnaround: it is information INSIDE a booking ("wrap up by" EndMin − turnaround), not
+        // time between bookings — usp_Booking_Create books 11:00 right after a 10:00–11:00 (QA3 BKG-6).
+        day.Free = FreeRanges(openMin, closeMin, day.Taken, day.EarliestStartMin, day.MinHours * 60);
     }
 
     /// <summary>
@@ -53,26 +55,30 @@ public static class AvailabilityMath
     }
 
     /// <summary>
-    /// [openMin, closeMin) minus the taken ranges, with <paramref name="turnaroundMinutes"/> added
-    /// after each taken range, trimmed to <paramref name="earliestStartMin"/>, pieces shorter than
-    /// <paramref name="minLength"/> dropped.
+    /// [openMin, closeMin) minus the taken ranges, trimmed to <paramref name="earliestStartMin"/>,
+    /// pieces shorter than <paramref name="minLength"/> dropped.
+    ///
+    /// NO TURNAROUND IS ADDED AFTER A TAKEN RANGE (QA3 BKG-6). The turnaround (BookingTurnaroundMinutes)
+    /// is the end of the booking the guest is asked to leave by — "wrap up by" EndMin − turnaround on
+    /// the booking — and usp_Booking_Create, the authority, accepts a booking that starts the minute
+    /// the previous one ends. Adding it here as a gap made every hour that follows a booking look
+    /// taken, and a free hour between two bookings 55 minutes long, never offered.
     ///
     /// THE TAKEN LIST IS SORTED AND MERGED by a running maximum of the end, so overlapping or nested
     /// ranges (a booking inside a staff block is legal) never produce a gap running backwards.
     /// </summary>
     public static List<FreeRange> FreeRanges(
-        int openMin, int closeMin, IEnumerable<TakenRange> taken, int earliestStartMin, int minLength, int turnaroundMinutes = 0)
+        int openMin, int closeMin, IEnumerable<TakenRange> taken, int earliestStartMin, int minLength)
     {
         var free = new List<FreeRange>();
         var cursor = Math.Max(openMin, earliestStartMin);
-        var gap = Math.Max(0, turnaroundMinutes);
 
         foreach (var range in taken.OrderBy(t => t.StartMin).ThenBy(t => t.EndMin))
         {
             if (range.StartMin > cursor)
                 Add(free, cursor, Math.Min(range.StartMin, closeMin), minLength);
 
-            cursor = Math.Max(cursor, range.EndMin + gap);
+            cursor = Math.Max(cursor, range.EndMin);
         }
 
         Add(free, cursor, closeMin, minLength);

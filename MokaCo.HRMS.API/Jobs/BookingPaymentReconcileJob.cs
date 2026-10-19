@@ -44,6 +44,10 @@ public class BookingPaymentReconcileJob : IJob
 
     public async Task Execute(IJobExecutionContext context)
     {
+        // No gateway configured: there is nobody to ask. The start already logged which keys are missing.
+        if (!_settle.Gateway.IsConfigured)
+            return;
+
         var due = await _deposits.ListPaymentsToReconcileAsync(_timing.ReconcileAfterMinutes);
 
         // Silent on the ordinary outcome, like the hold-expiry sweep: most runs have nothing to do.

@@ -187,7 +187,7 @@ public class AttendanceRepository : IAttendanceRepository
     }
 
     /// <summary>Records what was AUTHORISED. It never overwrites what the punches observed — the procedure keeps the two apart.</summary>
-    public async Task<AttendanceRecord?> SetExitApprovalAsync(long attendanceId, int exitApprovedMinutes, int? exitPermissionId, bool alsoSetActual, string? hrNote)
+    public async Task<AttendanceRecord?> SetExitApprovalAsync(long attendanceId, int exitApprovedMinutes, int? exitPermissionId, bool alsoSetActual, string? hrNote, bool clearHrApproval = false)
     {
         using var db = _factory.Create();
         return await db.QuerySingleOrDefaultAsync<AttendanceRecord>(
@@ -198,7 +198,8 @@ public class AttendanceRepository : IAttendanceRepository
                 ExitApprovedMinutes = exitApprovedMinutes,
                 ExitPermissionId = exitPermissionId,
                 AlsoSetActual = alsoSetActual,
-                HrNote = hrNote
+                HrNote = hrNote,
+                ClearHrApproval = clearHrApproval
             },
             commandType: CommandType.StoredProcedure);
     }
@@ -245,22 +246,34 @@ public class AttendanceRepository : IAttendanceRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    /// <summary>
+    /// One employee's month. UnpaidAbsenceDays is replaced by the payslip's own short-days figure (QA3 REL-15 —
+    /// see <see cref="UnpaidAbsence"/>): the procedure's "Absent − leave usage" counted leave twice since script 76.
+    /// </summary>
     public async Task<AttendanceSummary?> GetMonthlySummaryAsync(int employeeId, string periodYearMonth)
     {
         using var db = _factory.Create();
-        return await db.QuerySingleOrDefaultAsync<AttendanceSummary>(
+        var summary = await db.QuerySingleOrDefaultAsync<AttendanceSummary>(
             "attendance.usp_Attendance_MonthlySummary",
             new { EmployeeId = employeeId, PeriodYearMonth = periodYearMonth },
             commandType: CommandType.StoredProcedure);
+        if (summary is not null)
+            UnpaidAbsence.Apply(new[] { summary }, await UnpaidAbsence.ReadAsync(db, periodYearMonth, employeeId),
+                s => s.EmployeeId, (s, days) => s.UnpaidAbsenceDays = days);
+        return summary;
     }
 
+    /// <summary>Everybody's month — UnpaidAbsenceDays replaced as in <see cref="GetMonthlySummaryAsync"/> (QA3 REL-15).</summary>
     public async Task<IEnumerable<AttendanceSummary>> GetMonthlySummaryAllAsync(string periodYearMonth)
     {
         using var db = _factory.Create();
-        return await db.QueryAsync<AttendanceSummary>(
+        var rows = (await db.QueryAsync<AttendanceSummary>(
             "attendance.usp_Attendance_MonthlySummary_All",
             new { PeriodYearMonth = periodYearMonth },
-            commandType: CommandType.StoredProcedure);
+            commandType: CommandType.StoredProcedure)).ToList();
+        UnpaidAbsence.Apply(rows, await UnpaidAbsence.ReadAsync(db, periodYearMonth),
+            s => s.EmployeeId, (s, days) => s.UnpaidAbsenceDays = days);
+        return rows;
     }
 
     public async Task<IEnumerable<AttendanceBranchSummary>> GetMonthlyByBranchAsync(string periodYearMonth, int? employeeId)
@@ -312,6 +325,15 @@ public class AttendanceRepository : IAttendanceRepository
         return await db.QuerySingleAsync<QuarantineMapResult>(
             "attendance.usp_DevicePunchQuarantine_MapToEmployee",
             new { request.DeviceId, EnrollPin = request.EnrollPin.Trim(), request.EmployeeId, ActedByUserId = actedByUserId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<QuarantineDismissResult> DismissQuarantinedDeviceUserAsync(QuarantineDismissRequest request, int actedByUserId)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleAsync<QuarantineDismissResult>(
+            "attendance.usp_DevicePunchQuarantine_Dismiss",
+            new { request.DeviceId, EnrollPin = request.EnrollPin.Trim(), Note = request.Note.Trim(), ActedByUserId = actedByUserId },
             commandType: CommandType.StoredProcedure);
     }
 }

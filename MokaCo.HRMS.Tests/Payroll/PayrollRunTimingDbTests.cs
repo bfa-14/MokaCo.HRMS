@@ -14,9 +14,9 @@ namespace MokaCo.HRMS.Tests.Payroll;
 /// supplemental before the primary exists, supplemental while the primary is a draft, primary
 /// generated before the supplemental.
 /// </summary>
-// One collection for every class that runs the payroll generator inside an open transaction: two of
-// them side by side take the same locks in a different order and one is chosen as the deadlock victim.
-[Collection("PayrollDb")]
+// The one database collection (DatabaseCollection): two DB test classes side by side take the same locks
+// in a different order and one is chosen as the deadlock victim.
+[Collection(DatabaseCollection.Name)]
 public class PayrollRunTimingDbTests
 {
     private sealed class Fixture : IAsyncDisposable
@@ -75,8 +75,12 @@ public class PayrollRunTimingDbTests
         public Task ReviewAsync(int run) => Db.ExecuteAsync("payroll.usp_PayrollRun_SendToReview",
             new { PayrollRunId = run, ActedByUserId = Hr }, Tx, commandType: CommandType.StoredProcedure);
 
+        /// <summary>
+        /// The runs here are in 2099, a period that has not ended: script 103 (QA3 PAY-3) locks such a primary only
+        /// as the Owner's explicit EARLY lock, so these tests ask for one. (A supplemental ignores the flag.)
+        /// </summary>
         public Task ApproveAsync(int run) => Db.ExecuteAsync("payroll.usp_PayrollRun_Approve",
-            new { PayrollRunId = run, ActedByUserId = Owner }, Tx, commandType: CommandType.StoredProcedure);
+            new { PayrollRunId = run, ActedByUserId = Owner, AllowEarlyLock = true }, Tx, commandType: CommandType.StoredProcedure);
 
         /// <summary>How many payslip lines of the run pay the fixture's adjustment.</summary>
         public Task<int> AdjustmentLinesAsync(int run) => Db.QuerySingleAsync<int>(

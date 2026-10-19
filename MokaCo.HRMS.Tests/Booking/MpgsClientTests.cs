@@ -253,7 +253,7 @@ public class MpgsClientTests
     }
 }
 
-/// <summary>Startup refuses to run without the gateway's configuration, and says which keys — never which values.</summary>
+/// <summary>The gateway's configuration is checked key by key; a problem names the keys, never the values, and leaves the gateway unconfigured rather than stopping the start.</summary>
 public class MpgsOptionsTests
 {
     private static readonly Dictionary<string, string?> Complete = new()
@@ -297,6 +297,20 @@ public class MpgsOptionsTests
         Assert.Contains("MPGS_API_VERSION must be a whole number", error.Message);
         Assert.DoesNotContain("seventy-three", error.Message);
         Assert.DoesNotContain("TESTMOKANDCO", error.Message);
+    }
+
+    [Fact]
+    public void A_missing_key_leaves_the_gateway_unconfigured_instead_of_stopping_the_start()
+    {
+        var partial = new Dictionary<string, string?>(Complete) { [MpgsOptions.ApiPasswordKey] = "" };
+
+        var options = MpgsOptions.FromSettingsOrUnconfigured(key => partial.GetValueOrDefault(key));
+
+        Assert.False(options.IsConfigured);
+        Assert.Contains("MPGS_API_PASSWORD is missing", options.Problem);
+        Assert.DoesNotContain("TESTMOKANDCO", options.Problem);
+        Assert.Equal("MPGS not configured", options.ToString());
+        Assert.True(MpgsOptions.FromSettingsOrUnconfigured(key => Complete.GetValueOrDefault(key)).IsConfigured);
     }
 
     [Fact]

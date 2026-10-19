@@ -3,6 +3,8 @@ using MokaCo.HRMS.Model.Workflow;
 using MokaCo.HRMS.Repository.Security;
 using MokaCo.HRMS.Repository.Workflow;
 using MokaCo.HRMS.Services.Auth;
+using MokaCo.HRMS.Services.Core;
+using MokaCo.HRMS.Services.Security;
 
 namespace MokaCo.HRMS.Services.Workflow;
 
@@ -22,17 +24,20 @@ public class LeaveRequestService : ILeaveRequestService
     private readonly IRequestRepository _requests;
     private readonly IUserRepository _users;
     private readonly IPasswordHasher _hasher;
+    private readonly MissingScriptWarning? _missingScript;
 
     public LeaveRequestService(
         ILeaveRequestRepository repo,
         IRequestRepository requests,
         IUserRepository users,
-        IPasswordHasher hasher)
+        IPasswordHasher hasher,
+        MissingScriptWarning? missingScript = null)
     {
         _repo = repo;
         _requests = requests;
         _users = users;
         _hasher = hasher;
+        _missingScript = missingScript;
     }
 
     public Task<LeaveRequestCreated?> CreateAsync(LeaveRequestCreateRequest request, LeaveRequestCaller caller)
@@ -110,11 +115,14 @@ public class LeaveRequestService : ILeaveRequestService
                 401,
                 requirement.Explanation ?? "This decision must be signed with your password.");
 
-        var user = await _users.GetByIdAsync(userId);
-        if (user is null || !_hasher.Verify(password, user.PasswordHash))
-            throw new WorkflowException(401, "That password is not correct.");
-
-        return true;
+        // Counted against the login lockout, and refused while locked (QA3, item 10), as every other signature:
+        // see AccountPassword. This one was the last check that let a session guess the password uncounted.
+        return await AccountPassword.CheckAsync(_users, _hasher, userId, password, _missingScript) switch
+        {
+            PasswordVerdict.Ok => true,
+            PasswordVerdict.Locked => throw new WorkflowException(401, AuthService.Locked),
+            _ => throw new WorkflowException(401, "That password is not correct."),
+        };
     }
 
     public Task<LeaveYearBalance> GetBalanceByYearAsync(int employeeId, int? year)

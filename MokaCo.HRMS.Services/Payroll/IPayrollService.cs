@@ -15,7 +15,8 @@ public interface IPayrollService
     Task<IEnumerable<PayslipListItem>> GetRunPayslipsAsync(int payrollRunId);
     Task<PayrollRunGenerateResult?> GenerateAsync(int payrollRunId, int actedByUserId);
     Task<PayrollRunStatusResult?> SendToReviewAsync(int payrollRunId, int actedByUserId);
-    Task<PayrollRunStatusResult?> ApproveAsync(int payrollRunId, int actedByUserId);
+    Task<PayrollRunStatusResult?> ApproveAsync(int payrollRunId, int actedByUserId, bool allowEarlyLock = false);
+    Task<PayrollRunStaleness?> GetStalenessAsync(int payrollRunId);
     Task<PayrollRunStatusResult?> CancelAsync(int payrollRunId, int actedByUserId, PayrollRunCancelRequest request);
     Task<IEnumerable<PaymentSheetRow>> GetPaymentSheetAsync(int payrollRunId);
     Task<PayrollReadiness?> GetReadinessAsync(string periodYearMonth);

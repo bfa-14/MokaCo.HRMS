@@ -87,6 +87,7 @@ public class TipDistributionsController : ControllerBase
 
     /// <summary>The header and the per-person lines, as two halves of one payload. 404 when the request is not a tip one.</summary>
     [HttpGet("{id:int}/payload")]
+    [RequestVisible]
     public async Task<IActionResult> GetPayload(int id)
     {
         var payload = await _tips.GetPayloadAsync(id);
@@ -109,26 +110,33 @@ public class TipDistributionsController : ControllerBase
 public class ShiftSwapsController : ControllerBase
 {
     private readonly IShiftSwapService _swaps;
+    private readonly IWorkflowSupportService _support;
     private readonly ILiveNotifier _live;
 
-    public ShiftSwapsController(IShiftSwapService swaps, ILiveNotifier live)
+    public ShiftSwapsController(IShiftSwapService swaps, IWorkflowSupportService support, ILiveNotifier live)
     {
         _swaps = swaps;
+        _support = support;
         _live = live;
     }
 
     /// <summary>
-    /// Raises one. Every rule is the procedure's — the consent tick, the same-role requirement,
-    /// future dates, both people actually being rostered, and no open swap already touching either
-    /// shift. Each refusal comes back with its own sentence, which is the one worth reading.
+    /// Raises one. REQUEST_RAISE_SELF is the floor; the service enforces WHO it may be raised FOR,
+    /// since the requester's employee id travels in the body (QA3 WF-12). Every other rule is the
+    /// procedure's — the consent tick, the same-role requirement, future dates, both people actually
+    /// being rostered, and no open swap already touching either shift. Each refusal comes back with
+    /// its own sentence, which is the one worth reading.
     /// </summary>
     [HttpPost]
     [HasPermission("REQUEST_RAISE_SELF")]
     public async Task<IActionResult> Create([FromBody] ShiftSwapCreateRequest request)
     {
+        var me = await _support.GetEmployeeByUserIdAsync(User.UserId());
+        var caller = new ShiftSwapCaller(User.UserId(), me?.EmployeeId, User.HasPermission("REQUEST_RAISE_OTHERS"));
+
         try
         {
-            var created = await _swaps.CreateAsync(request, User.UserId());
+            var created = await _swaps.CreateAsync(request, caller);
             if (created is null) return BadRequest(new { error = "The request could not be created." });
 
             await _live.NotifyAsync("workflow", "dashboard");
@@ -166,6 +174,8 @@ public class ShiftSwapsController : ControllerBase
     }
 
     [HttpGet("{id:int}/payload")]
+
+    [RequestVisible]
     public async Task<IActionResult> GetPayload(int id)
     {
         var payload = await _swaps.GetPayloadAsync(id);

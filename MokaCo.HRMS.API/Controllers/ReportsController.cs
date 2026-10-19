@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using MokaCo.HRMS.Api.Auth;
+using MokaCo.HRMS.Repository.HR;
 using MokaCo.HRMS.Services.Report;
 
 namespace MokaCo.HRMS.Api.Controllers;
@@ -7,10 +8,16 @@ namespace MokaCo.HRMS.Api.Controllers;
 /// <summary>
 /// The printable reports — read-only views across attendance and leave data.
 ///
-/// All three are gated on ATTENDANCE_VIEW: a report reveals nothing you could not already read on
-/// the attendance and leave pages, it only arranges it for printing, so it needs no permission
-/// beyond seeing attendance. Each returns { header, rows } — the caller must render both, because
-/// a report without its header is an undated anonymous table.
+/// All three are gated on REPORT_VIEW (QA3 WEB-4): the reports are their own read trust, which the web
+/// already asked for — the leave-balance report is not an attendance screen, and a manager who needs
+/// one number should not have to be given the raw punch data to get it. Script 103 grants REPORT_VIEW
+/// to every role that held ATTENDANCE_VIEW, so nobody loses a report. Each returns { header, rows } —
+/// the caller must render both, because a report without its header is an undated anonymous table.
+///
+/// BRANCH-SCOPED like the pages they arrange (QA3 ATT-16 / REL-15): without EMP_VIEW_ALL a report lists
+/// the caller and the employees of the branches they manage (hr.usp_Scope_CallerEmployees, script 105),
+/// the same people the attendance and leave pages show them. Before, it listed every employee of
+/// every branch. The report procedures are not changed (their repo copies are older than production).
 /// </summary>
 [ApiController]
 [Route("api/reports")]
@@ -21,30 +28,43 @@ public class ReportsController : ControllerBase
 
     /// <summary>The sheet HR reviews before running payroll: one row per employee for the month.</summary>
     [HttpGet("monthly-attendance")]
-    [HasPermission("ATTENDANCE_VIEW")]
-    public async Task<IActionResult> MonthlyAttendance([FromQuery] string period, [FromQuery] int? branchId)
+    [HasPermission("REPORT_VIEW")]
+    public async Task<IActionResult> MonthlyAttendance([FromQuery] string period, [FromQuery] int? branchId, [FromServices] IScopeRepository scopes)
     {
         if (!IsYearMonth(period))
             return BadRequest(new { error = "period must look like '2026-06'." });
 
-        return Ok(await _reports.GetMonthlyAttendanceAsync(period, branchId));
+        var report = await _reports.GetMonthlyAttendanceAsync(period, branchId);
+        var (from, to) = ScopePeriod.Month(period);
+        var scope = await scopes.ForCallerAsync(HttpContext, from, to);
+        report.Rows = report.Rows.Where(r => scope.SeesEmployee(r.EmployeeId)).ToList();
+        return Ok(report);
     }
 
     /// <summary>A branch manager's daily sheet: who was in, late, absent or off on a given date.</summary>
     [HttpGet("daily-attendance")]
-    [HasPermission("ATTENDANCE_VIEW")]
-    public async Task<IActionResult> DailyAttendance([FromQuery] DateTime workDate, [FromQuery] int? branchId)
-        => Ok(await _reports.GetDailyAttendanceAsync(workDate, branchId));
+    [HasPermission("REPORT_VIEW")]
+    public async Task<IActionResult> DailyAttendance([FromQuery] DateTime workDate, [FromQuery] int? branchId, [FromServices] IScopeRepository scopes)
+    {
+        var report = await _reports.GetDailyAttendanceAsync(workDate, branchId);
+        var scope = await scopes.ForCallerAsync(HttpContext, workDate, workDate);
+        report.Rows = report.Rows.Where(r => scope.SeesEmployee(r.EmployeeId)).ToList();
+        return Ok(report);
+    }
 
     /// <summary>Accrued / carried over / used / remaining per employee per leave type, as of a period.</summary>
     [HttpGet("leave-balance")]
-    [HasPermission("ATTENDANCE_VIEW")]
-    public async Task<IActionResult> LeaveBalance([FromQuery] string asOf, [FromQuery] int? employeeId, [FromQuery] int? branchId)
+    [HasPermission("REPORT_VIEW")]
+    public async Task<IActionResult> LeaveBalance([FromQuery] string asOf, [FromQuery] int? employeeId, [FromQuery] int? branchId, [FromServices] IScopeRepository scopes)
     {
         if (!IsYearMonth(asOf))
             return BadRequest(new { error = "asOf must look like '2026-06'." });
 
-        return Ok(await _reports.GetLeaveBalanceAsync(asOf, employeeId, branchId));
+        var report = await _reports.GetLeaveBalanceAsync(asOf, employeeId, branchId);
+        var (from, to) = ScopePeriod.Month(asOf);
+        var scope = await scopes.ForCallerAsync(HttpContext, from, to);
+        report.Rows = report.Rows.Where(r => scope.SeesEmployee(r.EmployeeId)).ToList();
+        return Ok(report);
     }
 
     private static bool IsYearMonth(string value)

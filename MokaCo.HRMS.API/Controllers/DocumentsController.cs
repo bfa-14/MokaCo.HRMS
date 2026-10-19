@@ -33,6 +33,8 @@ public class DocumentsController : ControllerBase
 
     [HttpGet("by-employee/{employeeId:int}")]
     [HasPermission("EMP_VIEW")]
+
+    [InCallerScope(ScopeTarget.Employee, RouteKey = "employeeId")]
     public async Task<IActionResult> GetByEmployee(int employeeId)
         => Ok(await _documents.GetByEmployeeAsync(employeeId));
 
@@ -107,13 +109,20 @@ public class DocumentsController : ControllerBase
     /// <summary>Streams the stored file back with its original name and content type.</summary>
     [HttpGet("{id:int}/download")]
     [HasPermission("EMP_VIEW")]
+    [InCallerScope(ScopeTarget.Document)]
     public async Task<IActionResult> Download(int id)
     {
         var doc = await _documents.GetByIdAsync(id);
         if (doc is null)
             return NotFound();
 
-        var fullPath = Path.Combine(_root, doc.StoragePath);
+        // Only files under our own storage root are served (QA3). A document RECORDED through POST
+        // carries whatever StoragePath its author typed: "../.." or an absolute path such as
+        // /proc/self/environ would otherwise stream any file the service can read.
+        var root = Path.GetFullPath(_root);
+        var fullPath = Path.GetFullPath(Path.Combine(root, doc.StoragePath));
+        if (!fullPath.StartsWith(Path.TrimEndingDirectorySeparator(root) + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            return NotFound(new { error = "This document is recorded elsewhere; it has no file on this server." });
         if (!System.IO.File.Exists(fullPath))
             return NotFound(new { error = "The file is missing on the server." });
 

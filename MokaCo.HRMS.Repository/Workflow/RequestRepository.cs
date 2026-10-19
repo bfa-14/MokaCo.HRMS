@@ -185,6 +185,15 @@ public class RequestRepository : IRequestRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    public async Task<IEnumerable<DelegateCandidate>> GetDelegateCandidatesAsync(int requestInstanceId, int forUserId)
+    {
+        using var db = _factory.Create();
+        return await db.QueryAsync<DelegateCandidate>(
+            "workflow.usp_Request_GetDelegateCandidates",
+            new { RequestInstanceId = requestInstanceId, ForUserId = forUserId },
+            commandType: CommandType.StoredProcedure);
+    }
+
     /// <summary>Takes a delegated step back. Nothing was signed, so this asks for no password.</summary>
     public async Task ReclaimDelegationAsync(int requestInstanceId, int actedByUserId, string? reason)
     {
@@ -195,19 +204,25 @@ public class RequestRepository : IRequestRepository
             commandType: CommandType.StoredProcedure);
     }
 
-    public async Task<ApproveResult?> ApproveAsync(int requestInstanceId, int actedByUserId, string? comment, string? changeSummary = null, bool signedWithPassword = false)
+    public async Task<ApproveResult?> ApproveAsync(int requestInstanceId, int actedByUserId, string? comment, string? changeSummary = null, bool signedWithPassword = false, int? expectedStepNo = null)
     {
         using var db = _factory.Create();
+        var args = new DynamicParameters(new
+        {
+            RequestInstanceId = requestInstanceId,
+            ActedByUserId = actedByUserId,
+            Comment = comment,
+            ChangeSummary = changeSummary,
+            SignedWithPassword = signedWithPassword,
+        });
+        // Sent ONLY when known, so this layer keeps working against a database that predates script
+        // 101 (where the procedure has no such parameter) for every caller that does not send it.
+        if (expectedStepNo is not null)
+            args.Add("ExpectedStepNo", expectedStepNo);
+
         return await db.QuerySingleOrDefaultAsync<ApproveResult>(
             "workflow.usp_Request_Approve",
-            new
-            {
-                RequestInstanceId = requestInstanceId,
-                ActedByUserId = actedByUserId,
-                Comment = comment,
-                ChangeSummary = changeSummary,
-                SignedWithPassword = signedWithPassword,
-            },
+            args,
             commandType: CommandType.StoredProcedure);
     }
 
@@ -274,9 +289,10 @@ public class RequestRepository : IRequestRepository
     /// scope. If this outlives that decision, promote it to workflow.usp_Request_GetUnappliedEffects
     /// and delete the string — nothing else has to change.
     ///
-    /// Each arm is a type paired with the ONE column that proves its effect landed. Overtime is
-    /// deliberately absent: the nightly job applies it a step earlier, and its marker stays null until
-    /// the worked day exists, so including it would re-sweep the same rows every night forever.
+    /// Each arm is a type paired with the ONE column that proves its effect landed. Overtime and exit
+    /// permissions are swept ONLY when the worked day's attendance record exists (QA3 ATT-4/ATT-5):
+    /// their marker stays null until there is a day to apply them to, so without that condition the
+    /// same future-dated rows would be re-swept every night forever.
     /// ROSTER_APPROVAL (AppliedAt) is here so a month whose approval somehow never activated it is
     /// picked up the next night — the engine now applies it at the final approval (script 75).
     /// </summary>
@@ -294,7 +310,16 @@ WHERE ri.[Status] = 'Approved'
      OR (rt.Code = 'SHIFT_SWAP'         AND EXISTS (SELECT 1 FROM workflow.SHIFT_SWAP x
                                                     WHERE x.RequestInstanceId = ri.RequestInstanceId AND x.AppliedAt           IS NULL))
      OR (rt.Code = 'ROSTER_APPROVAL'    AND EXISTS (SELECT 1 FROM workflow.ROSTER_APPROVAL x
-                                                    WHERE x.RequestInstanceId = ri.RequestInstanceId AND x.AppliedAt           IS NULL)) )
+                                                    WHERE x.RequestInstanceId = ri.RequestInstanceId AND x.AppliedAt           IS NULL))
+     OR (rt.Code = 'OVERTIME'           AND EXISTS (SELECT 1 FROM workflow.OVERTIME_REQUEST x
+                                                    JOIN attendance.ATTENDANCE_RECORD ar
+                                                      ON ar.EmployeeId = x.EmployeeId AND ar.WorkDate = x.WorkDate
+                                                    WHERE x.RequestInstanceId = ri.RequestInstanceId AND x.AppliedToAttendanceAt IS NULL
+                                                      AND (ar.OvertimeRequestId IS NULL OR ar.OvertimeRequestId = x.OvertimeRequestId)))
+     OR (rt.Code = 'EXIT_PERMISSION'    AND EXISTS (SELECT 1 FROM workflow.EXIT_PERMISSION x
+                                                    JOIN attendance.ATTENDANCE_RECORD ar
+                                                      ON ar.EmployeeId = x.EmployeeId AND ar.WorkDate = x.ExitDate
+                                                    WHERE x.RequestInstanceId = ri.RequestInstanceId AND x.AppliedToAttendanceAt IS NULL)) )
 ORDER BY ri.RequestInstanceId;";
 
     public async Task<IEnumerable<int>> GetApprovedWithUnappliedEffectsAsync()
@@ -377,18 +402,23 @@ ORDER BY ri.RequestInstanceId;";
             commandType: CommandType.StoredProcedure);
     }
 
-    public async Task<MoveVersionResult?> MoveToVersionAsync(int requestInstanceId, int? targetWorkflowDefinitionId, int actedByUserId, string reason)
+    public async Task<MoveVersionResult?> MoveToVersionAsync(int requestInstanceId, int? targetWorkflowDefinitionId, int actedByUserId, string reason, bool confirmClose = false)
     {
         using var db = _factory.Create();
+        var args = new DynamicParameters(new
+        {
+            RequestInstanceId = requestInstanceId,
+            TargetWorkflowDefinitionId = targetWorkflowDefinitionId,
+            ActedByUserId = actedByUserId,
+            Reason = reason,
+        });
+        // Only when confirming: a database without script 101 has no such parameter.
+        if (confirmClose)
+            args.Add("ConfirmClose", true);
+
         return await db.QuerySingleOrDefaultAsync<MoveVersionResult>(
             "workflow.usp_Request_MoveToVersion",
-            new
-            {
-                RequestInstanceId = requestInstanceId,
-                TargetWorkflowDefinitionId = targetWorkflowDefinitionId,
-                ActedByUserId = actedByUserId,
-                Reason = reason,
-            },
+            args,
             commandType: CommandType.StoredProcedure);
     }
 
@@ -475,7 +505,7 @@ ORDER BY ri.RequestInstanceId;";
             commandType: CommandType.StoredProcedure);
     }
 
-    /// <summary>Reopens a rejected/cancelled request; the proc SELECTs the request's new status and current step back.</summary>
+    /// <summary>Reopens a CANCELLED request (QA3 WF-14: the proc refuses the rest); it SELECTs the request's new status and current step back.</summary>
     public async Task<ApproveResult?> ReopenClosedAsync(int requestInstanceId, int actedByUserId, string reason)
     {
         using var db = _factory.Create();
@@ -486,7 +516,7 @@ ORDER BY ri.RequestInstanceId;";
     }
 
     /// <summary>
-    /// The last signer takes their OWN decision back, same UTC day. Every rule about who and when is
+    /// The last signer takes their OWN decision back, the same Beirut day. Every rule about who and when is
     /// the procedure's — its own signature, the last one standing, the same day, and the request's
     /// effects not yet consumed — and each refusal names which of those failed. It SELECTs the
     /// request's new standing back.
@@ -516,12 +546,18 @@ ORDER BY ri.RequestInstanceId;";
     /// ones at their defaults, so State is the discriminator and it is set explicitly for the
     /// completing call, which the procedure does not name.
     /// </summary>
-    public async Task<ReopenResult?> ReopenAsync(int requestInstanceId, int actedByUserId, string reason)
+    public async Task<ReopenResult?> ReopenAsync(int requestInstanceId, int actedByUserId, string reason, bool signedWithPassword = false)
     {
         using var db = _factory.Create();
         var row = await db.QuerySingleOrDefaultAsync<ReopenResult>(
             "workflow.usp_Request_Reopen",
-            new { RequestInstanceId = requestInstanceId, ActedByUserId = actedByUserId, Reason = reason },
+            new
+            {
+                RequestInstanceId = requestInstanceId,
+                ActedByUserId = actedByUserId,
+                Reason = reason,
+                SignedWithPassword = signedWithPassword,
+            },
             commandType: CommandType.StoredProcedure);
 
         if (row is null)

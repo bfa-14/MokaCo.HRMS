@@ -24,6 +24,9 @@ public class LeaveRequestsController : ControllerBase
     private readonly IWorkflowSupportService _support;
     private readonly ILiveNotifier _live;
 
+    /// <summary>What a leave decision changes: the request, the dashboard, the balances (hr) and the attendance days.</summary>
+    private static readonly string[] DecisionTopics = { "workflow", "dashboard", "attendance", "hr" };
+
     public LeaveRequestsController(
         ILeaveRequestService leave, IWorkflowSupportService support, ILiveNotifier live)
     {
@@ -84,7 +87,11 @@ public class LeaveRequestsController : ControllerBase
             if (created is null)
                 return BadRequest(new { error = "The request could not be created." });
 
-            await _live.NotifyAsync("workflow", "dashboard");
+            // A chain that approved itself at once has already posted the leave and re-derived its days.
+            if (string.Equals(created.Status, "Approved", StringComparison.OrdinalIgnoreCase))
+                await _live.NotifyAsync(DecisionTopics);
+            else
+                await _live.NotifyAsync("workflow", "dashboard");
             return Ok(created);
         }
         catch (WorkflowException ex)
@@ -109,9 +116,9 @@ public class LeaveRequestsController : ControllerBase
             var result = await _leave.DecideAsync(id, User.UserId(), request);
             if (result is null) return NotFound();
 
-            // The final approval posts the ledger movement, so the leave balances on the dashboard
-            // move with the request itself.
-            await _live.NotifyAsync("workflow", "dashboard");
+            // The final approval posts the ledger movement AND re-derives the attendance days the leave covers, so
+            // the balances (hr), the attendance pages and the dashboard move with the request itself (QA3 WEB-16).
+            await _live.NotifyAsync(DecisionTopics);
             return Ok(result);
         }
         catch (WorkflowException ex)
@@ -122,6 +129,7 @@ public class LeaveRequestsController : ControllerBase
 
     /// <summary>The leave payload behind a request, with the employee's current balance for that type.</summary>
     [HttpGet("{id:int}/payload")]
+    [RequestVisible]
     public async Task<IActionResult> GetPayload(int id)
     {
         var payload = await _leave.GetPayloadAsync(id);

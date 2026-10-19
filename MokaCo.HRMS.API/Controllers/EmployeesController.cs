@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Model.HR;
@@ -53,6 +54,8 @@ public class EmployeesController : ControllerBase
 
     [HttpGet("{id:int}")]
     [HasPermission("EMP_VIEW")]
+
+    [InCallerScope(ScopeTarget.Employee)]
     public async Task<IActionResult> GetProfile(int id)
     {
         var profile = await _employees.GetProfileAsync(id);
@@ -93,6 +96,7 @@ public class EmployeesController : ControllerBase
     /// <summary>D7: the branches this employee has belonged to, newest first, each with the dates it covers.</summary>
     [HttpGet("{id:int}/branch-history")]
     [HasPermission("EMP_VIEW")]
+    [InCallerScope(ScopeTarget.Employee)]
     public async Task<IActionResult> GetBranchHistory(int id) => Ok(await _employees.GetBranchHistoryAsync(id));
 
     /// <summary>
@@ -111,7 +115,8 @@ public class EmployeesController : ControllerBase
     /// <summary>
     /// Sets the employee's approval tier — which published chain their requests follow. Kept separate
     /// from the main edit because it is a workflow decision (management/executive get shorter chains),
-    /// not a demographic field, and it has its own validation. EMP_EDIT, the same trust as any edit.
+    /// not a demographic field, and it has its own validation: any tier of the dictionary
+    /// (hr.APPROVAL_TIER, 1 = the head), refused otherwise (SQL 106). EMP_EDIT, the same trust as any edit.
     /// </summary>
     [HttpPut("{id:int}/approval-tier")]
     [HasPermission("EMP_EDIT")]
@@ -160,6 +165,7 @@ public class EmployeesController : ControllerBase
     /// <summary>This employee's chain of command, bottom-up — shown under the "Reports to" field.</summary>
     [HttpGet("{id:int}/reporting-line")]
     [HasPermission("EMP_VIEW")]
+    [InCallerScope(ScopeTarget.Employee)]
     public async Task<IActionResult> GetReportingLine(int id)
         => Ok(await _employees.GetReportingLineAsync(id));
 
@@ -189,23 +195,49 @@ public class EmployeesController : ControllerBase
     }
 
     /// <summary>
+    /// QA3 WEB-2: who this employee can swap a rostered day with — the active colleagues of their branch in the same
+    /// position, and the employee themself for the form's wording. The shift-swap form used to filter GET /api/employees,
+    /// which is branch-scoped (script 87): a barista saw nobody to swap with.
+    ///
+    /// No permission beyond being signed in: the PROCEDURE decides, and answers only the employee themself, somebody who
+    /// sees them (EMP_VIEW_ALL or their branch's manager) or somebody who raises requests for others — anyone else gets
+    /// its sentence as a 400.
+    /// </summary>
+    [HttpGet("{id:int}/swap-counterparts")]
+    [Authorize]
+    public async Task<IActionResult> GetSwapCounterparts(int id)
+    {
+        try
+        {
+            return Ok(await _employees.GetSwapCounterpartsAsync(id, User.UserId()));
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// This employee's leave requests, newest first. The date bounds OVERLAP rather than contain, so
     /// a request spanning the window is included — which is what someone checking a date needs.
     /// </summary>
     [HttpGet("{id:int}/leave-requests")]
     [HasPermission("EMP_VIEW")]
+    [InCallerScope(ScopeTarget.Employee)]
     public async Task<IActionResult> GetLeaveRequests(int id, [FromQuery] DateTime? from, [FromQuery] DateTime? to)
         => Ok(await _leave.GetForEmployeeAsync(id, from, to));
 
     /// <summary>This employee's expense claims, newest first, optionally bounded by expense date.</summary>
     [HttpGet("{id:int}/expenses")]
     [HasPermission("EMP_VIEW")]
+    [InCallerScope(ScopeTarget.Employee)]
     public async Task<IActionResult> GetExpenses(int id, [FromQuery] DateTime? from, [FromQuery] DateTime? to)
         => Ok(await _expenses.GetForEmployeeAsync(id, from, to));
 
     /// <summary>This employee's overtime requests, newest first, optionally bounded by work date.</summary>
     [HttpGet("{id:int}/overtime")]
     [HasPermission("EMP_VIEW")]
+    [InCallerScope(ScopeTarget.Employee)]
     public async Task<IActionResult> GetOvertime(int id, [FromQuery] DateTime? from, [FromQuery] DateTime? to)
         => Ok(await _overtime.GetForEmployeeAsync(id, from, to));
 
@@ -222,6 +254,7 @@ public class EmployeesController : ControllerBase
     /// </summary>
     [HttpGet("{id:int}/leave-balance")]
     [HasPermission("EMP_VIEW")]
+    [InCallerScope(ScopeTarget.Employee)]
     public async Task<IActionResult> GetLeaveBalance(int id, [FromQuery] int? leaveTypeId, [FromQuery] int? year)
     {
         if (leaveTypeId is null)
@@ -231,6 +264,11 @@ public class EmployeesController : ControllerBase
         return balance is null ? NotFound() : Ok(balance);
     }
 
+    /// <remarks>
+    /// QA3 REL-5: the procedure refuses — in a sentence that travels as it is — anybody still employed, and a
+    /// leaver with a month no locked primary run has paid or an adjustment or advance still open: a removed employee is
+    /// invisible to payroll from then on.
+    /// </remarks>
     [HttpDelete("{id:int}")]
     [HasPermission("EMP_EDIT")]
     public async Task<IActionResult> Delete(int id)
@@ -293,10 +331,10 @@ public class EmployeesController : ControllerBase
 
     // ───────────────────── salary administration ─────────────────────
     //
-    // THE HISTORY-PRESERVING PATH. These two are not the same thing as the older
-    // POST/PUT/DELETE on /api/salary-components, which edit a row in place: a change here CLOSES
-    // the standing row the day before and OPENS a new one, so a month already paid keeps saying
-    // what it paid. Use these.
+    // THE HISTORY-PRESERVING PATH, and the only way to change a salary: a change here CLOSES the
+    // standing row the day before and OPENS a new one, so a month already paid keeps saying what it
+    // paid; a row is closed with POST /api/salary-components/{id}/end. The older POST/PUT/DELETE on
+    // /api/salary-components, which edited a row in place, are retired (QA3 PAY-6 / REL-2).
     //
     // The gate is EMP_VIEW/EMP_EDIT for consistency with the rest of this controller, but the real
     // authority is the procedure — it checks for the HR (or Admin) role itself and refuses with
@@ -306,6 +344,7 @@ public class EmployeesController : ControllerBase
     /// <summary>Every salary row for the employee — the standing ones and the closed history.</summary>
     [HttpGet("{id:int}/salary-components")]
     [HasPermission("EMP_VIEW")]
+    [InCallerScope(ScopeTarget.Employee, Salary = true)]
     public async Task<IActionResult> GetSalaryComponents(int id)
         => Ok(await _salaryComponents.GetForEmployeeAsync(id));
 

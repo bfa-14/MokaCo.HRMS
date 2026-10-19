@@ -12,8 +12,9 @@ public class ComponentTypeService : IComponentTypeService
     public Task<IEnumerable<ComponentType>> GetAllAsync() => _repo.GetAllAsync();
     public Task<int> CreateAsync(string name, string category, short sign, bool? isActive = null)
         => _repo.CreateAsync(name, category, sign, isActive);
+    /// <summary>Mapped: a system type refuses a rename, a new category or sign, or deactivation (QA3 PAY-10).</summary>
     public Task UpdateAsync(int componentTypeId, string name, string category, short sign, bool? isActive = null)
-        => _repo.UpdateAsync(componentTypeId, name, category, sign, isActive);
+        => ReferenceDataSqlErrors.MapAsync(() => _repo.UpdateAsync(componentTypeId, name, category, sign, isActive));
 
     public Task DeleteAsync(int componentTypeId)
         => ReferenceDataSqlErrors.MapAsync(() => _repo.DeleteAsync(componentTypeId));

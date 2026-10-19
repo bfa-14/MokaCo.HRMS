@@ -37,8 +37,9 @@ public class OnlineDepositServiceTests
         public Mock<IOnlineDepositRepository> Deposits { get; } = new();
         public Mock<IBookingRepository> Bookings { get; } = new();
         public Mock<IMpgsClient> Client { get; } = new(MockBehavior.Strict);
+        public MpgsOptions Options { get; init; } = Gateway;
 
-        public OnlineDepositService Service => new(Deposits.Object, Bookings.Object, Client.Object, Gateway,
+        public OnlineDepositService Service => new(Deposits.Object, Bookings.Object, Client.Object, Options,
             new OnlineDepositOptions { ReconcileAfterMinutes = 10, GiveUpAfterMinutes = 30 },
             NullLogger<OnlineDepositService>.Instance, new FixedClock(Now));
 
@@ -87,6 +88,32 @@ public class OnlineDepositServiceTests
     /* ---- /pay -------------------------------------------------------------------------------- */
 
     [Fact]
+    public async Task Without_a_configured_gateway_pay_opens_nothing_and_puts_no_hold_on_the_booking()
+    {
+        var rig = new Rig { Options = new MpgsOptions { IsConfigured = false, Problem = "MPGS_API_PASSWORD is missing" } };
+        rig.State(opened: false);
+
+        var opening = await rig.Service.OpenAsync(Ref);
+
+        Assert.Equal(PayOpenResult.GatewayError, opening.Result);
+        rig.Deposits.Verify(d => d.StartPaymentAsync(It.IsAny<string>()), Times.Never());
+        rig.NothingWritten();   // the strict gateway mock also proves nothing was sent
+    }
+
+    [Fact]
+    public async Task Without_a_configured_gateway_an_opened_payment_is_left_as_it_is()
+    {
+        var rig = new Rig { Options = new MpgsOptions { IsConfigured = false, Problem = "MPGS_BASE is missing" } };
+        rig.State(openedMinutesAgo: 40);
+
+        var settled = await rig.Service.SettleAsync(Ref, SettleTrigger.Reconciliation);
+
+        Assert.Equal(SettlementResult.Unconfirmed, settled.Result);
+        Assert.False(settled.Changed);
+        rig.NothingWritten();
+    }
+
+    [Fact]
     public async Task Pay_charges_the_bookings_own_deposit_and_returns_the_session()
     {
         var rig = new Rig();
@@ -104,6 +131,7 @@ public class OnlineDepositServiceTests
         Assert.Equal(PayOpenResult.Opened, opening.Result);
         Assert.Equal("SESSION0001", opening.SessionId);
         Assert.Equal(12.50m, opening.Deposit);
+        Assert.True(opening.Changed);       // the hold was stamped: the hub is told (QA3 BKG-14)
         rig.Deposits.Verify(d => d.SetPaymentSessionAsync(Ref, "SESSION0001"), Times.Once());
         rig.Client.Verify(c => c.RetrieveOrderAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never());
     }
@@ -510,27 +538,82 @@ public class OnlineDepositServiceTests
         rig.Deposits.Verify(d => d.PaymentCheckedAsync(Ref, true), Times.Once());   // the hold is kept either way
     }
 
-    [Fact]
-    public async Task Job_skips_a_booking_staff_already_decided()
+    /* QA3 BKG-4: staff decided the booking while the guest was paying. The money is recorded; nothing
+       else is done to a decided booking (no release, no hold, no "unconfirmed" alert). */
+
+    [Theory]
+    [InlineData("Cancelled", OnlinePaymentRecorded.PaidButClosed, SettlementResult.PaidNeedsStaff)]
+    [InlineData("NoShow", OnlinePaymentRecorded.PaidButClosed, SettlementResult.PaidNeedsStaff)]
+    [InlineData("Confirmed", OnlinePaymentRecorded.Recorded, SettlementResult.Paid)]
+    public async Task Job_records_a_deposit_captured_after_staff_decided_the_booking(string status, string outcome, SettlementResult expected)
     {
         var rig = new Rig();
-        rig.State(status: "Cancelled", openedMinutesAgo: 40);
+        rig.State(status: status, openedMinutesAgo: 40);
+        rig.Order(Captured);
+        rig.Confirms(outcome, status: status);
 
-        Assert.Equal(SettlementResult.NotApplicable, (await rig.Service.SettleAsync(Ref, SettleTrigger.Reconciliation)).Result);
+        var settled = await rig.Service.SettleAsync(Ref, SettleTrigger.Reconciliation);
+
+        Assert.Equal((expected, true), (settled.Result, settled.Changed));
+        rig.Deposits.Verify(d => d.ConfirmOnlinePaymentAsync(Ref, 12.50m, "USD", Ref, "7"), Times.Once());
+        rig.Bookings.Verify(b => b.ReleaseHoldAsync(It.IsAny<string>()), Times.Never());
+    }
+
+    public static TheoryData<MpgsOrderLookup> NotPaidAnswers => new()
+    {
+        MpgsOrderLookup.NotFound(),
+        new MpgsOrderLookup(MpgsLookupKind.Found, "FAILURE", "FAILED", 12.50m, "USD", 0m, "7"),
+        new MpgsOrderLookup(MpgsLookupKind.Found, "SUCCESS", "AUTHORIZED", 12.50m, "USD", 0m, "7"),
+        MpgsOrderLookup.Error("timeout"),
+    };
+
+    [Theory]
+    [MemberData(nameof(NotPaidAnswers))]
+    public async Task Job_only_notes_a_decided_booking_the_gateway_has_no_money_for(MpgsOrderLookup order)
+    {
+        var rig = new Rig();
+        rig.State(status: "Cancelled", openedMinutesAgo: 400, holdMinutesLeft: -300);
+        rig.Order(order);
+
+        var settled = await rig.Service.SettleAsync(Ref, SettleTrigger.Reconciliation);
+
+        Assert.Equal((SettlementResult.NotApplicable, false, "Cancelled"), (settled.Result, settled.Changed, settled.Status));
+        rig.Deposits.Verify(d => d.PaymentCheckedAsync(Ref, false), Times.Once());     // the job's hourly back-off clock
+        rig.Deposits.Verify(d => d.PaymentCheckedAsync(Ref, true), Times.Never());      // no hold on a decided booking
+        rig.Bookings.Verify(b => b.ReleaseHoldAsync(It.IsAny<string>()), Times.Never());
+        rig.Deposits.Verify(d => d.ConfirmOnlinePaymentAsync(It.IsAny<string>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>()), Times.Never());
+        rig.Deposits.Verify(d => d.QueuePaymentAlertAsync(It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string?>()), Times.Never());
+    }
+
+    [Fact]
+    public async Task Pay_again_on_a_decided_booking_asks_nobody()
+    {
+        var rig = new Rig();
+        rig.State(status: "Confirmed", openedMinutesAgo: 40);
+
+        var settled = await rig.Service.SettleAsync(Ref, SettleTrigger.PayAgain);
+
+        Assert.Equal(SettlementResult.NotApplicable, settled.Result);
+        rig.Client.Verify(c => c.RetrieveOrderAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never());
     }
 
     /* ---- /release ---------------------------------------------------------------------------- */
 
+    /// <summary>
+    /// QA3 BKG-1: a booking no payment was opened for (a step-1 request a stranger knows the reference
+    /// of) is NOT released: the release procedure is not even called, the gateway is not asked.
+    /// </summary>
     [Fact]
-    public async Task Release_without_a_payment_is_the_old_release()
+    public async Task Release_of_a_booking_no_payment_was_opened_for_releases_nothing()
     {
         var rig = new Rig();
         rig.State(opened: false);
-        rig.Releases(status: "Pending");     // step-1 booking with no hold: the procedure leaves it alone
+        rig.Releases();      // were it called, it would cancel
 
         var settled = await rig.Service.SettleAsync(Ref, SettleTrigger.GuestRelease);
 
-        Assert.Equal((SettlementResult.NotApplicable, "Pending"), (settled.Result, settled.Status));
+        Assert.Equal((SettlementResult.NotApplicable, false, "Pending"), (settled.Result, settled.Changed, settled.Status));
+        rig.NothingWritten();
         rig.Client.Verify(c => c.RetrieveOrderAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never());
     }
 

@@ -235,6 +235,28 @@ public class RequestsController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Who the waiting step can be handed to — the picker behind "Hand to someone else" (QA3 WEB-7). An empty
+    /// array is the normal answer for anybody who cannot act on the step, exactly like the decisions list.
+    /// </summary>
+    [HttpGet("{id:int}/delegate-candidates")]
+    public async Task<IActionResult> DelegateCandidates(int id)
+    {
+        var caller = new RequestCaller(
+            User.UserId(),
+            await ResolveEmployeeIdAsync(),
+            User.HasPermission("REQUEST_VIEW_ALL"));
+
+        try
+        {
+            return Ok(await _requests.GetDelegateCandidatesAsync(id, caller));
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
     /// <summary>Hands the current step to a named person. They decide instead; the request does not advance.</summary>
     [HttpPost("{id:int}/delegate")]
     public async Task<IActionResult> Delegate(int id, [FromBody] DelegateRequest request)
@@ -286,7 +308,7 @@ public class RequestsController : ControllerBase
     {
         try
         {
-            var result = await _requests.ApproveAsync(id, User.UserId(), request?.Comment, request?.ChangeSummary, request?.Password);
+            var result = await _requests.ApproveAsync(id, User.UserId(), request?.Comment, request?.ChangeSummary, request?.Password, request?.StepNo);
             if (result is null) return NotFound();
 
             await NotifyWorkflowAsync();
@@ -349,12 +371,22 @@ public class RequestsController : ControllerBase
         }
     }
 
-    /// <summary>The request's conversation, oldest first. Visible to anyone who may see the request.</summary>
+    /// <summary>
+    /// The request's conversation, oldest first. Visible to anyone who may see the request — and since
+    /// QA3 WF-11 only to them: [RequestVisible] runs the detail page's rule first (403 / 404). Before,
+    /// any signed-in user could read any request's notes by id.
+    /// </summary>
     [HttpGet("{id:int}/notes")]
+    [RequestVisible]
     public async Task<IActionResult> GetNotes(int id) => Ok(await _requests.GetNotesAsync(id));
 
-    /// <summary>Adds a note to the conversation. The text is required — the database refuses an empty one.</summary>
+    /// <summary>
+    /// Adds a note to the conversation. The text is required — the database refuses an empty one. Only
+    /// a party who may see the request writes in it (QA3 WF-11): the requester, the person it is about,
+    /// an approver on its chain, or REQUEST_VIEW_ALL.
+    /// </summary>
     [HttpPost("{id:int}/notes")]
+    [RequestVisible]
     public async Task<IActionResult> AddNote(int id, [FromBody] AddNoteRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.NoteText))
@@ -540,10 +572,11 @@ public class RequestsController : ControllerBase
     }
 
     /// <summary>
-    /// Reopens a rejected or cancelled request, returning it to the step that closed it. HR only — it
-    /// puts a closed request back in flight, so it needs WORKFLOW_VERSION_MOVE and a mandatory reason.
-    /// The database refuses an approved request (its effect is already applied) and surfaces that
-    /// verbatim.
+    /// Reopens a CANCELLED request, returning it to the step that was waiting. HR only — it puts a
+    /// closed request back in flight, so it needs WORKFLOW_VERSION_MOVE and a mandatory reason.
+    /// Since QA3 WF-14 the database refuses an approved or rejected request — a standing decision is
+    /// taken back by its signer the same day, or by the General Manager and the Owner together — and
+    /// surfaces that verbatim.
     /// </summary>
     [HttpPost("{id:int}/reopen")]
     [HasPermission("WORKFLOW_VERSION_MOVE")]
@@ -566,7 +599,9 @@ public class RequestsController : ControllerBase
 
     /// <summary>
     /// Moves one live request onto the active chain version. HR only — this rewrites who must sign a
-    /// request already in flight, so it needs WORKFLOW_VERSION_MOVE and a mandatory reason.
+    /// request already in flight, so it needs WORKFLOW_VERSION_MOVE and a mandatory reason. A move
+    /// that would approve the request at once is a 409 until it is sent again with ConfirmClose
+    /// (QA3 WF-10).
     /// </summary>
     [HttpPost("{id:int}/move-version")]
     [HasPermission("WORKFLOW_VERSION_MOVE")]
@@ -600,11 +635,11 @@ public class RequestsController : ControllerBase
     /// that was down. This is the answer to all of them, and it is the resend as well — the
     /// procedure replaces any previous mail for the request rather than adding a second.
     ///
-    /// NO PERMISSION BEYOND BEING SIGNED IN. Anyone who can open the request may send its outcome
-    /// to the person it is about, and the procedure guards everything that actually matters: the
-    /// request must have ENDED, and the employee must have an address. Neither of those is a trust
-    /// question, so neither is answered by a permission — and the mail says only what the request
-    /// already says, to the one person most entitled to hear it.
+    /// NO PERMISSION BEYOND SEEING THE REQUEST. Anyone who can open the request may send its outcome
+    /// to the person it is about — and only they ([RequestVisible], QA3 WF-11: before, anybody signed
+    /// in could mail anybody's outcome and was shown their address). The procedure guards the rest:
+    /// the request must have ENDED, and the employee must have an address. The mail says only what the
+    /// request already says, to the one person most entitled to hear it.
     ///
     /// IT QUEUES; IT DOES NOT SEND. The row goes into core.EMAIL_OUTBOX and the worker picks it up
     /// within the minute, which is why the address is returned: the caller is rarely the employee,
@@ -612,6 +647,7 @@ public class RequestsController : ControllerBase
     /// correcting it still costs nothing.
     /// </summary>
     [HttpPost("{id:int}/send-email")]
+    [RequestVisible]
     public async Task<IActionResult> SendEmail(int id)
     {
         try
@@ -637,12 +673,11 @@ public class RequestsController : ControllerBase
     /// 204 WHEN NOTHING WAS EVER QUEUED, which is most requests: an empty status is the absence of
     /// rows, not a value they could hold, and the screen shows nothing at all rather than "no email".
     ///
-    /// AUTHENTICATED ONLY, the same as the send it reports on: a caller who may queue the mail must
-    /// be able to see what became of it, or the button answers nothing. It carries no visibility rule
-    /// of its own, so if the SMTP error text is ever judged too revealing, this and the send beside
-    /// it are the two methods to tighten together.
+    /// THE SAME GATE AS THE SEND it reports on ([RequestVisible], QA3 WF-11): a caller who may queue
+    /// the mail must be able to see what became of it, and nobody else sees the SMTP server's answer.
     /// </summary>
     [HttpGet("{id:int}/email-status")]
+    [RequestVisible]
     public async Task<IActionResult> EmailStatus(int id)
     {
         var rows = (await _email.GetStatusForRequestAsync(id)).ToList();

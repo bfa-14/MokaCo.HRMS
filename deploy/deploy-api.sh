@@ -48,7 +48,9 @@ DOTNET=$(command -v dotnet) || die "dotnet not on PATH"
 echo "    dotnet: $($DOTNET --version)   node: $(node -v 2>/dev/null || echo none)   nginx: $(nginx -v 2>&1 | cut -d/ -f2)"
 
 command -v nginx >/dev/null || die "nginx is not installed"
-others=$(ls /etc/nginx/sites-enabled/ 2>/dev/null | grep -vE '^(default|mokaco)$' || true)
+# the sites this project adds itself (enable-https-ip.sh / enable-tls.sh, the website, the test
+# subdomain) are not "other sites"
+others=$(ls /etc/nginx/sites-enabled/ 2>/dev/null | grep -vE '^(default|mokaco|mokaco-default|mokaco-api|mokaco-test|mokanco-site)$' || true)
 if [[ -n "$others" ]]; then
   die "nginx already serves other sites on this shared box: $others
      Adding a default_server for the API would fight with them. Show this to Reda before continuing."
@@ -161,6 +163,7 @@ WantedBy=multi-user.target
 EOF
 sudo systemctl daemon-reload
 sudo systemctl enable "$SVC" >/dev/null 2>&1
+since=$(date '+%Y-%m-%d %H:%M:%S')          # for the scripts check in step 7
 sudo systemctl restart "$SVC"
 
 # =============================================================================
@@ -174,20 +177,72 @@ map $http_upgrade $connection_upgrade {
     ''      close;
 }
 EOF
-# Real visitor address and scheme, whether the request arrives directly (VPN)
-# or through a proxy in front of nginx that sets CF-Connecting-IP and
-# X-Forwarded-Proto. Absent headers fall back to the connection itself.
-sudo tee /etc/nginx/conf.d/mokaco-client-ip.conf >/dev/null <<'EOF'
-map $http_cf_connecting_ip $mokaco_client_ip {
-    ""      $remote_addr;
-    default $http_cf_connecting_ip;
+# Real visitor address and scheme ($mokaco_client_ip, $mokaco_proto), used by every MokaCo site
+# (this one, mokaco-default, mokaco-api, mokanco-site, the Google gate). The API keys its rate limits
+# (sign-in, refresh, public booking, the gate) and the sign-in log on the address it is sent.
+#
+# CF-Connecting-IP and X-Forwarded-Proto are believed ONLY when the connection itself comes from a
+# Cloudflare edge (QA3 SEC-4). Anybody can send those headers: trusted from everyone, a caller picks
+# the address every limit counts. Not proxied by Cloudflare (the DNS points straight at the VM) ->
+# the connection's own address and scheme, whatever the headers say; proxied -> the visitor's.
+# The ranges are fetched from Cloudflare on every run; if that fails, the list built in below is used.
+CF_BUILTIN=(
+  # https://www.cloudflare.com/ips-v4 (unchanged since 2021)
+  173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18
+  190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13
+  104.24.0.0/14 172.64.0.0/13 131.0.72.0/22
+  # https://www.cloudflare.com/ips-v6
+  2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29
+  2c0f:f248::/32
+)
+# Prints Cloudflare's current ranges, one per line, or nothing when the answer is not a plain list
+# of at least 10 IPv4 and 5 IPv6 CIDRs (a captive portal, an error page, a cut transfer).
+cloudflare_ranges_online() {
+  local v4 v6
+  v4=$(curl -fsS -m 10 https://www.cloudflare.com/ips-v4 2>/dev/null | tr -d '\r' | sed '/^[[:space:]]*$/d') || return 0
+  v6=$(curl -fsS -m 10 https://www.cloudflare.com/ips-v6 2>/dev/null | tr -d '\r' | sed '/^[[:space:]]*$/d') || return 0
+  grep -qvE '^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$' <<< "$v4" && return 0
+  grep -qvE '^[0-9a-fA-F:]+:[0-9a-fA-F:]*/[0-9]{1,3}$' <<< "$v6" && return 0
+  [[ $(wc -l <<< "$v4") -ge 10 && $(wc -l <<< "$v6") -ge 5 ]] || return 0
+  printf '%s\n%s\n' "$v4" "$v6"
 }
-map $http_x_forwarded_proto $mokaco_proto {
-    ""      $scheme;
-    default $http_x_forwarded_proto;
+CF_RANGES=$(cloudflare_ranges_online)
+if [[ -n "$CF_RANGES" ]]; then
+  CF_SOURCE="fetched from www.cloudflare.com/ips-v4 and /ips-v6 on $(date -u +%F)"
+else
+  CF_RANGES=$(printf '%s\n' "${CF_BUILTIN[@]}")
+  CF_SOURCE="the list built into deploy-api.sh (the fetch from www.cloudflare.com failed)"
+fi
+echo "    Cloudflare edge ranges: $(wc -l <<< "$CF_RANGES"), $CF_SOURCE"
+{
+  echo "# Written by deploy-api.sh (MokaCo.HRMS) on every run. Cloudflare ranges: $CF_SOURCE."
+  echo "# CF-Connecting-IP / X-Forwarded-Proto count only from these addresses (QA3 SEC-4)."
+  # shellcheck disable=SC2016   # nginx variables, written literally
+  echo 'geo $mokaco_via_cloudflare {'
+  echo '    default 0;'
+  sed 's/^/    /; s/$/ 1;/' <<< "$CF_RANGES"
+  echo '}'
+  cat <<'EOF'
+# From a Cloudflare edge: the visitor's address it reports (an address, nothing else); from anybody
+# else: the connection's own address.
+map "$mokaco_via_cloudflare:$http_cf_connecting_ip" $mokaco_client_ip {
+    default                                   $remote_addr;
+    "~^1:(?<mokaco_cf_ip>[0-9A-Fa-f:.]+)$"   $mokaco_cf_ip;
+}
+map "$mokaco_via_cloudflare:$http_x_forwarded_proto" $mokaco_proto {
+    default   $scheme;
+    "1:https" https;
+    "1:http"  http;
 }
 EOF
+} | sudo tee /etc/nginx/conf.d/mokaco-client-ip.conf >/dev/null
 
+# THE SITE IS WRITTEN ON THE FIRST INSTALL ONLY. After it, enable-https-ip.sh / enable-tls.sh add
+# HTTPS to it and enable-env-switch.sh the test switch; rewriting it here on every redeploy would wipe
+# both (and the port-80 default_server below would clash with mokaco-default's).
+if [[ -f /etc/nginx/sites-available/mokaco ]]; then
+  log "keeping the existing nginx site /etc/nginx/sites-available/mokaco"
+else
 sudo tee /etc/nginx/sites-available/mokaco >/dev/null <<EOF
 server {
     listen 80 default_server;
@@ -239,6 +294,8 @@ EOF
 fi
 sudo chown -R www-data:www-data "$WEBROOT"
 
+fi
+
 sudo ln -sf /etc/nginx/sites-available/mokaco /etc/nginx/sites-enabled/mokaco
 sudo rm -f /etc/nginx/sites-enabled/default        # the stock "Welcome to nginx" page; file stays in sites-available
 sudo nginx -t
@@ -251,12 +308,29 @@ log "verifying"
 sleep 4
 echo "--- service:"; systemctl is-active "$SVC" | sed 's/^/    /'
 echo "--- Kestrel direct   :"; curl -s -m 5 "http://127.0.0.1:$PORT/health" | sed 's/^/    /'; echo
-echo "--- through nginx    :"; curl -s -m 5 "http://127.0.0.1/health" | sed 's/^/    /'; echo
+BASE=http://127.0.0.1
+curl -sk -o /dev/null -m 5 https://127.0.0.1/ && BASE=https://127.0.0.1   # port 80 only redirects since HTTPS
+echo "--- through nginx    :"; curl -sk -m 5 "$BASE/health" | sed 's/^/    /'; echo
 echo "--- login endpoint answers (400/401 = alive, it just needs a body):"
-echo "    HTTP $(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST http://127.0.0.1/api/auth/login -H 'Content-Type: application/json' -d '{}')"
+echo "    HTTP $(curl -sk -o /dev/null -w '%{http_code}' -m 5 -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' -d '{}')"
 echo "--- last log lines:"; sudo journalctl -u "$SVC" -n 15 --no-pager -o cat | sed 's/^/    /'
 
-if systemctl is-active --quiet "$SVC" && curl -sf -m 5 "http://127.0.0.1/health" >/dev/null; then
+# QA3 deploy guard: the API names every docs/NN_*.sql it calls that the database lacks, and /health says
+# "schema":"behind" until they are applied. Production is not stopped for it - the scripts are applied by hand and
+# no restart is needed after - but it is said here, loudly, with the list.
+health=$(curl -s -m 10 "http://127.0.0.1:$PORT/health" || true)
+if grep -q '"schema":"behind"' <<< "$health"; then
+  echo
+  echo "!!! WARNING: the database lacks scripts this API calls; their features fail until they are applied:"
+  sudo journalctl -u "$SVC" --since "$since" --no-pager -o cat | grep -o 'DATABASE SCRIPTS NOT APPLIED: [^ ]*\( [^ ]*\)*\.sql' \
+    | tail -n 1 | sed 's/^/    /' || true
+  echo "!!! Apply each, in number order: sqlcmd -C -I -b -S 127.0.0.1 -U <login> -d MokaCo_HRMS -i docs/NN_....sql"
+  echo
+elif grep -q '"schema":"unknown"' <<< "$health"; then
+  echo "!!! WARNING: the API could not check the database's scripts (the journal says why)."
+fi
+
+if systemctl is-active --quiet "$SVC" && curl -skf -m 5 "$BASE/health" >/dev/null; then
   cat <<EOF
 
 API is up. From your laptop (tunnel up):  http://82.146.175.34/health

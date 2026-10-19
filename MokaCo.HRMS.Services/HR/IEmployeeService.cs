@@ -22,7 +22,7 @@ public interface IEmployeeService
     Task<EmployeeUserLinkResult?> LinkUserAsync(int employeeId, int userId, int? actedBy);
     Task<EmployeeUserUnlinkResult> UnlinkUserAsync(int employeeId, int? actedBy);
 
-    /// <summary>Sets the employee's approval tier (1/2/3), which picks the chain their requests follow.</summary>
+    /// <summary>Sets the employee's approval tier (a tier of hr.APPROVAL_TIER; 1 = the head), which picks the chain their requests follow.</summary>
     Task<EmployeeApprovalTier?> SetApprovalTierAsync(int employeeId, int approvalTier);
 
     /// <summary>Sets who the employee reports to. A self-reference or a loop comes back as a WorkflowException.</summary>
@@ -36,4 +36,13 @@ public interface IEmployeeService
 
     /// <summary>The deepest reporting-line chain among current employees — the builder warns past it.</summary>
     Task<int> GetOrgMaxDepthAsync();
+
+    /// <summary>QA3 REL-4: what ends the day after a termination date (login, branch-manager post, device PINs). Nightly.</summary>
+    Task<TerminationSweepResult> ApplyDueTerminationsAsync();
+
+    /// <summary>
+    /// QA3 WEB-2: who <paramref name="employeeId"/> can swap a rostered day with — for themselves, somebody who sees them,
+    /// or somebody who raises requests for others; anyone else is refused with the procedure's sentence.
+    /// </summary>
+    Task<SwapCounterparts> GetSwapCounterpartsAsync(int employeeId, int callerUserId);
 }

@@ -102,6 +102,20 @@ public class BookingPaymentRequest
     public string? Reference { get; set; }
 }
 
+/// <summary>
+/// POST /api/bookings/quote — the staff New booking form asking what a slot costs before it is taken
+/// (WEB-9 / QA3 BKG-10). Times as the manual create takes them: an end at or before the start is the
+/// next morning (22:00–01:00), up to 06:00.
+/// </summary>
+public class StaffQuoteRequest
+{
+    public int RoomId { get; set; }
+    public DateTime BookDate { get; set; }
+    public TimeSpan StartTime { get; set; }
+    public TimeSpan EndTime { get; set; }
+    public List<int>? AddonIds { get; set; }
+}
+
 /// <summary>POST /api/bookings/blocks — hold a room back for maintenance or a private event.</summary>
 public class BlockCreateRequest
 {

@@ -1,7 +1,10 @@
 using MokaCo.HRMS.Model.Workflow;
 using MokaCo.HRMS.Repository.Security;
 using MokaCo.HRMS.Repository.Workflow;
+using MokaCo.HRMS.Services.Attendance;
 using MokaCo.HRMS.Services.Auth;
+using MokaCo.HRMS.Services.Core;
+using MokaCo.HRMS.Services.Security;
 
 namespace MokaCo.HRMS.Services.Workflow;
 
@@ -19,13 +22,30 @@ public class RequestService : IRequestService
     private readonly IRequestRepository _repo;
     private readonly IUserRepository _users;
     private readonly IPasswordHasher _hasher;
+    private readonly IRosterService? _roster;
+    private readonly MissingScriptWarning? _missingScript;
 
-    public RequestService(IRequestRepository repo, IUserRepository users, IPasswordHasher hasher)
+    public RequestService(IRequestRepository repo, IUserRepository users, IPasswordHasher hasher,
+        IRosterService? roster = null, MissingScriptWarning? missingScript = null)
     {
         _repo = repo;
         _users = users;
         _hasher = hasher;
+        _roster = roster;
+        _missingScript = missingScript;
     }
+
+    /* ---- QA3 ROS-2 (unit C, roster) - THE ROSTER HOOK. When an approval CLOSES a ROSTER_APPROVAL request, its month is
+       active from now on: the days already processed against the draft are derived again from the approved roster.
+       Here, after the approve procedure committed - not inside it, whose callers wrap it in INSERT...EXEC. The roster
+       service never throws from this (a failure is logged and the nightly safety net re-derives the month). Any other
+       request type, or an approval that did not close the request, is left alone. ---- */
+    private Task RederiveRosterIfApprovedAsync(int requestInstanceId, string? requestTypeCode, string? status)
+        => _roster is not null
+           && string.Equals(status, "Approved", StringComparison.OrdinalIgnoreCase)
+           && (requestTypeCode is null || string.Equals(requestTypeCode, "ROSTER_APPROVAL", StringComparison.OrdinalIgnoreCase))
+            ? _roster.RederiveApprovedRequestAsync(requestInstanceId)
+            : Task.CompletedTask;
 
     /// <summary>
     /// THE SIGNATURE. Proves the person committing the decision is the account holder, for a step or
@@ -70,11 +90,13 @@ public class RequestService : IRequestService
         if (string.IsNullOrEmpty(password))
             throw new WorkflowException(failureStatus, demand);
 
-        var user = await _users.GetByIdAsync(userId);
-        if (user is null || !_hasher.Verify(password, user.PasswordHash))
-            throw new WorkflowException(failureStatus, "That password is not correct.");
-
-        return true;
+        // Counted against the login lockout, and refused while locked (QA3, item 10): see AccountPassword.
+        return await AccountPassword.CheckAsync(_users, _hasher, userId, password, _missingScript) switch
+        {
+            PasswordVerdict.Ok => true,
+            PasswordVerdict.Locked => throw new WorkflowException(failureStatus, AuthService.Locked),
+            _ => throw new WorkflowException(failureStatus, "That password is not correct."),
+        };
     }
 
     public async Task<RequestDetail?> GetByIdAsync(int requestInstanceId, RequestCaller caller)
@@ -207,6 +229,19 @@ public class RequestService : IRequestService
         });
 
     /// <summary>The database decides whether the caller may hand this step over, and to whom.</summary>
+    public async Task<IEnumerable<DelegateCandidate>> GetDelegateCandidatesAsync(int requestInstanceId, RequestCaller caller)
+    {
+        var detail = await _repo.GetByIdAsync(requestInstanceId);
+        if (detail is null)
+            return Array.Empty<DelegateCandidate>();
+
+        if (!await CanSeeAsync(detail, caller))
+            throw new WorkflowException(403, "You do not have access to this request.");
+
+        // The procedure answers only for someone who may act on the waiting step.
+        return await _repo.GetDelegateCandidatesAsync(requestInstanceId, caller.UserId);
+    }
+
     public Task DelegateAsync(int requestInstanceId, int actedByUserId, int toUserId, string reason)
         => WorkflowSqlErrors.MapAsync<object?>(async () =>
         {
@@ -250,7 +285,7 @@ public class RequestService : IRequestService
     /// password check on purpose: there is no point putting the caller through a signature for a call
     /// that was never going to be honoured. Untyped/simple types keep the plain engine behaviour.
     /// </summary>
-    public async Task<ApproveResult?> ApproveAsync(int requestInstanceId, int actedByUserId, string? comment, string? changeSummary = null, string? password = null)
+    public async Task<ApproveResult?> ApproveAsync(int requestInstanceId, int actedByUserId, string? comment, string? changeSummary = null, string? password = null, int? expectedStepNo = null)
     {
         var detail = await _repo.GetByIdAsync(requestInstanceId);
         if (detail is null)
@@ -260,7 +295,9 @@ public class RequestService : IRequestService
             throw new WorkflowException(409, "Use the typed decide endpoint for this request type.");
 
         var signed = await VerifySignatureAsync(requestInstanceId, actedByUserId, password);
-        return await WorkflowSqlErrors.MapAsync(() => _repo.ApproveAsync(requestInstanceId, actedByUserId, comment, changeSummary, signed));
+        var result = await WorkflowSqlErrors.MapAsync(() => _repo.ApproveAsync(requestInstanceId, actedByUserId, comment, changeSummary, signed, expectedStepNo));
+        await RederiveRosterIfApprovedAsync(requestInstanceId, detail.Header.RequestTypeCode, result?.Status);   // QA3 ROS-2 (unit C)
+        return result;
     }
 
     public async Task<RequestClosedResult?> RejectAsync(int requestInstanceId, int actedByUserId, string reason, string? password = null)
@@ -389,9 +426,18 @@ public class RequestService : IRequestService
     public Task<IEnumerable<OldVersionRequest>> GetOnOldVersionsAsync(int? requestTypeId)
         => _repo.GetOnOldVersionsAsync(requestTypeId);
 
-    public Task<MoveVersionResult?> MoveToVersionAsync(int requestInstanceId, MoveVersionRequest request, int actedByUserId)
-        => WorkflowSqlErrors.MapAsync(() =>
-            _repo.MoveToVersionAsync(requestInstanceId, request.TargetWorkflowDefinitionId, actedByUserId, request.Reason));
+    /// <summary>
+    /// A move that would leave nothing to sign approves the request, so the database refuses it unless
+    /// <see cref="MoveVersionRequest.ConfirmClose"/> says the caller means it (QA3 WF-10) — and then
+    /// applies what the approval does. QA3 ROS-2 (unit C): a move that closes a roster approval re-derives its month.
+    /// </summary>
+    public async Task<MoveVersionResult?> MoveToVersionAsync(int requestInstanceId, MoveVersionRequest request, int actedByUserId)
+    {
+        var result = await WorkflowSqlErrors.MapAsync(() =>
+            _repo.MoveToVersionAsync(requestInstanceId, request.TargetWorkflowDefinitionId, actedByUserId, request.Reason, request.ConfirmClose));
+        await RederiveRosterIfApprovedAsync(requestInstanceId, null, result?.Status);
+        return result;
+    }
 
     /// <summary>
     /// The frozen signature image for a step — behind the SAME visibility rule as the request itself,
@@ -486,8 +532,9 @@ public class RequestService : IRequestService
     /*
      * THE TWO REVERSALS. Neither checks a permission and neither re-checks a rule.
      *
-     * Who may retract (the last signer, same UTC day, their own signature) and who may reopen (the
-     * General Manager and the Owner, together) are decided by the procedures, in the same way and
+     * Who may retract (the last signer, same Beirut day, their own signature, a closed request) and who
+     * may reopen (the General Manager and the Owner: two people, each signing) are decided by the
+     * procedures, in the same way and
      * for the same reason as approve and reject: the database is the single authority on who may act
      * on a request, and a second copy of the rule in C# would drift from it.
      *
@@ -510,7 +557,10 @@ public class RequestService : IRequestService
             actedByUserId,
             password,
             await RetractNeedsSignatureAsync(requestInstanceId, actedByUserId),
-            "Retracting this decision must be signed with your password.");
+            "Retracting this decision must be signed with your password.",
+            // 400, NOT 401 — the same reason as a withdrawal: the client signs a user OUT on a 401,
+            // and a mistyped password is not an expired session.
+            failureStatus: 400);
 
         return await WorkflowSqlErrors.MapAsync(() => _repo.RetractLastDecisionAsync(requestInstanceId, actedByUserId, reason, signed));
     }
@@ -541,6 +591,22 @@ public class RequestService : IRequestService
         return requirement?.SignatureRequired ?? false;
     }
 
-    public Task<ReopenResult?> ReopenAsync(int requestInstanceId, int actedByUserId, string reason)
-        => WorkflowSqlErrors.MapAsync(() => _repo.ReopenAsync(requestInstanceId, actedByUserId, reason));
+    /// <summary>
+    /// EACH HALF IS SIGNED (QA3 WF-14). Reopening puts a closed request — often one whose money or
+    /// leave already happened — back in flight, so the General Manager and the Owner each prove who
+    /// they are with their own password; the procedure refuses an unsigned half, so this cannot be
+    /// skipped by a caller that sends none. Verified BEFORE the procedure runs: a wrong password
+    /// writes nothing (400, not 401 — see RetractLastDecisionAsync).
+    /// </summary>
+    public async Task<ReopenResult?> ReopenAsync(int requestInstanceId, int actedByUserId, string reason, string? password = null)
+    {
+        var signed = await VerifyPasswordAsync(
+            actedByUserId,
+            password,
+            required: true,
+            "Reopening a closed request must be signed with your password.",
+            failureStatus: 400);
+
+        return await WorkflowSqlErrors.MapAsync(() => _repo.ReopenAsync(requestInstanceId, actedByUserId, reason, signed));
+    }
 }

@@ -1,9 +1,11 @@
 using System.Security.Claims;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.Data.SqlClient;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Model.Attendance;
+using MokaCo.HRMS.Repository.HR;
 using MokaCo.HRMS.Services.Attendance;
 using MokaCo.HRMS.Services.Workflow;
 
@@ -70,6 +72,7 @@ public class AttendanceController : ControllerBase
     /// <summary>One day WITH the paired intervals behind it — the audit trail that shows WHY worked time is what it is.</summary>
     [HttpGet("{id:long}")]
     [HasPermission("ATTENDANCE_VIEW")]
+    [InCallerScope(ScopeTarget.Attendance)]
     public async Task<IActionResult> GetById(long id)
     {
         var record = await _attendance.GetByIdAsync(id);
@@ -91,11 +94,24 @@ public class AttendanceController : ControllerBase
     /// `month` is the month's FIRST DAY ('yyyy-MM-01'), the same value the ROSTER_APPROVAL create
     /// takes; both ends normalise it, so the banner and the request cannot be talking about
     /// different things.
+    ///
+    /// QA3 (ROS-14): read through the roster service with the CALLER — a branch they do not manage is a 403 unless
+    /// they hold EMP_VIEW_ALL (the same rule as every roster write).
     /// </summary>
     [HttpGet("roster-month")]
     [HasPermission("ATTENDANCE_VIEW")]
-    public async Task<IActionResult> GetRosterMonth([FromQuery] int branchId, [FromQuery] DateTime month)
-        => Ok(await _attendance.GetRosterMonthAsync(branchId, month));
+    public async Task<IActionResult> GetRosterMonth([FromQuery] int branchId, [FromQuery] DateTime month,
+        [FromServices] IRosterService roster)
+    {
+        try
+        {
+            return Ok(await roster.GetMonthAsync(branchId, month, CurrentUserId));
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
 
     /// <summary>
     /// Clears one branch-month of roster: every assignment row of the branch's employees in that
@@ -211,9 +227,14 @@ public class AttendanceController : ControllerBase
 
     private static readonly Regex MonthPattern = new(@"^\d{4}-(0[1-9]|1[0-2])$", RegexOptions.Compiled);
 
-    /// <summary>The raw punches behind a day — what the device ACTUALLY recorded, before processing or correction.</summary>
+    /// <summary>
+    /// The raw punches behind a day — what the device ACTUALLY recorded, before processing or correction.
+    /// Only an employee in the caller's branch scope (QA3 ATT-16: before, anyone with ATTENDANCE_VIEW read
+    /// anyone's punches): 404 for no such employee, 403 outside the caller's branches.
+    /// </summary>
     [HttpGet("raw/{employeeId:int}/{date:datetime}")]
     [HasPermission("ATTENDANCE_VIEW")]
+    [InCallerScope(ScopeTarget.Employee, RouteKey = "employeeId")]
     public async Task<IActionResult> GetRaw(int employeeId, DateTime date)
         => Ok(await _attendance.GetRawAsync(employeeId, date));
 
@@ -383,6 +404,26 @@ public class AttendanceController : ControllerBase
         return Ok(result);
     }
 
+    /// <summary>
+    /// QA3: "this PIN belongs to nobody". Its waiting punches are set aside with the reason - kept (the terminal's next copy
+    /// of them stays a duplicate) but no longer waiting, so a stray PIN cannot hold payroll readiness for ever. Mapping
+    /// the PIN later takes them back. Same right as mapping.
+    /// </summary>
+    [HttpPost("device-quarantine/dismiss")]
+    [HasPermission("ATTENDANCE_IMPORT")]
+    public async Task<IActionResult> DismissDeviceQuarantine([FromBody] QuarantineDismissRequest request)
+    {
+        if (request.DeviceId <= 0 || string.IsNullOrWhiteSpace(request.EnrollPin))
+            return BadRequest(new { error = "Choose the device user (device and PIN) whose punches are set aside." });
+        if (string.IsNullOrWhiteSpace(request.Note))
+            return BadRequest(new { error = "Say why these punches are set aside (whose PIN it is, or why it belongs to nobody)." });
+
+        var result = await _attendance.DismissQuarantinedDeviceUserAsync(request, User.UserId());
+        // the waiting punches are part of payroll readiness
+        await _live.NotifyAsync("attendance", "payroll");
+        return Ok(result);
+    }
+
     [HttpGet("exit-variances")]
     [HasPermission("ATTENDANCE_VIEW")]
     public async Task<IActionResult> GetExitVariances(
@@ -403,22 +444,40 @@ public class AttendanceController : ControllerBase
     public async Task<IActionResult> GetPayrollReadiness([FromQuery] string period)
         => Ok(await _attendance.GetPayrollReadinessAsync(period));
 
+    /* THE MONTHLY SUMMARIES ARE BRANCH-SCOPED (QA3 ATT-16), as script 87 scoped the attendance lists:
+       without EMP_VIEW_ALL a caller sees themselves and the employees of the branches they manage.
+       Before, anyone with ATTENDANCE_VIEW read every employee's month. The procedures are not changed
+       (their repo copies are older than production, CON-7); one employee is checked first
+       ([InCallerScope]), and the lists are filtered with hr.usp_Scope_CallerEmployees (script 105). */
+
     [HttpGet("summary")]
     [HasPermission("ATTENDANCE_VIEW")]
-    public async Task<IActionResult> GetSummary([FromQuery] string period, [FromQuery] int employeeId)
+    [InCallerScope(ScopeTarget.Employee, RouteKey = "employeeId")]
+    public async Task<IActionResult> GetSummary([FromQuery] string period, [FromQuery, BindRequired] int employeeId)
     {
         var summary = await _attendance.GetSummaryAsync(employeeId, period);
         return summary is null ? NotFound() : Ok(summary);
     }
 
-    /// <summary>What a payroll RUN iterates over: every active employee's month.</summary>
+    /// <summary>Every active employee's month — those the caller may see in that month.</summary>
     [HttpGet("summary/all")]
     [HasPermission("ATTENDANCE_VIEW")]
-    public async Task<IActionResult> GetSummaryAll([FromQuery] string period)
-        => Ok(await _attendance.GetSummaryAllAsync(period));
+    public async Task<IActionResult> GetSummaryAll([FromQuery] string period, [FromServices] IScopeRepository scopes)
+    {
+        var rows = await _attendance.GetSummaryAllAsync(period);
+        var (from, to) = ScopePeriod.Month(period);
+        var scope = await scopes.ForCallerAsync(HttpContext, from, to);
+        return Ok(rows.Where(r => scope.SeesEmployee(r.EmployeeId)));
+    }
 
+    /// <summary>The per-branch split of a month: each row to whoever manages ITS branch, and to the employee it is about.</summary>
     [HttpGet("summary/by-branch")]
     [HasPermission("ATTENDANCE_VIEW")]
-    public async Task<IActionResult> GetSummaryByBranch([FromQuery] string period, [FromQuery] int? employeeId)
-        => Ok(await _attendance.GetSummaryByBranchAsync(period, employeeId));
+    public async Task<IActionResult> GetSummaryByBranch([FromQuery] string period, [FromQuery] int? employeeId, [FromServices] IScopeRepository scopes)
+    {
+        var rows = await _attendance.GetSummaryByBranchAsync(period, employeeId);
+        var (from, to) = ScopePeriod.Month(period);
+        var scope = await scopes.ForCallerAsync(HttpContext, from, to);
+        return Ok(rows.Where(r => scope.SeesBranchRow(r.EmployeeId, r.BranchId)));
+    }
 }

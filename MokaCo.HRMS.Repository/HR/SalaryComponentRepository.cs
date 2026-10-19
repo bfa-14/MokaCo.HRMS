@@ -20,48 +20,6 @@ public class SalaryComponentRepository : ISalaryComponentRepository
             commandType: CommandType.StoredProcedure);
     }
 
-    public async Task<int> CreateAsync(int employeeId, int componentTypeId, decimal amount, string currencyCode, DateTime effectiveFrom, DateTime? effectiveTo)
-    {
-        using var db = _factory.Create();
-        return await db.ExecuteScalarAsync<int>(
-            "hr.usp_SalaryComponent_Create",
-            new
-            {
-                EmployeeId = employeeId,
-                ComponentTypeId = componentTypeId,
-                Amount = amount,
-                CurrencyCode = currencyCode,
-                EffectiveFrom = effectiveFrom,
-                EffectiveTo = effectiveTo
-            },
-            commandType: CommandType.StoredProcedure);
-    }
-
-    public async Task UpdateAsync(int salaryComponentId, decimal amount, string currencyCode, DateTime effectiveFrom, DateTime? effectiveTo)
-    {
-        using var db = _factory.Create();
-        await db.ExecuteAsync(
-            "hr.usp_SalaryComponent_Update",
-            new
-            {
-                SalaryComponentId = salaryComponentId,
-                Amount = amount,
-                CurrencyCode = currencyCode,
-                EffectiveFrom = effectiveFrom,
-                EffectiveTo = effectiveTo
-            },
-            commandType: CommandType.StoredProcedure);
-    }
-
-    public async Task DeleteAsync(int salaryComponentId)
-    {
-        using var db = _factory.Create();
-        await db.ExecuteAsync(
-            "hr.usp_SalaryComponent_Delete",
-            new { SalaryComponentId = salaryComponentId },
-            commandType: CommandType.StoredProcedure);
-    }
-
     // ── salary administration: the history-preserving path ───────────────────
     //
     // Set and End both RETURN the employee's rows as they now stand, because the caller's next

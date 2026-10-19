@@ -19,6 +19,7 @@ namespace MokaCo.HRMS.Tests.Booking;
 /// are Monday 15 – Wednesday 17 June 2099; Source Manual keeps the lead-time rules out of the way, so
 /// only the hours and the overlap speak. Skipped, with the reason, when the database is not reachable.
 /// </summary>
+[Collection(DatabaseCollection.Name)]
 public class MidnightStartDbTests
 {
     private static readonly DateTime Mon = new(2099, 6, 15);

@@ -42,8 +42,9 @@ public class RosterMonthStatus
     public string? OpenRequestStatus { get; set; }
 
     /// <summary>
-    /// When the LATEST request on this month was approved (its ClosedAt; ROSTER_MONTH.ApprovedAt as
-    /// the fallback). Null when the latest request was rejected/cancelled or none was ever approved.
+    /// When the latest APPROVED request on this month was approved (its ClosedAt; ROSTER_MONTH.ApprovedAt as the
+    /// fallback). QA3 (ROS-7): a later re-submission that was rejected does not clear it — the roster still differs
+    /// from what was signed. Null when nothing was ever approved.
     /// </summary>
     public DateTime? LastApprovedAt { get; set; }
 
@@ -56,4 +57,7 @@ public class RosterMonthStatus
 
     /// <summary>The last time any roster row of this branch-month changed (UTC).</summary>
     public DateTime? LastChangedUtc { get; set; }
+
+    /// <summary>QA3 (ROS-2): when the month's attendance was last derived again from its roster (UTC). Null = never.</summary>
+    public DateTime? RederivedAt { get; set; }
 }
