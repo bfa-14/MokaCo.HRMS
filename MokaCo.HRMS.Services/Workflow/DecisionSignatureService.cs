@@ -1,6 +1,7 @@
 using MokaCo.HRMS.Repository.Security;
 using MokaCo.HRMS.Repository.Workflow;
 using MokaCo.HRMS.Services.Auth;
+using MokaCo.HRMS.Services.Core;
 using MokaCo.HRMS.Services.Security;
 
 namespace MokaCo.HRMS.Services.Workflow;
@@ -34,12 +35,14 @@ public class DecisionSignatureService : IDecisionSignatureService
     private readonly IRequestRepository _requests;
     private readonly IUserRepository _users;
     private readonly IPasswordHasher _hasher;
+    private readonly MissingScriptWarning? _missingScript;
 
-    public DecisionSignatureService(IRequestRepository requests, IUserRepository users, IPasswordHasher hasher)
+    public DecisionSignatureService(IRequestRepository requests, IUserRepository users, IPasswordHasher hasher, MissingScriptWarning? missingScript = null)
     {
         _requests = requests;
         _users = users;
         _hasher = hasher;
+        _missingScript = missingScript;
     }
 
     public async Task<bool> VerifyAsync(int requestInstanceId, int userId, string? password)
@@ -54,7 +57,7 @@ public class DecisionSignatureService : IDecisionSignatureService
                 requirement.Explanation ?? "This decision must be signed with your password.");
 
         // Counted against the login lockout, and refused while locked (QA3, item 10): see AccountPassword.
-        return await AccountPassword.CheckAsync(_users, _hasher, userId, password) switch
+        return await AccountPassword.CheckAsync(_users, _hasher, userId, password, _missingScript) switch
         {
             PasswordVerdict.Ok => true,
             PasswordVerdict.Locked => throw new WorkflowException(401, AuthService.Locked),

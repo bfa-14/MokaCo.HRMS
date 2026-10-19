@@ -155,7 +155,7 @@ public class AttendanceIngestionController : ControllerBase
             return BadRequest(new { error = "A date is required." });
 
         var punches = await _import.GetPunchesByDateAsync(date.Value, deviceId, unresolvedOnly);
-        var scope = await scopes.CallerEmployeesAsync(User.UserId(), date.Value, date.Value);
+        var scope = await scopes.ForCallerAsync(HttpContext, date.Value, date.Value);
         return Ok(punches.Where(p => scope.SeesPunch(p.EmployeeId, p.BranchId)));
     }
 }

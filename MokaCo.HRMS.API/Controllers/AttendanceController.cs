@@ -433,7 +433,7 @@ public class AttendanceController : ControllerBase
     {
         var rows = await _attendance.GetSummaryAllAsync(period);
         var (from, to) = ScopePeriod.Month(period);
-        var scope = await scopes.CallerEmployeesAsync(User.UserId(), from, to);
+        var scope = await scopes.ForCallerAsync(HttpContext, from, to);
         return Ok(rows.Where(r => scope.SeesEmployee(r.EmployeeId)));
     }
 
@@ -444,7 +444,7 @@ public class AttendanceController : ControllerBase
     {
         var rows = await _attendance.GetSummaryByBranchAsync(period, employeeId);
         var (from, to) = ScopePeriod.Month(period);
-        var scope = await scopes.CallerEmployeesAsync(User.UserId(), from, to);
+        var scope = await scopes.ForCallerAsync(HttpContext, from, to);
         return Ok(rows.Where(r => scope.SeesBranchRow(r.EmployeeId, r.BranchId)));
     }
 }

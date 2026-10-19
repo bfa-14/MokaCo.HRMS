@@ -1,6 +1,8 @@
 using MokaCo.HRMS.Model.Security;
+using MokaCo.HRMS.Repository.Common;
 using MokaCo.HRMS.Repository.Security;
 using MokaCo.HRMS.Services.Auth;
+using MokaCo.HRMS.Services.Core;
 using MokaCo.HRMS.Services.HR;
 
 namespace MokaCo.HRMS.Services.Security;
@@ -11,10 +13,11 @@ public class UserService : IUserService
     private readonly IUserRepository _users;
     private readonly IPasswordHasher _hasher;
     private readonly ISessionGuard _sessions;
+    private readonly MissingScriptWarning? _missingScript;
 
-    public UserService(IUserRepository users, IPasswordHasher hasher, ISessionGuard sessions)
+    public UserService(IUserRepository users, IPasswordHasher hasher, ISessionGuard sessions, MissingScriptWarning? missingScript = null)
     {
-        _users = users; _hasher = hasher; _sessions = sessions;
+        _users = users; _hasher = hasher; _sessions = sessions; _missingScript = missingScript;
     }
 
     public Task<IEnumerable<UserListItem>> GetAllAsync() => _users.GetAllAsync();
@@ -48,10 +51,24 @@ public class UserService : IUserService
             await EndSessionsAsync(userId);
     }
 
-    /// <summary>security.usp_User_EndSessions, then this process stops trusting its cached reading of the account.</summary>
+    /// <summary>
+    /// security.usp_User_EndSessions, then this process stops trusting its cached reading of the account.
+    ///
+    /// WHILE SCRIPT 105 IS NOT APPLIED (the API deployed first) there is nothing to end the sessions
+    /// with: as before it, the password is changed (the account disabled) and the other sessions run on —
+    /// the change itself must not fail. A disabled account is still refused at its next request (the
+    /// session guard reads it again after Forget) and at refresh.
+    /// </summary>
     private async Task EndSessionsAsync(int userId)
     {
-        await _users.EndSessionsAsync(userId);
+        try
+        {
+            await _users.EndSessionsAsync(userId);
+        }
+        catch (MissingScriptException missing)
+        {
+            _missingScript?.FellBack(missing, "a password change or a disable does not end the account's other sessions");
+        }
         _sessions.Forget(userId);
     }
 
@@ -72,7 +89,7 @@ public class UserService : IUserService
     {
         // The current password counts against the login lockout, and a locked account is refused
         // (QA3, item 10): otherwise this form guesses passwords for whoever holds the session.
-        switch (await AccountPassword.CheckAsync(_users, _hasher, userId, request.CurrentPassword))
+        switch (await AccountPassword.CheckAsync(_users, _hasher, userId, request.CurrentPassword, _missingScript))
         {
             case PasswordVerdict.Ok:
                 break;

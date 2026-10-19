@@ -167,6 +167,10 @@ builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddScoped<IUserService, UserService>();
 // QA3 SEC-5: a singleton, because it is the per-user cache every authenticated request is checked against.
 builder.Services.AddSingleton<ISessionGuard, SessionGuard>();
+// An API deployed before docs/105_qa3_security.sql keeps working the way it did before that script, and
+// says so ONCE per process (a singleton for that reason): AuthService, UserService, the signature checks
+// and the caller-scope lookups (CallerScopes) report their fallbacks here.
+builder.Services.AddSingleton<MissingScriptWarning>();
 builder.Services.AddScoped<IUserSignatureService, UserSignatureService>();
 
 // The Google sign-in gate. The STATE is a singleton and must stay one: it is the 20-second cache every

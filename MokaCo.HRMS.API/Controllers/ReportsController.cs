@@ -35,7 +35,7 @@ public class ReportsController : ControllerBase
 
         var report = await _reports.GetMonthlyAttendanceAsync(period, branchId);
         var (from, to) = ScopePeriod.Month(period);
-        var scope = await scopes.CallerEmployeesAsync(User.UserId(), from, to);
+        var scope = await scopes.ForCallerAsync(HttpContext, from, to);
         report.Rows = report.Rows.Where(r => scope.SeesEmployee(r.EmployeeId)).ToList();
         return Ok(report);
     }
@@ -46,7 +46,7 @@ public class ReportsController : ControllerBase
     public async Task<IActionResult> DailyAttendance([FromQuery] DateTime workDate, [FromQuery] int? branchId, [FromServices] IScopeRepository scopes)
     {
         var report = await _reports.GetDailyAttendanceAsync(workDate, branchId);
-        var scope = await scopes.CallerEmployeesAsync(User.UserId(), workDate, workDate);
+        var scope = await scopes.ForCallerAsync(HttpContext, workDate, workDate);
         report.Rows = report.Rows.Where(r => scope.SeesEmployee(r.EmployeeId)).ToList();
         return Ok(report);
     }
@@ -61,7 +61,7 @@ public class ReportsController : ControllerBase
 
         var report = await _reports.GetLeaveBalanceAsync(asOf, employeeId, branchId);
         var (from, to) = ScopePeriod.Month(asOf);
-        var scope = await scopes.CallerEmployeesAsync(User.UserId(), from, to);
+        var scope = await scopes.ForCallerAsync(HttpContext, from, to);
         report.Rows = report.Rows.Where(r => scope.SeesEmployee(r.EmployeeId)).ToList();
         return Ok(report);
     }

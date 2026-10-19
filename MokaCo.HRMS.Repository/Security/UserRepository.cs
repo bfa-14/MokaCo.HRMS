@@ -64,19 +64,21 @@ public class UserRepository : IUserRepository
     public async Task<int> EndSessionsAsync(int userId)
     {
         using var db = _factory.Create();
-        return await db.QuerySingleAsync<int>(
-            "security.usp_User_EndSessions",
-            new { UserId = userId },
-            commandType: CommandType.StoredProcedure);
+        return await MissingScriptException.GuardAsync(Scripts.Security105, "security.usp_User_EndSessions",
+            () => db.QuerySingleAsync<int>(
+                "security.usp_User_EndSessions",
+                new { UserId = userId },
+                commandType: CommandType.StoredProcedure));
     }
 
     public async Task ClearLoginFailuresAsync(int userId)
     {
         using var db = _factory.Create();
-        await db.ExecuteAsync(
-            "security.usp_User_ClearLoginFailures",
-            new { UserId = userId },
-            commandType: CommandType.StoredProcedure);
+        await MissingScriptException.GuardAsync(Scripts.Security105, "security.usp_User_ClearLoginFailures",
+            () => db.ExecuteAsync(
+                "security.usp_User_ClearLoginFailures",
+                new { UserId = userId },
+                commandType: CommandType.StoredProcedure));
     }
 
     // ---- inline CRUD ----

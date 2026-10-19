@@ -18,13 +18,15 @@ public interface IUserRepository
     /// <summary>
     /// security.usp_User_EndSessions (script 105, QA3 SEC-5): a new session stamp, so every access token
     /// issued so far is refused, and every refresh token revoked — one transaction. Returns how many
-    /// refresh tokens were still live. Refuses an unknown user ("User not found.").
+    /// refresh tokens were still live. Refuses an unknown user ("User not found."). MissingScriptException
+    /// while script 105 is not applied.
     /// </summary>
     Task<int> EndSessionsAsync(int userId);
 
     /// <summary>
     /// security.usp_User_ClearLoginFailures (script 105): a password checked right AFTER sign-in (a
     /// signature) clears the failure count as a login does, without stamping LastLoginAt.
+    /// MissingScriptException while script 105 is not applied.
     /// </summary>
     Task ClearLoginFailuresAsync(int userId);
     // inline CRUD

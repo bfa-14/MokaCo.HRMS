@@ -10,6 +10,7 @@ public interface IScopeRepository
     /// <summary>
     /// What the caller may see for <paramref name="fromDate"/>..<paramref name="toDate"/> (null = any day):
     /// hr.usp_Scope_CallerEmployees, script 105 (QA3 ATT-16). For filtering the rows of a list.
+    /// MissingScriptException while script 105 is not applied.
     /// </summary>
     Task<CallerScopeSet> CallerEmployeesAsync(int callerUserId, DateTime? fromDate, DateTime? toDate);
 }

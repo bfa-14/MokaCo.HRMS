@@ -51,9 +51,23 @@
    writes it). No data is changed; existing sessions stay valid until their account's sessions are
    ended (a token issued before this script carries no stamp, which matches an account that has none).
 
-   Apply BEFORE deploying the API built with these fixes: that API calls the new procedures. Script 100 is not
+   Apply it together with the API built with these fixes (before or right after deploying it). Script 100 is not
    required (see the unit B handoff above). Re-runnable. QUOTED_IDENTIFIER ON. A refusal is RAISERROR(msg,16,1) +
    RETURN 1, except where the base contract answers with NO ROW (the two token procedures, as the base rotation).
+
+   IF THE API IS DEPLOYED AND THIS SCRIPT IS NOT (the deploy runs the code and the SQL as separate steps), nobody
+   is locked out. The API logs ONE warning per process, "DATABASE SCRIPT NOT APPLIED: docs/105_qa3_security.sql
+   (<procedure> is missing, SQL error 2812)", and keeps the behaviour from before this script:
+     - sign-in issues its refresh token with the old inline INSERT (no re-check of the account, no stamp);
+     - refresh rotates with the base usp_RefreshToken_Rotate (a disabled account is still refused);
+     - a password change or a disable succeeds but does NOT end the account's other sessions (a disabled
+       account's access tokens are still refused at their next request);
+     - a right signature (or current) password clears the failure count with the base
+       usp_User_RegisterLoginSuccess, which also stamps LastLoginAt; wrong ones are counted as with the script;
+     - the monthly summaries, the punches of a day and the three printable reports are NOT filtered by the
+       caller's branches (the reads of one employee keep script 98's scope).
+   Every call tries this script's procedure first, so applying it takes effect at the next call: no restart.
+   Until it is applied, SEC-5 and ATT-16 are not fixed - apply it as soon as the API is deployed.
    ============================================================================ */
 SET QUOTED_IDENTIFIER ON;
 SET ANSI_NULLS ON;

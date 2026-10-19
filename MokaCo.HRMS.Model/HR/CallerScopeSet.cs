@@ -22,6 +22,12 @@ public sealed class CallerScopeSet
     /// </summary>
     public IReadOnlySet<int> EmployeeIds { get; init; } = new HashSet<int>();
 
+    /// <summary>
+    /// Every row: what these reads answered before script 105, and what they answer while it is not
+    /// applied (the API deployed first; see CallerScopes in the API).
+    /// </summary>
+    public static CallerScopeSet Unscoped { get; } = new() { SeesAll = true };
+
     /// <summary>Built from the procedure's (Kind, Id) rows: A = everyone, S = own employee, B = managed branch, E = visible employee.</summary>
     public static CallerScopeSet From(IEnumerable<(string Kind, int? Id)> rows)
     {
