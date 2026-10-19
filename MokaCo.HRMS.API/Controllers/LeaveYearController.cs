@@ -63,4 +63,31 @@ public class LeaveYearController : ControllerBase
             return BadRequest(new { error = ex.Message });
         }
     }
+
+    /// <summary>
+    /// QA3 (LEV-9): TAKES BACK the opening of the current year -- the entitlement, the carry-over, the close of the old
+    /// year and the expiry that followed -- for one employee (<paramref name="employeeId"/>) or everybody, so the year can
+    /// be opened again after the tier grid or a hire date was corrected. The procedure refuses another year, and a year
+    /// whose leave was already used in a period that is paid; its sentence travels verbatim as a 400.
+    ///
+    /// The same trust as opening it: LEAVE_POLICY_MANAGE.
+    /// </summary>
+    [HttpPost("year-undo")]
+    [HasPermission("LEAVE_POLICY_MANAGE")]
+    public async Task<IActionResult> UndoYear([FromQuery] int year, [FromQuery] int? employeeId = null)
+    {
+        if (year < 2000 || year > 2100)
+            return BadRequest(new { error = "Year is out of range." });
+
+        try
+        {
+            var summary = await _leaveYear.UndoAsync(year, employeeId, CurrentUserId);
+            await _live.NotifyAsync("hr", "dashboard");
+            return Ok(summary);
+        }
+        catch (SqlException ex) when (ex.Number == 50000)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
 }
