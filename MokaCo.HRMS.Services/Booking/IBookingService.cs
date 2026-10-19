@@ -30,7 +30,7 @@ public interface IBookingService
     /// <summary>Cancels expired unpaid holds; returns the references it cancelled, so each can be announced live. Called by the five-minute job.</summary>
     Task<IReadOnlyList<string>> ExpireHoldsAsync();
 
-    /// <summary>core.SETTING BookingDepositRequired — whether the website must collect the deposit online (step 2).</summary>
+    /// <summary>core.SETTING BookingDepositRequired — whether the website must collect the deposit online (step 2). '1' or 'true' (QA3).</summary>
     Task<bool> IsDepositRequiredAsync();
 
     /* ---- staff ---- */

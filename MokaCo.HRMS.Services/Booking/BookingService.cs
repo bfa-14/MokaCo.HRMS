@@ -35,8 +35,13 @@ public class BookingService : IBookingService
     public Task<BookingCreated?> CreateFromWebsiteAsync(PublicBookingRequest request)
         => _bookings.CreateFromWebsiteAsync(request);
 
-    public Task<BookingQuote?> QuoteAsync(PublicQuoteRequest request)
-        => _bookings.QuoteAsync(request);
+    public async Task<BookingQuote?> QuoteAsync(PublicQuoteRequest request)
+    {
+        var quote = await _bookings.QuoteAsync(request);
+        if (quote is not null)
+            quote.DepositRequired = await IsDepositRequiredAsync();   // read in either dialect (QA3), not the base procedure's way
+        return quote;
+    }
 
     public async Task<PublicBookingRecap?> GetPublicRecapAsync(string bookingRef)
     {
@@ -56,10 +61,14 @@ public class BookingService : IBookingService
     public Task<IReadOnlyList<string>> ExpireHoldsAsync()
         => _bookings.ExpireHoldsAsync();
 
+    /// <summary>
+    /// ON for '1', 'true', 'yes' or 'on' (QA3): the Settings page writes 'true'/'false' to a row with no
+    /// dialect, and '1' alone read a 'true' as off. A missing row is off (step 1).
+    /// </summary>
     public async Task<bool> IsDepositRequiredAsync()
     {
         var setting = await _settings.GetAsync(DepositRequiredSetting);
-        return setting?.SettingValue?.Trim() == "1";
+        return SettingSwitch.IsOn(setting?.SettingValue);
     }
 
     /// <summary>
