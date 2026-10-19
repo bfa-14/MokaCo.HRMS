@@ -55,3 +55,21 @@ public class QuarantineMapResult
     /// <summary>Days the punches belong to that are already paid for this employee: left as they were paid.</summary>
     public int DaysAlreadyPaid { get; set; }
 }
+
+/// <summary>
+/// QA3: "this PIN belongs to nobody" - a visitor tried the terminal, a test enrolment. The punches are set aside with
+/// the reason (kept, so the terminal's next copy is still a duplicate) and stop waiting; mapping the PIN later takes
+/// them back (attendance.usp_DevicePunchQuarantine_Dismiss).
+/// </summary>
+public class QuarantineDismissRequest
+{
+    public int DeviceId { get; set; }
+    public string EnrollPin { get; set; } = string.Empty;
+    public string Note { get; set; } = string.Empty;
+}
+
+/// <summary>How many waiting punches were set aside.</summary>
+public class QuarantineDismissResult
+{
+    public int PunchesDismissed { get; set; }
+}
