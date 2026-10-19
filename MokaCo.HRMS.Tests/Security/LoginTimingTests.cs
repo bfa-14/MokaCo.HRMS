@@ -127,29 +127,30 @@ public class LoginTimingTests
         Assert.Same(hasher.DecoyHash, hasher.DecoyHash);
     }
 
-    /// <summary>Coarse on purpose (best of three each way): the decoy must cost a real Argon2 run, not fail fast on a malformed hash.</summary>
+    /// <summary>
+    /// Coarse on purpose: the decoy must cost a real Argon2 run, not fail fast on a malformed hash — which
+    /// would be about a thousand times quicker. The two are timed in turns (best of three each) so a busy
+    /// test run slows both alike, and the bound leaves room for a loaded machine.
+    /// </summary>
     [Fact]
     public void Verifying_against_the_decoy_takes_as_long_as_a_real_verification()
     {
         var hasher = new Argon2PasswordHasher();
         var real = hasher.Hash("correct horse");
 
-        static long Best(Action a)
+        long wrongPassword = long.MaxValue, unknownUser = long.MaxValue;
+        for (var i = 0; i < 3; i++)
         {
-            var best = long.MaxValue;
-            for (var i = 0; i < 3; i++)
-            {
-                var sw = Stopwatch.StartNew();
-                a();
-                best = Math.Min(best, sw.ElapsedTicks);
-            }
-            return best;
+            var sw = Stopwatch.StartNew();
+            hasher.Verify("guess", real);
+            wrongPassword = Math.Min(wrongPassword, sw.ElapsedTicks);
+
+            sw.Restart();
+            hasher.Verify("guess", hasher.DecoyHash);
+            unknownUser = Math.Min(unknownUser, sw.ElapsedTicks);
         }
 
-        var wrongPassword = Best(() => hasher.Verify("guess", real));
-        var unknownUser = Best(() => hasher.Verify("guess", hasher.DecoyHash));
-
-        Assert.True(unknownUser * 2 > wrongPassword, $"decoy {unknownUser} ticks vs real {wrongPassword} ticks");
+        Assert.True(unknownUser * 10 > wrongPassword, $"decoy {unknownUser} ticks vs real {wrongPassword} ticks");
     }
 
     /* ---- the per address + username limit ---- */

@@ -37,6 +37,9 @@ public class RequestNotesMailGateTests
         {
             nameof(RequestsController.GetById), nameof(RequestsController.GetSteps), nameof(RequestsController.Decisions),
             nameof(RequestsController.SignatureRequirement), nameof(RequestsController.GetDraft), nameof(RequestsController.StepSignatureImage),
+            // QA3 unit A (WEB-7, on dev): RequestService.GetDelegateCandidatesAsync answers 403 unless CanSeeAsync.
+            // A string, not nameof, so this branch also builds before that action is merged in.
+            "DelegateCandidates",
         };
         var reads = typeof(RequestsController).GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
             .Where(m => m.GetCustomAttributes<HttpGetAttribute>().Any(g => g.Template?.StartsWith("{id:int}") == true))
