@@ -154,7 +154,7 @@ BEGIN TRY
 END TRY BEGIN CATCH IF @@TRANCOUNT > 0 ROLLBACK TRAN; SET @err = ERROR_MESSAGE(); END CATCH;
 DECLARE @c TABLE (RowsInserted INT);
 BEGIN TRY
-    INSERT INTO @c EXEC attendance.usp_ShiftAssignment_CopyPeriod @SourceYearMonth = @Src, @TargetYearMonth = @Tgt, @EmployeeId = @E2, @Overwrite = 0;
+    INSERT INTO @c EXEC attendance.usp_ShiftAssignment_CopyPeriod @SourceYearMonth = @Src, @TargetYearMonth = @Tgt, @EmployeeId = @E2, @Overwrite = 0, @BranchId = @B1;   -- QA3 (ROS-3): one branch
 END TRY BEGIN CATCH IF @@TRANCOUNT > 0 ROLLBACK TRAN; SET @err = CONCAT(@err, ' copy: ', ERROR_MESSAGE()); END CATCH;
 DECLARE @rows INT = (SELECT COUNT(*) FROM attendance.SHIFT_ASSIGNMENT WHERE EmployeeId = @E2 AND WorkDate BETWEEN @T AND EOMONTH(@T));
 DECLARE @onHoliday NVARCHAR(100) = ISNULL((SELECT CONCAT('shift ', ISNULL(s.Name, 'none'), ', rest=', sa.IsRestDay) FROM attendance.SHIFT_ASSIGNMENT sa LEFT JOIN attendance.SHIFT s ON s.ShiftId = sa.ShiftId WHERE sa.EmployeeId = @E2 AND sa.WorkDate = @H), 'no row');
