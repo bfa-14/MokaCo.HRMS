@@ -4,7 +4,8 @@
    roster was a draft is measured against its shift, every past rostered day gets its record (payroll readiness no
    longer counts "rostered days with no record"), today and later days are left alone, the leave of the month is
    re-priced (unit D's hr.usp_LeaveLedger_Reprice), the month is marked re-derived, and a month approved again since
-   is picked up by the nightly safety net.
+   is picked up by the nightly safety net. With script 101, the approval taken back (unit A's reversal calls
+   usp_Roster_RederiveMonth) judges the days without the roster again.
    Runs on a real dev database: everything inside one transaction that is rolled back; seeded rows start with 'QA3 '.
    Uses the PREVIOUS month (past days; never paid for a QA3 employee). Prints 'ok rederive_on_approval', or raises the
    first wrong result. Needs 99-102.
@@ -160,6 +161,27 @@ BEGIN TRY
             RAISERROR('FAIL rederive_on_approval (f): the sweep did not stamp the month.', 16, 1);
     END
     ELSE PRINT 'note rederive_on_approval: other months are due on this database - the sweep itself was not run.';
+
+    /* (g) the approval taken back (unit A's reversal, script 101: UndoEffects while it still reads Approved, the status
+       moves, then usp_Reversal_Rederive, which calls usp_Roster_RederiveMonth): the month leaves Approved, the worked day
+       is judged without the roster again, and the marker says the month was derived in its new state */
+    IF OBJECT_ID('workflow.usp_Reversal_Rederive') IS NOT NULL
+    BEGIN
+        EXEC workflow.usp_Reversal_UndoEffects @RequestInstanceId = @Rid;
+        UPDATE workflow.REQUEST_INSTANCE SET [Status] = 'Pending', ClosedAt = NULL WHERE RequestInstanceId = @Rid;
+        EXEC workflow.usp_Reversal_Rederive @RequestInstanceId = @Rid;
+        IF NOT EXISTS (SELECT 1 FROM attendance.ROSTER_MONTH
+                       WHERE BranchId = @B AND MonthDate = @PM AND [Status] <> 'Approved' AND RederivedStatus = [Status])
+            RAISERROR('FAIL rederive_on_approval (g): after the approval was taken back the month should be re-derived in its new state.', 16, 1);
+        IF NOT EXISTS (SELECT 1 FROM attendance.ATTENDANCE_RECORD WHERE EmployeeId = @E1 AND WorkDate = @D1 AND StandardMinutes = @StdBefore)
+        BEGIN
+            SELECT @msg = CONCAT('FAIL rederive_on_approval (g): the worked day should be judged against the default day again (',
+                                 @StdBefore, ' min); got ',
+                                 ISNULL((SELECT CAST(StandardMinutes AS VARCHAR(10)) FROM attendance.ATTENDANCE_RECORD WHERE EmployeeId = @E1 AND WorkDate = @D1), 'no record'));
+            RAISERROR(@msg, 16, 1);
+        END
+    END
+    ELSE PRINT 'note rederive_on_approval: script 101 is not applied - the reversal phase was not run.';
 
     ROLLBACK;
     PRINT 'ok rederive_on_approval';
