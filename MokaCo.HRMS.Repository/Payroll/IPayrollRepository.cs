@@ -44,7 +44,10 @@ public interface IPayrollRepository
     /// and consumes adjustments — and refuses outright on a run that is already closed, which is what
     /// makes it safe to press twice.
     /// </summary>
-    Task<PayrollRunStatusResult?> ApproveAsync(int payrollRunId, int actedByUserId);
+    Task<PayrollRunStatusResult?> ApproveAsync(int payrollRunId, int actedByUserId, bool allowEarlyLock = false);
+
+    /// <summary>payroll.usp_PayrollRun_GetStaleness: what changed since the run was generated (QA3 PAY-5).</summary>
+    Task<PayrollRunStaleness?> GetStalenessAsync(int payrollRunId);
 
     Task<PayrollRunStatusResult?> CancelAsync(int payrollRunId, int actedByUserId, string? reason);
 

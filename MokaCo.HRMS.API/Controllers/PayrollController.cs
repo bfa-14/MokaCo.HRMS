@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Model.Payroll;
 using MokaCo.HRMS.Services.Payroll;
@@ -10,15 +11,16 @@ namespace MokaCo.HRMS.Api.Controllers;
 /// <summary>
 /// Payroll — runs, payslips, advances and adjustments.
 ///
-/// WHO MAY BE HERE AT ALL. Every route on this controller carries PAYROLL_RUN, held by the
-/// managerial roles (Owner, General Manager, OperationsManager, HR, Admin) and by nobody else. This
-/// is not a view gate: a barista must not be able to read the company's pay figures by typing a URL,
-/// so the refusal is server-side and the hidden menu item is only a courtesy on top of it.
-///
-/// THE TWO ROUTES THAT ASK FOR MORE. Approving a run and recording a payment are the acts that turn
-/// figures into money, and both carry PAYROLL_APPROVE instead — Owner, General Manager and
-/// Operations Manager (and Admin, who holds every permission). HR may prepare a run and read every
-/// payslip in it; HR may not lock it or say it has been paid.
+/// THREE TRUSTS, ONE PER ACTION (QA3 PAY-12 / WEB-4). There is no class-level gate any more:
+///   • every READ answers to PAYROLL_VIEW — the runs, a run's payslips, readiness, the payment and
+///     statutory sheets, advances, adjustments, an employee's payslip history;
+///   • every WRITE that prepares payroll answers to PAYROLL_RUN — create, generate, send to review,
+///     cancel, reschedule an advance, delete a pre-request adjustment;
+///   • the acts that turn figures into money answer to PAYROLL_APPROVE — approving (and the procedure
+///     then admits the Owner alone), recording a payment, the company-wide bulk adjustment.
+/// PAYROLL_VIEW is granted by script 103 to every role that held PAYROLL_RUN or PAYROLL_APPROVE, so
+/// nobody who could read payroll before loses it. A barista still cannot read the company's pay by
+/// typing a URL: none of these codes is theirs.
 ///
 /// EVERY REFUSAL IS THE DATABASE'S. The procedures own the rules and raise sentences written for the
 /// person who hit them; the service maps those to a 400 with the message intact, and the actions
@@ -27,7 +29,6 @@ namespace MokaCo.HRMS.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/payroll")]
-[HasPermission("PAYROLL_RUN")]
 public class PayrollController : ControllerBase
 {
     private readonly IPayrollService _payroll;
@@ -46,6 +47,7 @@ public class PayrollController : ControllerBase
 
     /// <summary>Every payroll run, newest period first.</summary>
     [HttpGet("runs")]
+    [HasPermission("PAYROLL_VIEW")]
     public async Task<IActionResult> GetRuns() => Ok(await _payroll.GetRunsAsync());
 
     /// <summary>
@@ -56,6 +58,7 @@ public class PayrollController : ControllerBase
     /// was never opened. The creator is the token's user, never a number from the body.
     /// </summary>
     [HttpPost("runs")]
+    [HasPermission("PAYROLL_RUN")]
     public async Task<IActionResult> CreateRun([FromBody] PayrollRunCreateRequest request)
     {
         try
@@ -81,6 +84,7 @@ public class PayrollController : ControllerBase
     /// produced it is a number nobody can check.
     /// </summary>
     [HttpGet("runs/{id:int}")]
+    [HasPermission("PAYROLL_VIEW")]
     public async Task<IActionResult> GetRun(int id)
     {
         var detail = await _payroll.GetRunAsync(id);
@@ -89,6 +93,7 @@ public class PayrollController : ControllerBase
 
     /// <summary>Every payslip in the run, for the grid and its export.</summary>
     [HttpGet("runs/{id:int}/payslips")]
+    [HasPermission("PAYROLL_VIEW")]
     public async Task<IActionResult> GetRunPayslips(int id) => Ok(await _payroll.GetRunPayslipsAsync(id));
 
     /// <summary>
@@ -102,6 +107,7 @@ public class PayrollController : ControllerBase
     /// PAYROLL_RUN gate on this controller, so the permission story does not fork either.
     /// </summary>
     [HttpPost("runs/{id:int}/generate")]
+    [HasPermission("PAYROLL_RUN")]
     public async Task<IActionResult> Generate(int id)
     {
         try
@@ -122,6 +128,7 @@ public class PayrollController : ControllerBase
 
     /// <summary>Moves a generated draft to review. An ungenerated run is refused, and says so.</summary>
     [HttpPost("runs/{id:int}/send-to-review")]
+    [HasPermission("PAYROLL_RUN")]
     public async Task<IActionResult> SendToReview(int id)
     {
         try
@@ -141,20 +148,23 @@ public class PayrollController : ControllerBase
     /// <summary>
     /// APPROVES AND LOCKS — the one irreversible act in the module.
     ///
-    /// In a single transaction the run is stamped, expenses are marked reimbursed, advance balances
-    /// are reduced and adjustments are consumed. Calling it twice cannot double-apply any of that:
-    /// the second call is refused before the side effects run.
+    /// In a single transaction the run is claimed (only from Review, and only as it was checked — a
+    /// second approval finds nothing to claim), expenses are marked reimbursed, advance balances are
+    /// reduced, adjustments consumed, separation settlements stamped and leave payouts settled in the
+    /// leave ledger. Before that the procedure refuses a run whose inputs changed since it was
+    /// generated, a month whose attendance is not ready, and — unless <c>allowEarlyLock</c> says the
+    /// Owner means it — a primary whose last day is not over yet.
     ///
-    /// PAYROLL_APPROVE, not PAYROLL_RUN. HR prepares; Owner, General Manager and Operations Manager
-    /// commit.
+    /// PAYROLL_APPROVE gets a caller this far; the procedure then admits the Owner alone.
     /// </summary>
     [HttpPost("runs/{id:int}/approve")]
     [HasPermission("PAYROLL_APPROVE")]
-    public async Task<IActionResult> Approve(int id)
+    public async Task<IActionResult> Approve(int id,
+        [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] PayrollRunApproveRequest? request)
     {
         try
         {
-            var result = await _payroll.ApproveAsync(id, User.UserId());
+            var result = await _payroll.ApproveAsync(id, User.UserId(), request?.AllowEarlyLock ?? false);
             if (result is null) return NotFound();
 
             // Approval also stamps expenses, reduces advances and consumes adjustments, so the
@@ -173,6 +183,7 @@ public class PayrollController : ControllerBase
     /// reason is worse than one that was never opened. An APPROVED run refuses: it is history.
     /// </summary>
     [HttpPost("runs/{id:int}/cancel")]
+    [HasPermission("PAYROLL_RUN")]
     public async Task<IActionResult> Cancel(int id, [FromBody] PayrollRunCancelRequest request)
     {
         try
@@ -194,6 +205,7 @@ public class PayrollController : ControllerBase
     /// changes and a payment sheet that changes is not a payment sheet.
     /// </summary>
     [HttpGet("runs/{id:int}/payment-sheet")]
+    [HasPermission("PAYROLL_VIEW")]
     public async Task<IActionResult> GetPaymentSheet(int id)
     {
         try
@@ -222,6 +234,7 @@ public class PayrollController : ControllerBase
     /// to hold it. The wording is the create procedure's own, so both refusals read the same.
     /// </summary>
     [HttpGet("readiness")]
+    [HasPermission("PAYROLL_VIEW")]
     public async Task<IActionResult> GetReadiness([FromQuery] string? period)
     {
         if (string.IsNullOrWhiteSpace(period) || !PeriodPattern.IsMatch(period))
@@ -235,12 +248,25 @@ public class PayrollController : ControllerBase
     private static readonly Regex PeriodPattern =
         new(@"^\d{4}-(0[1-9]|1[0-2])$", RegexOptions.Compiled);
 
+    /// <summary>
+    /// What changed since the run was generated — the run page's "out of date" banner (QA3 PAY-5 /
+    /// REL-3). The same comparison Approve makes before it locks: each payslip's inputs (attendance,
+    /// roster, leave, salary, overtime, tips, expenses, adjustments, advances, settlements) and the
+    /// run-wide ones (settings, NSSF / tax, types, holidays, roster approvals) against the data now.
+    /// </summary>
+    [HttpGet("runs/{id:int}/staleness")]
+    [HasPermission("PAYROLL_VIEW")]
+    public async Task<IActionResult> GetStaleness(int id)
+    {
+        var staleness = await _payroll.GetStalenessAsync(id);
+        return staleness is null ? NotFound() : Ok(staleness);
+    }
+
     // ─────────────────────────────── payslips ───────────────────────────────
     //
     // READING one payslip lives on PayslipsController, not here: it is the single payroll route an
-    // ordinary employee may reach (their own, once the run is approved), and this class's blanket
-    // PAYROLL_RUN gate is exactly what must NOT apply to it. Recording payment stays below, because
-    // that is managerial whoever the payslip belongs to.
+    // ordinary employee may reach (their own, once the run is approved). Recording payment stays
+    // below, because that is managerial whoever the payslip belongs to.
 
     /// <summary>
     /// Records that a payslip was paid — method, reference, and the moment. Approved runs only.
@@ -270,6 +296,7 @@ public class PayrollController : ControllerBase
 
     /// <summary>Advances, open ones by default — the ones with a balance still to come off.</summary>
     [HttpGet("advances")]
+    [HasPermission("PAYROLL_VIEW")]
     public async Task<IActionResult> GetAdvances([FromQuery] int? employeeId, [FromQuery] bool openOnly = true)
         => Ok(await _payroll.GetAdvancesAsync(employeeId, openOnly));
 
@@ -282,6 +309,7 @@ public class PayrollController : ControllerBase
     /// A settled advance refuses.
     /// </summary>
     [HttpPut("advances/{id:int}/monthly")]
+    [HasPermission("PAYROLL_RUN")]
     public async Task<IActionResult> UpdateAdvanceMonthly(int id, [FromBody] SalaryAdvanceMonthlyRequest request)
     {
         try
@@ -308,6 +336,7 @@ public class PayrollController : ControllerBase
     /// "nothing is queued for September" rather than as "you asked the wrong question".
     /// </summary>
     [HttpGet("adjustments")]
+    [HasPermission("PAYROLL_VIEW")]
     public async Task<IActionResult> GetAdjustments([FromQuery] string? period)
     {
         if (string.IsNullOrWhiteSpace(period) || !PeriodPattern.IsMatch(period))
@@ -373,6 +402,7 @@ public class PayrollController : ControllerBase
     /// reason and a creator were the whole story. Both refusals are the procedure's own words.
     /// </summary>
     [HttpDelete("adjustments/{id:int}")]
+    [HasPermission("PAYROLL_RUN")]
     public async Task<IActionResult> DeleteAdjustment(int id)
     {
         try
@@ -399,6 +429,7 @@ public class PayrollController : ControllerBase
     /// whether a component is assigned to a person or produced by a run.
     /// </summary>
     [HttpGet("component-types")]
+    [HasPermission("PAYROLL_VIEW")]
     public async Task<IActionResult> GetComponentTypes() => Ok(await _payroll.GetComponentTypesAsync());
 
     // ──────────────────────────── reports & lookups ─────────────────────────
@@ -413,6 +444,7 @@ public class PayrollController : ControllerBase
     /// rate that produced it is printed on the run beside it.
     /// </summary>
     [HttpGet("runs/{id:int}/statutory-report")]
+    [HasPermission("PAYROLL_VIEW")]
     public async Task<IActionResult> GetStatutoryReport(int id)
         => Ok(await _payroll.GetStatutoryReportAsync(id));
 
@@ -421,24 +453,10 @@ public class PayrollController : ControllerBase
     /// employee's own view, because preparing a month means looking at the month being prepared.
     /// </summary>
     [HttpGet("employees/{id:int}/payslips")]
+    [HasPermission("PAYROLL_VIEW")]
     public async Task<IActionResult> GetEmployeePayslips(int id)
         => Ok(await _payroll.GetPayslipsForEmployeeAsync(id));
 
-    /// <summary>
-    /// "Was this request ever paid?" — one (sourceType, sourceId) pair, answered from the payslip
-    /// lines. 200 with the payslip and its period, or 404 when nothing has paid it yet.
-    ///
-    /// 404 IS THE POINT, not a failure: the request pages render their "Paid in …" badge only on a
-    /// hit, so the absent case has to be cheap and unambiguous rather than an empty object the
-    /// caller must then inspect.
-    /// </summary>
-    [HttpGet("lines/lookup")]
-    public async Task<IActionResult> LookupLine([FromQuery] string? sourceType, [FromQuery] int? sourceId)
-    {
-        if (string.IsNullOrWhiteSpace(sourceType) || sourceId is not int id)
-            return BadRequest(new { error = "sourceType and sourceId are both required." });
-
-        var hit = await _payroll.LookupLineAsync(sourceType.Trim(), id);
-        return hit is null ? NotFound() : Ok(hit);
-    }
+    // "Was this request ever paid?" (GET /api/payroll/lines/lookup) lives on PayslipsController: the
+    // person who raised the request may ask it about their own payslip (QA3 WEB-15).
 }
