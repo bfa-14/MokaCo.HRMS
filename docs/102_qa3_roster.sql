@@ -53,6 +53,7 @@
    Also: the one-open-request check of usp_RosterApproval_Create runs inside the transaction under an application
        lock; usp_ShiftAssignment_CopyPeriod's most-frequent-shift tie-break is deterministic (working first, then the
        earliest start, then the lowest id).
+   LEV-2 follow-up: attendance.usp_AutoRoster_GetContext (96) reads an approved leave up to its ApprovedToDate.
 
    DATA REPAIRS (guarded, idempotent, never a paid day):
      R1 the unpaid days outside the employment (after the termination date, before the hire date) are derived again
@@ -1552,6 +1553,224 @@ BEGIN
            OR EXISTS (SELECT 1 FROM hr.BRANCH mb WHERE mb.ManagerEmployeeId = @CallerEmp AND mb.BranchId = x.BranchId))
     GROUP BY x.EmployeeId, x.WorkDate
     ORDER BY x.WorkDate, x.EmployeeId;
+    RETURN 0;
+END;
+GO
+
+/* ---------------------------------------------------------------- 11b. the auto-roster reads the approved span */
+/* attendance.usp_AutoRoster_GetContext - unchanged from 96 (its only definition) except result set 9: an APPROVED leave
+   covers FromDate..ApprovedToDate (99's partial approval), as everywhere else in 99-102 - the planner no longer keeps a
+   day past the approved span off the rest days. The comments' em dashes are plain hyphens here (pure ASCII). */
+CREATE OR ALTER PROCEDURE attendance.usp_AutoRoster_GetContext
+    @BranchId      INT,
+    @MonthDate     DATE,                -- any day of the month; normalised to the 1st
+    @LookbackWeeks INT = NULL,          -- NULL = the setting RosterFairnessLookbackWeeks
+    @CallerUserId  INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @MonthDate IS NULL
+    BEGIN RAISERROR('Give a real month.', 16, 1); RETURN 1; END
+    SET @MonthDate = DATEFROMPARTS(YEAR(@MonthDate), MONTH(@MonthDate), 1);
+
+    IF NOT EXISTS (SELECT 1 FROM hr.BRANCH WHERE BranchId = @BranchId)
+    BEGIN RAISERROR('Branch not found.', 16, 1); RETURN 1; END
+    DECLARE @SeesAll BIT, @CallerEmp INT;
+    SELECT @SeesAll = SeesAll, @CallerEmp = CallerEmployeeId FROM hr.fn_CallerScope(@CallerUserId);
+    IF @SeesAll = 0 AND NOT EXISTS (SELECT 1 FROM hr.BRANCH WHERE BranchId = @BranchId AND ManagerEmployeeId = @CallerEmp)
+    BEGIN RAISERROR('You can only plan rosters for the branches you manage.', 16, 1); RETURN 1; END
+
+    IF @LookbackWeeks IS NULL
+        SET @LookbackWeeks = TRY_CAST((SELECT SettingValue FROM core.SETTING WHERE SettingKey = 'RosterFairnessLookbackWeeks') AS INT);
+    SET @LookbackWeeks = ISNULL(@LookbackWeeks, 26);
+    IF @LookbackWeeks < 0  SET @LookbackWeeks = 0;
+    IF @LookbackWeeks > 52 SET @LookbackWeeks = 52;      -- a year of history is plenty, and keeps the reads small
+
+    DECLARE @Today       DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Middle East Standard Time' AS DATE);
+    DECLARE @MonthTo     DATE = EOMONTH(@MonthDate);
+    DECLARE @WindowFrom  DATE = DATEADD(DAY, -(DATEDIFF(DAY, '19000101', @MonthDate) % 7), @MonthDate);     -- 1 Jan 1900 was a Monday
+    DECLARE @WindowTo    DATE = DATEADD(DAY, 6 - (DATEDIFF(DAY, '19000101', @MonthTo) % 7), @MonthTo);
+    DECLARE @HistoryFrom DATE = DATEADD(DAY, -7 * @LookbackWeeks, @WindowFrom);
+    /* the days after the window a run can join (the cap, clamped 1..31 like the API): rows and leave are read
+       that far, so the cap and the 6/5 hold across the join with the next month */
+    DECLARE @Cap INT = ISNULL(TRY_CAST((SELECT SettingValue FROM core.SETTING WHERE SettingKey = 'RosterMaxConsecutiveWorkDays') AS INT), 7);
+    IF @Cap < 1  SET @Cap = 1;
+    IF @Cap > 31 SET @Cap = 31;
+    DECLARE @HorizonTo   DATE = DATEADD(DAY, @Cap, @WindowTo);
+    /* holiday cover goes to whoever worked the fewest holidays in the last 12 months; the history needs the
+       holidays too (a holiday off is not a weekend rested), so the list starts at the earlier of the two */
+    DECLARE @YearBefore  DATE = DATEADD(MONTH, -12, @WindowFrom);
+    DECLARE @HolidayFrom DATE = CASE WHEN @HistoryFrom < @YearBefore THEN @HistoryFrom ELSE @YearBefore END;
+
+    DECLARE @MonthStatus VARCHAR(30), @OpenRid INT;
+    SELECT TOP 1 @MonthStatus = rm.[Status]
+    FROM attendance.ROSTER_MONTH rm
+    WHERE rm.BranchId = @BranchId AND rm.MonthDate = @MonthDate
+    ORDER BY rm.RosterMonthId DESC;
+    SELECT TOP 1 @OpenRid = ri.RequestInstanceId
+    FROM workflow.ROSTER_APPROVAL ra
+    JOIN workflow.REQUEST_INSTANCE ri ON ri.RequestInstanceId = ra.RequestInstanceId
+    WHERE ra.BranchId = @BranchId AND ra.MonthDate = @MonthDate
+      AND ri.[Status] IN ('Draft', 'Pending', 'OnHold')
+    ORDER BY ri.RequestInstanceId DESC;
+
+    /* every day from the history start to the window end: whole weeks, Monday first */
+    CREATE TABLE #cal (d DATE NOT NULL PRIMARY KEY);
+    ;WITH weeks AS (
+        SELECT @HistoryFrom AS w
+        UNION ALL
+        SELECT DATEADD(DAY, 7, w) FROM weeks WHERE DATEADD(DAY, 7, w) <= @WindowTo
+    )
+    INSERT INTO #cal (d)
+    SELECT DATEADD(DAY, o.n, wk.w)
+    FROM weeks wk
+    CROSS JOIN (VALUES (0), (1), (2), (3), (4), (5), (6)) o (n)
+    OPTION (MAXRECURSION 400);
+
+    /* fn_EmployeeBranchOn only ever answers a branch from the employee's history or the employee record, so
+       nobody else can belong to this branch on any day: this keeps the per-day calls below to the few who can */
+    CREATE TABLE #cand (EmployeeId INT NOT NULL PRIMARY KEY, HireDate DATE NOT NULL, TerminationDate DATE NULL);
+    INSERT INTO #cand (EmployeeId, HireDate, TerminationDate)
+    SELECT e.EmployeeId, e.HireDate, e.TerminationDate
+    FROM hr.EMPLOYEE e
+    WHERE e.IsDeleted = 0
+      AND e.HireDate <= @WindowTo
+      AND (e.TerminationDate IS NULL OR e.TerminationDate >= @WindowFrom)
+      AND (e.BranchId = @BranchId
+           OR EXISTS (SELECT 1 FROM hr.EMPLOYEE_BRANCH_HISTORY h WHERE h.EmployeeId = e.EmployeeId AND h.BranchId = @BranchId));
+
+    /* employed days and the branch of each; the staff are those in this branch on at least one window day */
+    CREATE TABLE #sd (EmployeeId INT NOT NULL, WorkDate DATE NOT NULL, BranchId INT NULL, PRIMARY KEY (EmployeeId, WorkDate));
+    INSERT INTO #sd (EmployeeId, WorkDate, BranchId)
+    SELECT c.EmployeeId, k.d, hr.fn_EmployeeBranchOn(c.EmployeeId, k.d)
+    FROM #cand c
+    JOIN #cal k ON k.d >= c.HireDate AND (c.TerminationDate IS NULL OR k.d <= c.TerminationDate);
+
+    CREATE TABLE #staff (EmployeeId INT NOT NULL PRIMARY KEY);
+    INSERT INTO #staff (EmployeeId)
+    SELECT DISTINCT sd.EmployeeId
+    FROM #sd sd
+    WHERE sd.WorkDate BETWEEN @WindowFrom AND @WindowTo AND sd.BranchId = @BranchId;
+
+    DELETE sd FROM #sd sd WHERE NOT EXISTS (SELECT 1 FROM #staff s WHERE s.EmployeeId = sd.EmployeeId);
+
+    /* 1. Header */
+    SELECT b.BranchId, b.Name AS BranchName, @MonthDate AS MonthDate, @WindowFrom AS WindowFrom, @WindowTo AS WindowTo,
+           @HistoryFrom AS HistoryFrom, @Today AS Today, @MonthStatus AS MonthStatus, @OpenRid AS OpenRequestId
+    FROM hr.BRANCH b
+    WHERE b.BranchId = @BranchId;
+
+    /* 2. Settings */
+    SELECT st.SettingKey, st.SettingValue
+    FROM core.SETTING st
+    WHERE st.SettingKey LIKE 'Roster%'
+    ORDER BY st.SettingKey;
+
+    /* 3. Staff - off-rotation people included: they are shown, never planned */
+    SELECT e.EmployeeId, e.FullName, e.PositionId, p.Title AS Position, e.HireDate, e.TerminationDate
+    FROM #staff s
+    JOIN hr.EMPLOYEE e ON e.EmployeeId = s.EmployeeId
+    LEFT JOIN hr.[POSITION] p ON p.PositionId = e.PositionId
+    ORDER BY e.FullName, e.EmployeeId;
+
+    /* 4. StaffDays - every employed day of the staff, history and window, with the branch of that day */
+    SELECT sd.EmployeeId, sd.WorkDate, sd.BranchId
+    FROM #sd sd
+    ORDER BY sd.EmployeeId, sd.WorkDate;
+
+    /* 5. Rows - in EVERY branch: a week is counted whole even when part of it was worked elsewhere, and the
+          branch was authorised above. History, window and the days after it up to the horizon. */
+    SELECT sa.EmployeeId, sa.WorkDate, sa.ShiftId, sa.IsRestDay
+    FROM attendance.SHIFT_ASSIGNMENT sa
+    JOIN #staff s ON s.EmployeeId = sa.EmployeeId
+    WHERE sa.WorkDate BETWEEN @HistoryFrom AND @HorizonTo
+    ORDER BY sa.EmployeeId, sa.WorkDate;
+
+    /* 6. Locks - target-month days the planner never changes, in any month state: paid, already judged by
+          attendance, or before today in Beirut (the guard alone locks the past only in an approved month) */
+    SELECT x.EmployeeId, x.WorkDate, x.Reason
+    FROM (
+        SELECT sd.EmployeeId, sd.WorkDate,
+               CASE WHEN payroll.fn_IsPeriodPaid(sd.EmployeeId, sd.WorkDate) = 1 THEN 'Paid'
+                    WHEN EXISTS (SELECT 1 FROM attendance.ATTENDANCE_RECORD ar
+                                 WHERE ar.EmployeeId = sd.EmployeeId AND ar.WorkDate = sd.WorkDate) THEN 'Recorded'
+                    WHEN sd.WorkDate < @Today THEN 'Past' END AS Reason
+        FROM #sd sd
+        WHERE sd.WorkDate BETWEEN @MonthDate AND @MonthTo) x
+    WHERE x.Reason IS NOT NULL
+    ORDER BY x.EmployeeId, x.WorkDate;
+
+    /* 7. Holidays - of every branch, or of this one */
+    SELECT h.HolidayDate, h.BranchId, h.IsPaid, h.Name
+    FROM core.HOLIDAY h
+    WHERE h.HolidayDate BETWEEN @HolidayFrom AND @WindowTo
+      AND (h.BranchId IS NULL OR h.BranchId = @BranchId)
+    ORDER BY h.HolidayDate, h.BranchId;
+
+    /* 8. HolidaysWorked - working rows on those holidays in the 12 months before the window. Set-based on
+          purpose: a calendar over a year plus the window would pass MAXRECURSION 400. A date that is both an
+          all-branch and a branch holiday counts once. */
+    SELECT sa.EmployeeId, COUNT(*) AS Days
+    FROM attendance.SHIFT_ASSIGNMENT sa
+    JOIN #staff s ON s.EmployeeId = sa.EmployeeId
+    WHERE sa.WorkDate >= @YearBefore AND sa.WorkDate < @WindowFrom
+      AND sa.IsRestDay = 0 AND sa.ShiftId IS NOT NULL
+      AND EXISTS (SELECT 1 FROM core.HOLIDAY h
+                  WHERE h.HolidayDate = sa.WorkDate AND (h.BranchId IS NULL OR h.BranchId = @BranchId))
+    GROUP BY sa.EmployeeId
+    ORDER BY sa.EmployeeId;
+
+    /* 9. Leaves - approved, pending and on hold: a leave still waiting is never planned as a rest day either.
+       102 (QA3, after 99's partial approval): an APPROVED leave covers FromDate..ApprovedToDate only - the days past
+       it are ordinary days again; a leave still waiting keeps its requested range */
+    SELECT lr.EmployeeId, lr.FromDate, x.ToDate, lr.HalfDay, ri.[Status] AS [Status], lt.IsPaid
+    FROM workflow.LEAVE_REQUEST lr
+    JOIN #staff s ON s.EmployeeId = lr.EmployeeId
+    JOIN workflow.REQUEST_INSTANCE ri ON ri.RequestInstanceId = lr.RequestInstanceId
+    JOIN hr.LEAVE_TYPE lt ON lt.LeaveTypeId = lr.LeaveTypeId
+    CROSS APPLY (SELECT CASE WHEN ri.[Status] = 'Approved' THEN ISNULL(lr.ApprovedToDate, lr.ToDate) ELSE lr.ToDate END AS ToDate) x
+    WHERE ri.[Status] IN ('Approved', 'Pending', 'OnHold')
+      AND lr.FromDate <= @HorizonTo AND x.ToDate >= @HistoryFrom AND x.ToDate >= lr.FromDate
+    ORDER BY lr.EmployeeId, lr.FromDate;
+
+    /* 10. Shifts - all of them: history rows can name a shift that is no longer active */
+    SELECT sh.ShiftId, sh.Name, sh.StartTime, sh.EndTime, sh.CrossesMidnight, sh.BreakMinutes, sh.IsActive
+    FROM attendance.SHIFT sh
+    ORDER BY sh.ShiftId;
+
+    /* 11. Patterns */
+    SELECT p.EmployeeId, p.DayOfWeek, p.ShiftId, p.IsRestDay
+    FROM attendance.EMPLOYEE_SHIFT_PATTERN p
+    JOIN #staff s ON s.EmployeeId = p.EmployeeId
+    WHERE p.IsActive = 1
+    ORDER BY p.EmployeeId, p.DayOfWeek;
+
+    /* 12. Rhythm - AnchorWeekStart / AnchorWorkDays NULL: only the on-rotation flag is stored, no rhythm yet */
+    SELECT r.EmployeeId, r.AnchorWeekStart, r.AnchorWorkDays, r.OnRotation
+    FROM attendance.ROSTER_RHYTHM r
+    JOIN #staff s ON s.EmployeeId = r.EmployeeId
+    ORDER BY r.EmployeeId;
+
+    /* 13. Cells - as stored; whether a day is still AUTO is decided against Rows */
+    SELECT c.EmployeeId, c.WorkDate, c.AutoState, c.AutoShiftId, c.ReasonCode, c.IsPinned
+    FROM attendance.ROSTER_CELL c
+    JOIN #staff s ON s.EmployeeId = c.EmployeeId
+    WHERE c.WorkDate BETWEEN @WindowFrom AND @WindowTo
+    ORDER BY c.EmployeeId, c.WorkDate;
+
+    /* 14. Staffing */
+    SELECT sr.DayOfWeek, sr.ShiftId, sr.MinOnDuty, sr.TargetOnDuty
+    FROM attendance.STAFFING_REQUIREMENT sr
+    WHERE sr.BranchId = @BranchId AND sr.IsActive = 1
+    ORDER BY ISNULL(sr.DayOfWeek, 0), ISNULL(sr.ShiftId, 0);
+
+    /* 15. LastRun - the branch's latest save, whatever the month: the drawer opens on those parameters */
+    SELECT TOP 1 ar.RunId, ar.MonthDate, ar.Mode, ar.ParamsJson, ar.CreatedAt
+    FROM attendance.ROSTER_AUTO_RUN ar
+    WHERE ar.BranchId = @BranchId
+    ORDER BY ar.RunId DESC;
+
     RETURN 0;
 END;
 GO
