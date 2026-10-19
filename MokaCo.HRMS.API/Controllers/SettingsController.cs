@@ -84,6 +84,8 @@ public class SettingsController : ControllerBase
             return BadRequest(new { error = "That is not a setting key." });
         if (GateSettingKeys.IsGateKey(key))
             return BadRequest(new { error = "Change this on Settings → Google sign-in." });
+        if (SettingValueRules.Problem(key, request.SettingValue) is { } problem)
+            return BadRequest(new { error = problem });
 
         await _settings.UpsertAsync(key, request, CurrentUserId);
         // Settings are read by every module — the standard working day, the expense threshold, the

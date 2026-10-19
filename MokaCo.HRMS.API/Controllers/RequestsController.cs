@@ -235,6 +235,28 @@ public class RequestsController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Who the waiting step can be handed to — the picker behind "Hand to someone else" (QA3 WEB-7). An empty
+    /// array is the normal answer for anybody who cannot act on the step, exactly like the decisions list.
+    /// </summary>
+    [HttpGet("{id:int}/delegate-candidates")]
+    public async Task<IActionResult> DelegateCandidates(int id)
+    {
+        var caller = new RequestCaller(
+            User.UserId(),
+            await ResolveEmployeeIdAsync(),
+            User.HasPermission("REQUEST_VIEW_ALL"));
+
+        try
+        {
+            return Ok(await _requests.GetDelegateCandidatesAsync(id, caller));
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
     /// <summary>Hands the current step to a named person. They decide instead; the request does not advance.</summary>
     [HttpPost("{id:int}/delegate")]
     public async Task<IActionResult> Delegate(int id, [FromBody] DelegateRequest request)
@@ -286,7 +308,7 @@ public class RequestsController : ControllerBase
     {
         try
         {
-            var result = await _requests.ApproveAsync(id, User.UserId(), request?.Comment, request?.ChangeSummary, request?.Password);
+            var result = await _requests.ApproveAsync(id, User.UserId(), request?.Comment, request?.ChangeSummary, request?.Password, request?.StepNo);
             if (result is null) return NotFound();
 
             await NotifyWorkflowAsync();
@@ -540,10 +562,11 @@ public class RequestsController : ControllerBase
     }
 
     /// <summary>
-    /// Reopens a rejected or cancelled request, returning it to the step that closed it. HR only — it
-    /// puts a closed request back in flight, so it needs WORKFLOW_VERSION_MOVE and a mandatory reason.
-    /// The database refuses an approved request (its effect is already applied) and surfaces that
-    /// verbatim.
+    /// Reopens a CANCELLED request, returning it to the step that was waiting. HR only — it puts a
+    /// closed request back in flight, so it needs WORKFLOW_VERSION_MOVE and a mandatory reason.
+    /// Since QA3 WF-14 the database refuses an approved or rejected request — a standing decision is
+    /// taken back by its signer the same day, or by the General Manager and the Owner together — and
+    /// surfaces that verbatim.
     /// </summary>
     [HttpPost("{id:int}/reopen")]
     [HasPermission("WORKFLOW_VERSION_MOVE")]
@@ -566,7 +589,9 @@ public class RequestsController : ControllerBase
 
     /// <summary>
     /// Moves one live request onto the active chain version. HR only — this rewrites who must sign a
-    /// request already in flight, so it needs WORKFLOW_VERSION_MOVE and a mandatory reason.
+    /// request already in flight, so it needs WORKFLOW_VERSION_MOVE and a mandatory reason. A move
+    /// that would approve the request at once is a 409 until it is sent again with ConfirmClose
+    /// (QA3 WF-10).
     /// </summary>
     [HttpPost("{id:int}/move-version")]
     [HasPermission("WORKFLOW_VERSION_MOVE")]
