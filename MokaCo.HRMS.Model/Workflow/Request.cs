@@ -545,6 +545,13 @@ public class ApproveRequest
     /// the signature happened, never what it was.
     /// </summary>
     public string? Password { get; set; }
+
+    /// <summary>
+    /// The step the approver was looking at when they decided (QA3 WF-2). Optional; when sent and the
+    /// request has moved on since — somebody else decided first — the database refuses with "This step
+    /// was decided a moment ago — reload." rather than signing the step that came next.
+    /// </summary>
+    public int? StepNo { get; set; }
 }
 
 /// <summary>
@@ -747,8 +754,9 @@ public class ReasonRequest
     public string? Code { get; set; }
 
     /// <summary>
-    /// The caller's password, where the act must be signed — a rejection under a signature policy, or
-    /// a withdrawal (undoing a signed act is itself a signed act). Verified here, never stored.
+    /// The caller's password, where the act must be signed — a rejection under a signature policy, a
+    /// withdrawal or a retract (undoing a signed act is itself a signed act), and each half of a
+    /// GM + Owner reopen, always. Verified here, never stored.
     /// </summary>
     public string? Password { get; set; }
 }
@@ -759,6 +767,13 @@ public class MoveVersionRequest
     /// <summary>The version to move to. NULL means "the current active version", which is the normal case.</summary>
     public int? TargetWorkflowDefinitionId { get; set; }
     public string Reason { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The caller's confirmation that the move may APPROVE the request (QA3 WF-10): when the new version
+    /// leaves no step after the ones already signed, the move closes the request, so the database refuses
+    /// it unless this is true — and then applies what the approval does.
+    /// </summary>
+    public bool ConfirmClose { get; set; }
 }
 
 /// <summary>Result of a version move — where it moved from and to, recorded on the request forever.</summary>

@@ -108,6 +108,19 @@ public class DelegateRequest
     public string? Code { get; set; }
 }
 
+/// <summary>
+/// Somebody the waiting step can be handed to (usp_Request_GetDelegateCandidates, QA3 WEB-7): an active account
+/// other than the caller and the person the request is about — the rules usp_Request_Delegate applies.
+/// </summary>
+public class DelegateCandidate
+{
+    public int UserId { get; set; }
+    public string Username { get; set; } = string.Empty;
+
+    /// <summary>The employee behind the account, when there is one — what the picker shows first.</summary>
+    public string? FullName { get; set; }
+}
+
 /// <summary>Saves a decision without signing it. Nothing here is validated — that is the point of a draft.</summary>
 public class SaveDraftRequest
 {
