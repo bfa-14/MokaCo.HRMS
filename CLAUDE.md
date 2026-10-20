@@ -6,6 +6,6 @@ Before any work, read docs/MOKACO_HANDOFF.md (business, features, rules, server 
 - Push to GitHub (origin). GitLab push is disabled.  
 - Branches (both repos): `main` = production, `dev` = all work and testing. Push work to `dev` unless told
   otherwise; it is tested with deploy/sync-test.sh (laptop) + deploy/test-env/deploy-test.sh (VM). "to production"
-  -> merge `dev` into `main` and push; deployed with deploy/sync-prod.sh + deploy-api.sh / deploy-web.sh.
+  -> merge `dev` into `main` and push; deployed with deploy/sync-prod.sh, then on the VM deploy/update-prod.sh (backup, missing scripts, API; --web adds the website).
   An urgent fix made on `main` is merged back into `dev`.
 - Test environment (test API, MokaCo_HRMS_Test, the login switch): deploy/test-env/README.md.

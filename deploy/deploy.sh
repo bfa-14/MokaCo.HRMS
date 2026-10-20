@@ -3,7 +3,8 @@
 # VS Code runs it as the task "Deploy (dev → test, main → production)" (Ctrl+Shift+B).
 #
 #   on dev   -> TEST:        sync-test.sh, then deploy-test.sh on the VM (test API + test front end)
-#   on main  -> PRODUCTION:  asks you to type "yes", then sync-prod.sh, deploy-api.sh, deploy-web.sh
+#   on main  -> PRODUCTION:  asks you to type "yes", then sync-prod.sh and update-prod.sh on the VM
+#                            (backup, the scripts the database lacks, the API; with all, the front end too)
 #   anything else -> refuses
 #
 #   bash deploy/deploy.sh         # API and front end
@@ -61,8 +62,8 @@ read -rp "Deploy main to PRODUCTION, where people are working? Type yes: " answe
 [ "$answer" = "yes" ] || die "cancelled. Nothing was sent."
 bash "$HERE/sync-prod.sh"
 case "$what" in
-  api) remote='bash ~/src/MokaCo.HRMS/deploy/deploy-api.sh' ;;
+  api) remote='bash ~/src/MokaCo.HRMS/deploy/update-prod.sh' ;;
   web) remote='bash ~/src/MokaCo.HRMS/deploy/deploy-web.sh' ;;
-  all) remote='bash ~/src/MokaCo.HRMS/deploy/deploy-api.sh && bash ~/src/MokaCo.HRMS/deploy/deploy-web.sh' ;;
+  all) remote='bash ~/src/MokaCo.HRMS/deploy/update-prod.sh --web' ;;
 esac
 ssh -t "$VM" "$remote"

@@ -31,4 +31,5 @@ for repo in MokaCo.HRMS mokaco-web-mantine; do
 done
 
 echo
-echo "Now on the VM:  bash ~/deploy-api.sh   and/or   bash ~/deploy-web.sh"
+echo "Now on the VM:  bash ~/src/MokaCo.HRMS/deploy/update-prod.sh --web"
+echo "   (backup, the scripts the database lacks, the API, the website; --check only reports)"
