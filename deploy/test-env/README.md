@@ -179,7 +179,7 @@ Two branches in both repos: **`main` is what production runs**; **`dev` is where
 | Step | Code | Then you run |
 |---|---|---|
 | Work and test | pushed to `dev` | laptop: `bash deploy/sync-test.sh` · VM: `bash ~/test-env/deploy-test.sh` |
-| Ready for production | `dev` merged into `main` | laptop: `bash deploy/sync-prod.sh` · VM: `bash ~/deploy-api.sh` and/or `bash ~/deploy-web.sh` |
+| Ready for production | `dev` merged into `main` | laptop: `bash deploy/sync-prod.sh` · VM: `bash ~/src/MokaCo.HRMS/deploy/update-prod.sh --web` (backup, missing scripts, API, website) |
 
 - `sync-test.sh` sends what is **pushed** on `dev` to `~/src-test` on the VM; `deploy-test.sh` builds only
   from there, into the test folders, and restarts only `mokaco-api-test`.
