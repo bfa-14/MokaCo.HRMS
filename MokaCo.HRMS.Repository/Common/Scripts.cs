@@ -2,7 +2,9 @@ namespace MokaCo.HRMS.Repository.Common;
 
 /// <summary>
 /// A numbered script and an object that only it creates, late in the script. Scripts are applied with
-/// sqlcmd -b (it stops at the first error), so the object is there once the script has run.
+/// sqlcmd -b (it stops at the first error), so the object is there once the script has run. Only it, in
+/// production too: never an object the script merely redefines (production carries procedures the repo
+/// never had; see Scripts.Required, 99).
 /// </summary>
 public sealed record ScriptMarker(string Script, string Object);
 
@@ -25,7 +27,9 @@ public static class Scripts
     public static readonly IReadOnlyList<ScriptMarker> Required =
     [
         new("docs/98_qa3_security.sql", "hr.usp_Scope_CallerSees"),
-        new("docs/99_qa3_leave.sql", "hr.usp_LeaveYear_Undo"),
+        // Not hr.usp_LeaveYear_Undo: production had its own before QA3 (the 7 Oct handover names it), so 99
+        // read as applied there when it had never run. hr.usp_LeaveLedger_Reprice is new in 99.
+        new("docs/99_qa3_leave.sql", "hr.usp_LeaveLedger_Reprice"),
         new("docs/100_qa3_attendance.sql", "attendance.usp_DevicePunchQuarantine_Dismiss"),
         new("docs/101_qa3_workflow.sql", "workflow.usp_Request_GetDelegateCandidates"),
         new("docs/102_qa3_roster.sql", "attendance.usp_Roster_GetLeaveDays"),

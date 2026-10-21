@@ -377,6 +377,8 @@ If a suite is interrupted, run its `cleanup.sql` before anything else — it als
 14. `INSERT … EXEC` cannot be nested: a procedure that captures another's result set cannot itself be captured. Pass answers back through `OUTPUT` parameters (`usp_TierChains_Probe`).
 15. SQL Server stores `CREATE OR ALTER PROCEDURE` as `CREATE   PROCEDURE` (three spaces) in `sys.sql_modules`; a text search for `CREATE PROCEDURE` misses it (see D2).
 16. A function used by a default constraint cannot be altered (`hr.fn_ApprovalTier_Lowest`): drop the constraint first.
+17. A "script applied" marker must be something the script introduces, never an object it only redefines: production has procedures the repo never created. `hr.usp_LeaveYear_Undo` (production's own, named in the 7 Oct handover) marked 99 as applied, so production skipped 99 and stopped at 100 (19-21 Oct). 99 is now checked by `ApprovedToDate`, `hr.usp_LeaveLedger_Reprice` and its report version; `SchemaCheckTests` refuses a marker production had before QA3.
+18. Production is SQL Server **Express**: no `BACKUP ... WITH COMPRESSION` (Msg 1844), no SQL Agent. Test a deploy step against Express, not the Developer edition.
 
 ---
 
