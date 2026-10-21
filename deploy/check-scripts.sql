@@ -9,6 +9,8 @@
    Each script is recognised by something only it creates, or, for a script that only rewrites existing
    procedures, by words its version puts in them and later scripts keep. The last lines list what is
    missing, in apply order. Admin tools (91, 92, 94, 95) are reported but never needed by the API.
+   A marker must be something the script INTRODUCES: production carries objects the repo never defined. 99 was first
+   checked by hr.usp_LeaveYear_Undo, which production already had, so 99 read as applied there when it never ran (21 Oct).
    Written after the QA3 roll-out on test, which found the test copy without 74, 79, 80, 88-90, 93, 96, 97.
    ============================================================================ */
 SET NOCOUNT ON;
@@ -43,7 +45,9 @@ INSERT INTO @S (No, Script, Applied, CheckedBy) VALUES
  (96, N'96_auto_roster.sql',                      IIF(OBJECT_ID('attendance.usp_AutoRoster_Commit') IS NOT NULL AND OBJECT_ID('attendance.usp_RosterRhythm_Save') IS NOT NULL, 1, 0), N'attendance.usp_AutoRoster_Commit'),
  (97, N'97_google_signin_gate.sql',               IIF(OBJECT_ID('security.usp_Gate_SignOutEveryone') IS NOT NULL, 1, 0), N'security.usp_Gate_SignOutEveryone'),
  (98, N'98_qa3_security.sql',                     IIF(OBJECT_ID('hr.usp_Scope_CallerSees') IS NOT NULL, 1, 0), N'hr.usp_Scope_CallerSees'),
- (99, N'99_qa3_leave.sql',                        IIF(OBJECT_ID('hr.usp_LeaveYear_Undo') IS NOT NULL, 1, 0), N'hr.usp_LeaveYear_Undo'),
+ (99, N'99_qa3_leave.sql',                        IIF(COL_LENGTH('workflow.LEAVE_REQUEST', 'ApprovedToDate') IS NOT NULL AND OBJECT_ID('hr.usp_LeaveLedger_Reprice') IS NOT NULL
+                                                     AND CHARINDEX(N'the stale copy still read it', ISNULL(OBJECT_DEFINITION(OBJECT_ID('report.usp_Report_LeaveBalance')), N'')) > 0, 1, 0),
+                                                 N'LEAVE_REQUEST.ApprovedToDate, hr.usp_LeaveLedger_Reprice, and its usp_Report_LeaveBalance'),
  (100, N'100_qa3_attendance.sql',                 IIF(OBJECT_ID('attendance.usp_DevicePunchQuarantine_Dismiss') IS NOT NULL, 1, 0), N'attendance.usp_DevicePunchQuarantine_Dismiss'),
  (101, N'101_qa3_workflow.sql',                   IIF(OBJECT_ID('workflow.usp_Request_GetDelegateCandidates') IS NOT NULL, 1, 0), N'workflow.usp_Request_GetDelegateCandidates'),
  (102, N'102_qa3_roster.sql',                     IIF(OBJECT_ID('attendance.usp_Roster_GetLeaveDays') IS NOT NULL, 1, 0), N'attendance.usp_Roster_GetLeaveDays'),

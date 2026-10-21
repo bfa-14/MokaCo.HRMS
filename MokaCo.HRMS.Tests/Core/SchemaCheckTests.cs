@@ -182,6 +182,29 @@ public class SchemaCheckTests
         Assert.Equal(numbers.Count, numbers.Distinct().Count());
     }
 
+    /// <summary>
+    /// Procedures production had before QA3 that no repo script created: those the handover of 7 Oct names.
+    /// "Alone creates its marker" cannot see them, and a marker among them reads as applied on production
+    /// whatever ran: 99 was checked by hr.usp_LeaveYear_Undo, so production skipped 99 (19-21 Oct).
+    /// </summary>
+    private static readonly string[] ProductionHadBeforeQa3 =
+    [
+        "usp_AssertPeriodOpen", "usp_Attendance_ComputeDay", "usp_Attendance_GetWorkedWithoutRoster",
+        "usp_Attendance_MarkAbsentees", "usp_Attendance_MarkLeaveDays", "usp_Attendance_PayrollReadiness",
+        "usp_Attendance_ProcessRawLogs", "usp_Attendance_ReprocessDay", "usp_Availability_GetDay",
+        "usp_Booking_ConfirmPaid", "usp_Booking_Create", "usp_Booking_SetGateway", "usp_Email_GetPending",
+        "usp_EmployeeBranch_ApplyDue", "usp_LeaveYear_Open", "usp_LeaveYear_Undo", "usp_PayrollRun_Generate",
+        "usp_Payslip_GetMyStatus", "usp_Payslip_SetPayment", "usp_Request_ApplyApprovalEffects", "usp_Request_Submit",
+    ];
+
+    [Fact]
+    public void No_marker_is_a_procedure_production_had_before_its_script()
+    {
+        foreach (var marker in Scripts.Required)
+            Assert.False(ProductionHadBeforeQa3.Contains(marker.Object.Split('.')[1]),
+                $"{marker.Object} existed in production before {marker.Script}: it would read as applied there.");
+    }
+
     [Fact]
     public void Every_QA3_script_in_docs_is_on_the_list()
     {
