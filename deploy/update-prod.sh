@@ -9,14 +9,15 @@
 #
 # In this order, stopping at the first failure:
 #   1. the SQL password, asked once (hidden, never stored). Refused: it stops; ask Reda, do not retry.
-#   2. a backup of MokaCo_HRMS in /var/opt/mssql/backup (MokaCo_HRMS_before_update_<time>.bak).
+#   2. a backup of MokaCo_HRMS in /var/opt/mssql/backup (MokaCo_HRMS_before_update_<time>.bak), verified.
 #   3. the numbered docs/ scripts the database lacks (deploy/check-scripts.sql), applied in number
 #      order with sqlcmd -I -b: the same scripts, in the same order, as the test database got. A script
 #      that fails stops everything there; the API is then not deployed.
 #   4. deploy-api.sh (build, install, restart); /health must then say "schema":"ok".
 #   5. HSTS on the HTTPS site, and the Google gate's nginx part again if it is on (both change nothing
 #      when already current). A failure here is reported; the update itself is done by then.
-#   6. what tonight's leavers' sweep (01:00) will do, run in a transaction that is rolled back.
+#   6. the nightly backup (install-db-backup.sh), when it is missing or the version Express refuses.
+#   7. what tonight's leavers' sweep (01:00) will do, run in a transaction that is rolled back.
 # Everything it prints also goes to ~/prod-update-<time>.log; the scripts' OWNER CHECK lines are
 # repeated at the end.
 #
@@ -100,13 +101,14 @@ main() {
 
   # ---- 2. backup ------------------------------------------------------------------------------------
   log "backing up $DB"
-  if ! sudo test -d "$BACKUP_DIR"; then
-    sudo mkdir -p "$BACKUP_DIR"
-    sudo chown mssql:mssql "$BACKUP_DIR"
-  fi
+  sudo test -d "$BACKUP_DIR" || sudo mkdir -p "$BACKUP_DIR"
+  [[ "$(sudo stat -c %U "$BACKUP_DIR")" == mssql ]] || sudo chown mssql:mssql "$BACKUP_DIR"   # SQL Server writes it
   local bak="$BACKUP_DIR/${DB}_before_update_$STAMP.bak"
-  sql -Q "BACKUP DATABASE [$DB] TO DISK = N'$bak' WITH INIT, COMPRESSION, CHECKSUM, STATS = 25;" \
+  # No COMPRESSION: production runs SQL Server Express, which refuses it (Msg 1844).
+  sql -Q "BACKUP DATABASE [$DB] TO DISK = N'$bak' WITH INIT, CHECKSUM, STATS = 25;" \
     || die "the backup failed (above). Nothing was changed."
+  sql -Q "RESTORE VERIFYONLY FROM DISK = N'$bak' WITH CHECKSUM;" \
+    || die "the backup does not verify (above). Nothing was changed."
   echo "    $bak"
 
   # ---- 3. the scripts -------------------------------------------------------------------------------
@@ -162,7 +164,21 @@ main() {
     sudo bash "$SRC/deploy/enable-google-gate.sh" "$gate_mode" || warn "enable-google-gate.sh $gate_mode failed (above); it puts everything back on failure. Send Claude the log."
   fi
 
-  # ---- 6. tonight's leavers' sweep ------------------------------------------------------------------
+  # ---- 6. the nightly backup -------------------------------------------------------------------------
+  # install-db-backup.sh's first program asked for COMPRESSION, which Express refuses: on production it
+  # could never have made a backup. Missing or that old version: (re)install it; it makes one at once.
+  if sudo grep -qs '^# mokaco-db-backup v2' /usr/local/sbin/mokaco-db-backup; then
+    log "the nightly backup: installed; its last run:"
+    sudo journalctl -u mokaco-db-backup -n 4 --no-pager -o cat 2>/dev/null | sed 's/^/    /' || true
+  else
+    log "the nightly backup: missing or the version Express refuses; installing it (install-db-backup.sh)"
+    if ! bash "$SRC/deploy/install-db-backup.sh"; then
+      sudo journalctl -u mokaco-db-backup -n 15 --no-pager -o cat 2>/dev/null | sed 's/^/    /' || true
+      warn "the nightly backup could not be set up (above); the update itself is done. Send Claude the log."
+    fi
+  fi
+
+  # ---- 7. tonight's leavers' sweep ------------------------------------------------------------------
   log "tonight's leavers' sweep (01:00), run now in a transaction that is rolled back: nothing is changed"
   local preview
   read -r -d '' preview <<'SQL' || true

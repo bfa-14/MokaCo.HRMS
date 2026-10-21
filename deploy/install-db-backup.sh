@@ -6,7 +6,8 @@
 # ledger will live here — it needs one before go-live").
 #
 #   02:30 UTC daily  ->  /var/opt/mssql/backup/MokaCo_HRMS_<date>.bak
-#                        compressed, checksummed, then RESTORE VERIFYONLY
+#                        checksummed, then RESTORE VERIFYONLY (not compressed:
+#                        SQL Server Express refuses BACKUP ... WITH COMPRESSION)
 #   a copy of the newest file in /var/backups/mokaco/ that the `user` account
 #   can read WITHOUT sudo, so it can be pulled off the box:
 #       rsync -avP mokanco-vm:/var/backups/mokaco/ ~/mokanco-backups/
@@ -27,7 +28,9 @@ sudo test -f /etc/mokaco/db.env || die "/etc/mokaco/db.env missing — restore-d
 log "installing /usr/local/sbin/mokaco-db-backup"
 sudo tee /usr/local/sbin/mokaco-db-backup >/dev/null <<'EOF'
 #!/usr/bin/env bash
+# mokaco-db-backup v2
 # Nightly full backup of MokaCo_HRMS. Run by mokaco-db-backup.timer as root.
+# Not compressed: SQL Server Express (production's edition) refuses WITH COMPRESSION (Msg 1844).
 set -euo pipefail
 DB=MokaCo_HRMS
 DIR=/var/opt/mssql/backup
@@ -47,7 +50,7 @@ mkdir -p "$DIR"; chown mssql:mssql "$DIR"
 
 echo "backup -> $file"
 "$SQLCMD" -S localhost -U "$user" -C -b -Q \
-  "BACKUP DATABASE [$DB] TO DISK='$file' WITH INIT, COMPRESSION, CHECKSUM, STATS=25"
+  "BACKUP DATABASE [$DB] TO DISK='$file' WITH INIT, CHECKSUM, STATS=25"
 "$SQLCMD" -S localhost -U "$user" -C -b -Q \
   "RESTORE VERIFYONLY FROM DISK='$file' WITH CHECKSUM"
 echo "verified: $(du -h "$file" | cut -f1)"

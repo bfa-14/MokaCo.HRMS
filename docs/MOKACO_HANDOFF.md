@@ -351,7 +351,7 @@ If a suite is interrupted, run its `cleanup.sql` before anything else — it als
 
 **Database on the server**: built by **restoring a backup** of the developer database, not by replaying `docs/*.sql` (those are only the later patches; the base schema, the seeds and the real data are not in the repo). A backup restores only onto the same or a newer SQL Server major version — check `SELECT @@VERSION` on both sides first; if the versions don't line up, move it as a `.bacpac` with `sqlpackage`.
 
-**Backups**: Express has no SQL Server Agent, so a cron job runs `BACKUP DATABASE` nightly, keeps 14 days and copies every file **off** the VM. Every deploy starts with a backup.
+**Backups**: Express has no SQL Server Agent, so a cron job runs `BACKUP DATABASE` nightly, keeps 14 days and copies every file **off** the VM. Every deploy starts with a backup. Express also refuses `BACKUP ... WITH COMPRESSION` (Msg 1844): the first `install-db-backup.sh` asked for it, so the nightly backup could not make a single backup on production; fixed 21 Oct (the program now carries `# mokaco-db-backup v2`), and `update-prod.sh` installs the fixed one when it finds the old one or none.
 
 **The attendance device cannot be pulled from the cloud** (it sits on the café LAN at 192.168.45.12). On the server set `MachinePullEnabled = 0` and switch the UA300 to **push** (ADMS) to the API's `/iclock` endpoint, or add a VPN. Many ZKTeco units cannot do TLS, so `/iclock` may need a plain-HTTP server block protected by the device API key. Only one system may collect punches: when production goes live, turn the laptop's pull off.
 
