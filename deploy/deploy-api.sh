@@ -49,8 +49,8 @@ echo "    dotnet: $($DOTNET --version)   node: $(node -v 2>/dev/null || echo non
 
 command -v nginx >/dev/null || die "nginx is not installed"
 # the sites this project adds itself (enable-https-ip.sh / enable-tls.sh, the website, the test
-# subdomain) are not "other sites"
-others=$(ls /etc/nginx/sites-enabled/ 2>/dev/null | grep -vE '^(default|mokaco|mokaco-default|mokaco-api|mokaco-test|mokanco-site)$' || true)
+# subdomain, the sis stack handed to Caddy by share-ports-with-caddy.sh) are not "other sites"
+others=$(ls /etc/nginx/sites-enabled/ 2>/dev/null | grep -vE '^(default|mokaco|mokaco-default|mokaco-api|mokaco-test|mokanco-site|mokaco-sis)$' || true)
 if [[ -n "$others" ]]; then
   die "nginx already serves other sites on this shared box: $others
      Adding a default_server for the API would fight with them. Show this to Reda before continuing."
