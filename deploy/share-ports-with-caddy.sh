@@ -10,7 +10,7 @@
 # WHY. Only one program can listen on 80/443. The sis stack's Caddy took them (1 Nov 2026), nginx could not
 # start, and the HRMS and the website went down. Now nginx owns 80/443 again and hands sis's domains to Caddy:
 #   - Caddy is published on 127.0.0.1:8080 (http) and 127.0.0.1:8443 (https) instead of 80/443 — the only
-#     change to sis: its compose file's two port lines (a backup is kept next to it);
+#     change to sis: a docker-compose.override.yml beside its compose file (sis's own file is not edited);
 #   - port 80: nginx passes sis's domains to Caddy as they are (its own redirects and ACME challenges);
 #   - port 443: nginx answers sis's domains with a Let's Encrypt certificate of its own (certbot, cert name
 #     mokaco-sis) and passes the request on to Caddy over https, so nothing in sis's own setup changes.
@@ -45,34 +45,34 @@ FARGS=(); for f in "${COMPOSE_FILES[@]}"; do FARGS+=(-f "$f"); done
 compose() { (cd "$WORKDIR" && sudo docker compose -p "$PROJECT" "${FARGS[@]}" "$@"); }
 echo "    $CONTAINER: compose project $PROJECT, service $SERVICE, files: ${COMPOSE_FILES[*]}"
 
-# Move (or, with --undo, restore) the service's published ports in its compose files. Prints what changed.
-move_ports() {
-  sudo python3 - "$1" "${COMPOSE_FILES[@]}" <<'PY'
-import re, sys
-direction, files = sys.argv[1], sys.argv[2:]
-if direction == 'in':      # 80/443 on every address -> 127.0.0.1:8080/8443; HTTP/3 (udp) dropped
-    rules = [(re.compile(r'''^(\s*-\s*)(["']?)(?:0\.0\.0\.0:)?80:80(?:/tcp)?\2\s*$'''), r'\1"127.0.0.1:8080:80"'),
-             (re.compile(r'''^(\s*-\s*)(["']?)(?:0\.0\.0\.0:)?443:443(?:/tcp)?\2\s*$'''), r'\1"127.0.0.1:8443:443"'),
-             (re.compile(r'''^(\s*-\s*)(["']?)(?:0\.0\.0\.0:)?443:443/udp\2\s*$'''), None)]
-else:
-    rules = [(re.compile(r'''^(\s*-\s*)"127\.0\.0\.1:8080:80"\s*$'''), r'\1"80:80"'),
-             (re.compile(r'''^(\s*-\s*)"127\.0\.0\.1:8443:443"\s*$'''), r'\1"443:443"')]
-total = 0
-for f in files:
-    lines = open(f).read().split('\n'); out = []
-    for line in lines:
-        for rx, new in rules:
-            if rx.match(line):
-                total += 1
-                print(f'    {f}: {line.strip()}  ->  {rx.sub(new, line).strip() if new else "(removed)"}')
-                if new is not None: out.append(rx.sub(new, line))
-                break
-        else:
-            out.append(line)
-    open(f, 'w').write('\n'.join(out))
-sys.exit(0 if total else 3)
-PY
+# Caddy's ports are REPLACED by an override file next to sis's compose file, which is never edited:
+# docker-compose.override.yml is read automatically with docker-compose.yml, so sis's own
+# `docker compose up` keeps Caddy on 127.0.0.1 too. `!override` swaps the whole list, whatever form
+# the original uses (an ${ENV} port, the long syntax, 443/udp).
+OVERRIDE="$(dirname "${COMPOSE_FILES[0]}")/docker-compose.override.yml"
+MARK='# Written by MokaCo.HRMS deploy/share-ports-with-caddy.sh'
+ours_override() { sudo test -f "$OVERRIDE" && sudo grep -qF "$MARK" "$OVERRIDE"; }
+if [[ ! " ${COMPOSE_FILES[*]} " == *" $OVERRIDE "* ]]; then
+  if sudo test -f "$OVERRIDE" && ! ours_override; then
+    die "$OVERRIDE exists and is sis's own: add Caddy's ports to it by hand (127.0.0.1:8080:80, 127.0.0.1:8443:443)"
+  fi
+  sudo test -f "$OVERRIDE" && FARGS+=(-f "$OVERRIDE")
+fi
+move_ports() {   # in: Caddy on 127.0.0.1:8080/8443; out: back to what sis's own file says
+  if [[ "$1" == in ]]; then
+    printf '%s\n%s\n' "$MARK" "# Caddy on the loopback; nginx owns 80/443 and hands sis's domains to it. Undo: --undo" \
+      | sudo tee "$OVERRIDE" >/dev/null
+    printf 'services:\n  %s:\n    ports: !override\n      - "127.0.0.1:8080:80"\n      - "127.0.0.1:8443:443"\n' "$SERVICE" \
+      | sudo tee -a "$OVERRIDE" >/dev/null
+    [[ " ${FARGS[*]} " == *" $OVERRIDE "* ]] || FARGS+=(-f "$OVERRIDE")
+  else
+    ours_override && sudo rm -f "$OVERRIDE"
+    local keep=() i
+    for ((i = 0; i < ${#FARGS[@]}; i += 2)); do [[ "${FARGS[i+1]}" == "$OVERRIDE" ]] || keep+=(-f "${FARGS[i+1]}"); done
+    FARGS=("${keep[@]}")
+  fi
 }
+published() { sudo docker port "$CONTAINER" 2>/dev/null | sed 's/^/      /'; }
 
 # Site addresses of a Caddyfile (stdin, then '#--ENV--' and the container's environment): the top-level
 # lines that open a block, minus the global options block and snippets; {$VAR} / {$VAR:default} resolved.
@@ -98,8 +98,9 @@ if [[ "$mode" == --undo ]]; then
   log "giving 80/443 back to Caddy: the HRMS and the website go down"
   sudo rm -f /etc/nginx/sites-enabled/mokaco-sis
   sudo systemctl stop nginx
-  move_ports out || die "no 127.0.0.1:8080/8443 port line found in ${COMPOSE_FILES[*]}"
+  move_ports out
   compose up -d --no-deps "$SERVICE"
+  published
   log "done: Caddy on 80/443, nginx stopped"
   exit 0
 fi
@@ -120,28 +121,32 @@ command -v certbot >/dev/null || die "certbot is not installed"
 
 if [[ "$mode" == --check ]]; then
   log "--check: nothing changed. The compose port lines that would move:"
-  for f in "${COMPOSE_FILES[@]}"; do grep -nE '^\s*-\s*["'"'"']?(0\.0\.0\.0:)?(80:80|443:443)' "$f" | sed "s#^#    $f:#" || true; done
+  echo "    Caddy publishes now:"; published
+  echo "    after: 127.0.0.1:8080 -> 80 and 127.0.0.1:8443 -> 443, through $OVERRIDE"
   exit 0
 fi
 
 # ---- 1. backups --------------------------------------------------------------------------------------
 log "backups"
 sudo tar -czf "/root/nginx-before-sis-$STAMP.tgz" -C / etc/nginx
-for f in "${COMPOSE_FILES[@]}"; do sudo cp -p "$f" "$f.before-mokaco-$STAMP"; done
-echo "    /root/nginx-before-sis-$STAMP.tgz and ${COMPOSE_FILES[*]/%/.before-mokaco-$STAMP}"
+echo "    /root/nginx-before-sis-$STAMP.tgz (sis's compose file is not edited)"
 
 restore() {
   warn "putting the previous state back"
   sudo rm -f /etc/nginx/sites-enabled/mokaco-sis "$SITE"
   sudo systemctl stop nginx || true
-  for f in "${COMPOSE_FILES[@]}"; do sudo cp -p "$f.before-mokaco-$STAMP" "$f"; done
+  move_ports out
   compose up -d --no-deps "$SERVICE" || true
 }
 
 # ---- 2. Caddy off 80/443 -----------------------------------------------------------------------------
 log "moving Caddy to 127.0.0.1:8080 / 127.0.0.1:8443"
-move_ports in || { restore; die "no 80:80 / 443:443 port line found in ${COMPOSE_FILES[*]}: move them by hand"; }
+move_ports in
 compose up -d --no-deps "$SERVICE" || { restore; die "docker compose could not restart $SERVICE"; }
+published
+if sudo docker port "$CONTAINER" | grep -qE '0\.0\.0\.0:(80|443)$|\[::\]:(80|443)$'; then
+  restore; die "Caddy still publishes 80/443 (above): the override was not applied"
+fi
 
 # ---- 3. port 80 for sis, then nginx up -----------------------------------------------------------------
 proxy_headers='        proxy_http_version 1.1;
