@@ -81,7 +81,14 @@ fi
 # =============================================================================
 log "publishing the API (Release, framework-dependent)"
 PUB=$(mktemp -d)
-"$DOTNET" publish "$SRC/MokaCo.HRMS.API" -c Release -o "$PUB" --nologo -v q 2>&1 | grep -vE '^\s*$' | tail -5
+# The output goes to a file first: a quiet, SUCCESSFUL publish prints nothing, and `grep -v` over no
+# lines exits 1, which pipefail turned into a silent stop of this whole script (1 Nov 2026).
+if ! "$DOTNET" publish "$SRC/MokaCo.HRMS.API" -c Release -o "$PUB" --nologo -v q > "$PUB.log" 2>&1; then
+  tail -25 "$PUB.log"
+  die "dotnet publish failed (above); the running API is untouched"
+fi
+grep -vE '^\s*$' "$PUB.log" | tail -5 || true
+rm -f "$PUB.log"
 [[ -f "$PUB/MokaCo.HRMS.API.dll" ]] || die "publish produced no MokaCo.HRMS.API.dll"
 echo "    $(ls "$PUB" | wc -l) files, $(du -sh "$PUB" | cut -f1)"
 
