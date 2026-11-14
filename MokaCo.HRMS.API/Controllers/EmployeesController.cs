@@ -252,11 +252,22 @@ public class EmployeesController : ControllerBase
     /// year was never opened for this employee, balances is EMPTY and yearOpened is false: there is
     /// no entitlement to measure against yet. `year` defaults to the current year.
     /// </summary>
+    /// <remarks>
+    /// EMP_VIEW reads anybody in the caller's scope. An employee with only REQUEST_RAISE_SELF reads their OWN balance:
+    /// the leave request form shows it beside the request, and without it the form of the Employee role was empty.
+    /// </remarks>
     [HttpGet("{id:int}/leave-balance")]
-    [HasPermission("EMP_VIEW")]
     [InCallerScope(ScopeTarget.Employee)]
-    public async Task<IActionResult> GetLeaveBalance(int id, [FromQuery] int? leaveTypeId, [FromQuery] int? year)
+    public async Task<IActionResult> GetLeaveBalance(int id, [FromQuery] int? leaveTypeId, [FromQuery] int? year,
+        [FromServices] MokaCo.HRMS.Services.Workflow.IWorkflowSupportService support)
     {
+        if (!User.HasPermission("EMP_VIEW"))
+        {
+            var me = User.HasPermission("REQUEST_RAISE_SELF") ? await support.GetEmployeeByUserIdAsync(User.UserId()) : null;
+            if (me is null || me.EmployeeId != id)
+                return StatusCode(403, new { error = "You may only see your own leave balance." });
+        }
+
         if (leaveTypeId is null)
             return Ok(await _leave.GetBalanceByYearAsync(id, year));
 

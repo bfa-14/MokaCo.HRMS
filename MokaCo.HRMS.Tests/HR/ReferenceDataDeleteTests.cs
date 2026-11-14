@@ -140,3 +140,36 @@ public class ReferenceDataDeleteTests
         positions.Verify(p => p.SetActiveAsync(9, false), Times.Once);
     }
 }
+
+/// <summary>The leave request form of an employee reads the leave types: REQUEST_RAISE_SELF is enough, as is EMP_VIEW.</summary>
+public class LeaveTypesReadTests
+{
+    private static MokaCo.HRMS.Api.Controllers.LeaveTypesController Controller(params string[] perms)
+    {
+        var types = new Moq.Mock<MokaCo.HRMS.Services.HR.ILeaveTypeService>();
+        types.Setup(t => t.GetAllAsync()).ReturnsAsync(new List<MokaCo.HRMS.Model.HR.LeaveType>());
+        types.Setup(t => t.GetRelationEntitlementsAsync()).ReturnsAsync(new List<MokaCo.HRMS.Model.HR.LeaveRelationEntitlement>());
+        var claims = perms.Select(p => new System.Security.Claims.Claim("perm", p)).Append(new System.Security.Claims.Claim("sub", "5"));
+        return new MokaCo.HRMS.Api.Controllers.LeaveTypesController(types.Object, Moq.Mock.Of<MokaCo.HRMS.Api.Hubs.ILiveNotifier>())
+        {
+            ControllerContext = new Microsoft.AspNetCore.Mvc.ControllerContext
+            {
+                HttpContext = new Microsoft.AspNetCore.Http.DefaultHttpContext
+                { User = new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(claims, "test")) },
+            },
+        };
+    }
+
+    [Theory]
+    [InlineData("REQUEST_RAISE_SELF")]
+    [InlineData("EMP_VIEW")]
+    public async Task Either_code_reads_the_leave_types(string perm)
+    {
+        Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(await Controller(perm).GetAll());
+        Assert.IsType<Microsoft.AspNetCore.Mvc.OkObjectResult>(await Controller(perm).GetRelationEntitlements());
+    }
+
+    [Fact]
+    public async Task Neither_code_is_refused()
+        => Assert.IsType<Microsoft.AspNetCore.Mvc.ForbidResult>(await Controller("BOOKING_VIEW").GetAll());
+}
