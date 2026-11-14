@@ -24,9 +24,10 @@ public class BranchesController : ControllerBase
         _workflowSupport = workflowSupport;
     }
 
+    /// <summary>The list: EMP_VIEW, or REQUEST_RAISE_SELF for the request forms (ClaimsExtensions.MayReadReference).</summary>
     [HttpGet]
-    [HasPermission("EMP_VIEW")]
-    public async Task<IActionResult> GetAll() => Ok(await _branches.GetAllAsync());
+    public async Task<IActionResult> GetAll()
+        => User.MayReadReference("EMP_VIEW") ? Ok(await _branches.GetAllAsync()) : Forbid();
 
     [HttpPost]
     [HasPermission("ORG_MANAGE")]

@@ -12,8 +12,9 @@ namespace MokaCo.HRMS.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/shifts")]
-// Class-level floor (see AttendanceController): shifts are attendance configuration.
-[HasPermission("ATTENDANCE_VIEW")]
+// No class-level permission: it would AND with every action, and the list is read by the employee request forms
+// (ATTENDANCE_VIEW or REQUEST_RAISE_SELF, checked in GetAll). Every write carries ATTENDANCE_MANAGE itself.
+[Microsoft.AspNetCore.Authorization.Authorize]
 public class ShiftsController : ControllerBase
 {
     private readonly IShiftService _shifts;
@@ -25,9 +26,10 @@ public class ShiftsController : ControllerBase
         _live = live;
     }
 
+    /// <summary>The shifts: ATTENDANCE_VIEW, or REQUEST_RAISE_SELF - the availability-change form names them.</summary>
     [HttpGet]
-    [HasPermission("ATTENDANCE_VIEW")]
-    public async Task<IActionResult> GetAll() => Ok(await _shifts.GetAllAsync());
+    public async Task<IActionResult> GetAll()
+        => User.MayReadReference("ATTENDANCE_VIEW") ? Ok(await _shifts.GetAllAsync()) : Forbid();
 
     [HttpPost]
     [HasPermission("ATTENDANCE_MANAGE")]

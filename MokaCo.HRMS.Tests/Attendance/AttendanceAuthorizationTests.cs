@@ -64,6 +64,9 @@ public class AttendanceAuthorizationTests
         // permissions page counts at once). The class floor ATTENDANCE_VIEW is what the action carries.
         [$"{nameof(AttendanceController)}.{nameof(AttendanceController.DecideUnrosteredDay)}"] = "ATTENDANCE_VIEW",
         [$"{nameof(AttendanceController)}.{nameof(AttendanceController.ReopenUnrosteredDay)}"] = "ATTENDANCE_VIEW",
+        // The shift list feeds the availability-change form of every employee: ATTENDANCE_VIEW or REQUEST_RAISE_SELF,
+        // checked in the action (ClaimsExtensions.MayReadReference) - an attribute can only AND codes.
+        [$"{nameof(ShiftsController)}.{nameof(ShiftsController.GetAll)}"] = "AUTHENTICATED",
     };
 
     public static IEnumerable<object[]> Actions()
@@ -127,11 +130,13 @@ public class AttendanceAuthorizationTests
     {
         // The floor is what stops a future action without its own attribute from being open to
         // every logged-in employee. RosterController is excluded on purpose: it hosts the
-        // employee-facing shift-pattern read; AttendanceIngestionController hosts the device punch.
+        // employee-facing shift-pattern read; AttendanceIngestionController hosts the device punch;
+        // ShiftsController the shift list the employee request forms read (each of its writes carries
+        // ATTENDANCE_MANAGE, checked by the theory above).
         foreach (var controller in new[]
                  {
                      typeof(AttendanceController), typeof(AttendanceCorrectionsController),
-                     typeof(ShiftsController), typeof(DevicesController)
+                     typeof(DevicesController)
                  })
         {
             var floor = controller.GetCustomAttributes<HasPermissionAttribute>(inherit: false)

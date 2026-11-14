@@ -19,9 +19,10 @@ public class ComponentTypesController : ControllerBase
         _live = live;
     }
 
+    /// <summary>The list: EMP_VIEW, or REQUEST_RAISE_SELF for the request forms (ClaimsExtensions.MayReadReference).</summary>
     [HttpGet]
-    [HasPermission("EMP_VIEW")]
-    public async Task<IActionResult> GetAll() => Ok(await _componentTypes.GetAllAsync());
+    public async Task<IActionResult> GetAll()
+        => User.MayReadReference("EMP_VIEW") ? Ok(await _componentTypes.GetAllAsync()) : Forbid();
 
     [HttpPost]
     [HasPermission("COMPONENT_MANAGE")]

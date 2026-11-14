@@ -173,3 +173,17 @@ public class LeaveTypesReadTests
     public async Task Neither_code_is_refused()
         => Assert.IsType<Microsoft.AspNetCore.Mvc.ForbidResult>(await Controller("BOOKING_VIEW").GetAll());
 }
+
+/// <summary>The reference lists of the request forms: their own code, or REQUEST_RAISE_SELF.</summary>
+public class ReferenceReadRuleTests
+{
+    private static System.Security.Claims.ClaimsPrincipal User(params string[] perms)
+        => new(new System.Security.Claims.ClaimsIdentity(perms.Select(p => new System.Security.Claims.Claim("perm", p)), "test"));
+
+    [Theory]
+    [InlineData("EMP_VIEW", true)]
+    [InlineData("REQUEST_RAISE_SELF", true)]
+    [InlineData("BOOKING_VIEW", false)]
+    public void Who_reads_a_reference_list(string perm, bool may)
+        => Assert.Equal(may, MokaCo.HRMS.Api.Auth.ClaimsExtensions.MayReadReference(User(perm), "EMP_VIEW"));
+}
