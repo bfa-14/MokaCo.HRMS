@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Model.Security;
+using MokaCo.HRMS.Services.Attendance;
 using MokaCo.HRMS.Services.Payroll;
 using MokaCo.HRMS.Services.Security;
 using MokaCo.HRMS.Services.Workflow;
@@ -24,15 +25,30 @@ public class MeController : ControllerBase
     private readonly IUserSignatureService _signatures;
     private readonly IPayrollService _payroll;
     private readonly IUserService _users;
+    private readonly IMyAttendanceService _myAttendance;
 
     public MeController(
         IWorkflowSupportService support, IUserSignatureService signatures, IPayrollService payroll,
-        IUserService users)
+        IUserService users, IMyAttendanceService myAttendance)
     {
         _support = support;
         _signatures = signatures;
         _payroll = payroll;
         _users = users;
+        _myAttendance = myAttendance;
+    }
+
+    /// <summary>
+    /// The caller's OWN attendance: today's punches, the next seven days' shifts and one month day by day, with
+    /// HR's decisions (never HR's notes). Authentication only, like /api/me/payslips: everybody has attendance, and
+    /// the employee comes from the TOKEN, so there is no id to change. An account with no employee gets a 204.
+    /// `month` is 'yyyy-MM'; missing or unreadable means the current month.
+    /// </summary>
+    [HttpGet("attendance")]
+    public async Task<IActionResult> Attendance([FromQuery] string? month)
+    {
+        var mine = await _myAttendance.GetAsync(User.UserId(), month);
+        return mine is null ? NoContent() : Ok(mine);
     }
 
     /// <summary>

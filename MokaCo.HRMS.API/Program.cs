@@ -221,6 +221,7 @@ builder.Services.AddScoped<ISettingService, SettingService>();
 builder.Services.AddScoped<IDeviceService, DeviceService>();
 builder.Services.AddScoped<IShiftService, ShiftService>();
 builder.Services.AddScoped<IRosterService, RosterService>();
+builder.Services.AddScoped<IMyAttendanceService, MyAttendanceService>();
 builder.Services.AddScoped<IAutoRosterService, AutoRosterService>();
 builder.Services.AddScoped<IImportService, ImportService>();
 builder.Services.AddScoped<IAttendanceService, AttendanceService>();
