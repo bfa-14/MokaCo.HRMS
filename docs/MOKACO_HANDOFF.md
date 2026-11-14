@@ -103,7 +103,7 @@ Permission codes (`security.PERMISSION`, shown as module cards on Security → R
 ```
 EMP_VIEW, EMP_EDIT, EMP_VIEW_ALL
 ATTENDANCE_VIEW, ATTENDANCE_CORRECT, ATTENDANCE_IMPORT, ATTENDANCE_MANAGE, DEVICE_MANAGE
-OFFROSTER_TODAY, OFFROSTER_PAST, BOOKING_ROOMS, BOOKING_REPORT
+OFFROSTER_TODAY, OFFROSTER_PAST, BOOKING_ROOMS, BOOKING_REPORT, SHIFTS_VIEW_BRANCH
 LEAVE_POLICY_MANAGE, ORG_MANAGE, COMPONENT_MANAGE, CORE_MANAGE, SETTING_MANAGE
 PAYROLL_VIEW, PAYROLL_RUN, PAYROLL_APPROVE
 REQUEST_RAISE_SELF, REQUEST_RAISE_OTHERS, REQUEST_VIEW_ALL
@@ -187,6 +187,8 @@ Status precedence for a day: **approved leave → public holiday → rostered re
 **The days behind "N day(s) short"** (script 109): the payslip line stays one total (`payroll.fn_ShortDays`); `payroll.fn_ShortDayList` is the same rule per day and `payroll.usp_Payslip_ShortDays @PayslipId` lists a payslip's days, up to `PAYROLL_RUN.GeneratedUpTo`. `GET /api/payroll/payslips/{id}/short-days` has the payslip's own access rule (PAYROLL_VIEW, or the employee's own once approved); the payslip page opens it under the line ("See the days") and warns when attendance changed after the run was generated. Nothing that pays changed.
 
 **"Something is wrong with this day"** (script 110, `attendance.DAY_REPORT`): the employee reports their own day, the branch manager a day of the branches they manage (`POST /api/day-reports`, sign-in only; the procedure checks who). HR's queue is `GET /api/day-reports` (ATTENDANCE_CORRECT, branch-scoped, never one's own day). **Accept** raises a correction with the reported times, requested by the reporter, approves it and marks the report - one transaction (`DayReportRepository.AcceptAsync`); it needs an attendance record for the day and at least one reported time. **Reject** needs a note the reporter reads; the reporter may withdraw while it is open; one open report per employee-day. Reports do not block payroll.
+
+**Weekly shifts** (web only): Attendance > Weekly shifts (`ATTENDANCE_VIEW`) draws a branch's roster as the MOKA&CŌ poster, one column per shift and one row per day, OFF for a day nobody works, people on approved leave for the whole day left out; a week or up to 14 days, Print / PDF gives one full-bleed A4 sheet. **My branch's shifts** (script 112, `SHIFTS_VIEW_BRANCH`, `GET /api/me/team-shifts`): the same poster for an employee, their own branch only (the token's employee, never the request), one week at a time; it sends a name, a day and a shift, no attendance and no leave. Granted once, on creation, to every role holding REQUEST_RAISE_SELF; script 112 has no procedure, so it is not on `Scripts.Required` (check-scripts.sql checks the permission row).
 
 **Bookings: rooms and report** (script 111): the Rooms page and the room writes of the API need `BOOKING_ROOMS`, the bookings report `BOOKING_REPORT` (they needed BOOKING_MANAGE / BOOKING_VIEW, so the booking desk saw both). Granted once, on creation, to Admin (roles with ROLE_MANAGE or USER_MANAGE), Owner and General Manager; reading the rooms stays BOOKING_VIEW (the calendar needs them).
 
@@ -351,7 +353,7 @@ Daily and monthly attendance, payroll runs and payslips, bookings (period, room,
 | `tests/qa` | `MokaCo.HRMS/tests/qa` (`bash tests/qa/run.sh`) | 216 checks: rosters, attendance, leaves, payroll, bookings, permissions, cultures, responsive smoke |
 | `tests/qa2` | `MokaCo.HRMS/tests/qa2` (`bash tests/qa2/run.sh`) | 67 checks of **complex** scenarios: same-day combinations, overnight + DST + month end, leave edge cases, roster changes, payroll proration and statutory math, plus browser checks |
 | `tests/qa3` | `MokaCo.HRMS/tests/qa3/<area>/*.sql` (`sqlcmd -I -b -d <db> -i <file>`) | 56 SQL scenarios for the QA3 scripts 98–110; each runs in a transaction it rolls back and prints `ok <name>`. Report: `tests/qa3/QA_REPORT_3.md` |
-| unit + database tests | `dotnet test` | 1795 tests; the database ones run when `MOKACO_TEST_CONNECTION` points at a database with the scripts, otherwise they skip |
+| unit + database tests | `dotnet test` | 1806 tests; the database ones run when `MOKACO_TEST_CONNECTION` points at a database with the scripts, otherwise they skip |
 
 Both suites seed everything with a `QA ` / `QA2 ` prefix, run inside transactions where the data is real (payroll), and `cleanup.sql` removes their rows and **verifies integrity**: real row counts plus checksums of rosters, attendance records and the leave ledger must match the baseline taken at seed time. Reports: `QA_REPORT.md` and `tests/qa2/QA_REPORT_2.md` (bug table, rules decided, features added, disposition per finding).
 

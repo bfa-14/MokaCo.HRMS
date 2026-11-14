@@ -223,6 +223,7 @@ builder.Services.AddScoped<IDeviceService, DeviceService>();
 builder.Services.AddScoped<IShiftService, ShiftService>();
 builder.Services.AddScoped<IRosterService, RosterService>();
 builder.Services.AddScoped<IMyAttendanceService, MyAttendanceService>();
+builder.Services.AddScoped<ITeamShiftsService, TeamShiftsService>();
 builder.Services.AddScoped<IDayReportService, DayReportService>();
 builder.Services.AddScoped<IAutoRosterService, AutoRosterService>();
 builder.Services.AddScoped<IImportService, ImportService>();

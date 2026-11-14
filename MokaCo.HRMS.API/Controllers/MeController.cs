@@ -26,11 +26,13 @@ public class MeController : ControllerBase
     private readonly IPayrollService _payroll;
     private readonly IUserService _users;
     private readonly IMyAttendanceService _myAttendance;
+    private readonly ITeamShiftsService _teamShifts;
 
     public MeController(
         IWorkflowSupportService support, IUserSignatureService signatures, IPayrollService payroll,
-        IUserService users, IMyAttendanceService myAttendance)
+        IUserService users, IMyAttendanceService myAttendance, ITeamShiftsService teamShifts)
     {
+        _teamShifts = teamShifts;
         _support = support;
         _signatures = signatures;
         _payroll = payroll;
@@ -67,6 +69,25 @@ public class MeController : ControllerBase
     /// the client's refresh-and-retry path down a road that cannot help, and on a second failure it
     /// would log them out for a typo.
     /// </summary>
+    /// <summary>
+    /// My branch's weekly shifts: who works which shift on which day, in the branch of the token's employee only
+    /// (SHIFTS_VIEW_BRANCH, script 112). No attendance and no leave; 204 when the account has no employee.
+    /// </summary>
+    [HttpGet("team-shifts")]
+    [HasPermission("SHIFTS_VIEW_BRANCH")]
+    public async Task<IActionResult> TeamShifts([FromQuery] DateTime from, [FromQuery] DateTime to)
+    {
+        try
+        {
+            var shifts = await _teamShifts.GetAsync(User.UserId(), from, to);
+            return shifts is null ? NoContent() : Ok(shifts);
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
     [HttpPost("change-password")]
     public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request)
     {
