@@ -59,6 +59,11 @@ public class AttendanceAuthorizationTests
         [$"{nameof(ExitPermissionsController)}.{nameof(ExitPermissionsController.GetByRequest)}"] = "AUTHENTICATED",
         // Read of a shift pattern for the request forms; the action itself restricts non-viewers to their own id.
         [$"{nameof(RosterController)}.{nameof(RosterController.GetEmployeePattern)}"] = "REQUEST_RAISE_SELF",
+        // 108: a day that is not on the roster. Who may decide is OFFROSTER_TODAY or OFFROSTER_PAST, by the day's
+        // date - which one cannot be an attribute, and the procedure reads the role tables live (a grant on the Role
+        // permissions page counts at once). The class floor ATTENDANCE_VIEW is what the action carries.
+        [$"{nameof(AttendanceController)}.{nameof(AttendanceController.DecideUnrosteredDay)}"] = "ATTENDANCE_VIEW",
+        [$"{nameof(AttendanceController)}.{nameof(AttendanceController.ReopenUnrosteredDay)}"] = "ATTENDANCE_VIEW",
     };
 
     public static IEnumerable<object[]> Actions()

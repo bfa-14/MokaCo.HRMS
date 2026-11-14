@@ -1,5 +1,6 @@
 using System.Data;
 using Dapper;
+using Microsoft.Data.SqlClient;
 using MokaCo.HRMS.Model.Payroll;
 using MokaCo.HRMS.Repository.Common;
 
@@ -218,13 +219,27 @@ public class PayrollRepository : IPayrollRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    /// <summary>
+    /// Script 108's answer (the unrostered days among the counts); script 103's eleven columns on a
+    /// database that does not have 108 yet.
+    /// </summary>
     public async Task<PayrollReadiness?> GetReadinessAsync(string periodYearMonth)
     {
         using var db = _factory.Create();
-        return await db.QuerySingleOrDefaultAsync<PayrollReadiness>(
-            "attendance.usp_Attendance_PayrollReadiness",
-            new { PeriodYearMonth = periodYearMonth },
-            commandType: CommandType.StoredProcedure);
+        try
+        {
+            return await db.QuerySingleOrDefaultAsync<PayrollReadiness>(
+                "attendance.usp_PayrollReadiness_Get",
+                new { PeriodYearMonth = periodYearMonth },
+                commandType: CommandType.StoredProcedure);
+        }
+        catch (SqlException ex) when (MissingScriptException.IsMissingObject(ex.Number))
+        {
+            return await db.QuerySingleOrDefaultAsync<PayrollReadiness>(
+                "attendance.usp_Attendance_PayrollReadiness",
+                new { PeriodYearMonth = periodYearMonth },
+                commandType: CommandType.StoredProcedure);
+        }
     }
 
     // ─────────────────────────────── payslips ───────────────────────────────
@@ -250,6 +265,14 @@ CROSS APPLY (SELECT CASE l.SourceType
         WHEN 'Leave'      THEN (SELECT r.RequestInstanceId FROM workflow.LEAVE_REQUEST r        WHERE r.LeaveRequestId         = l.SourceId)
     END AS RequestInstanceId) x
 WHERE l.PayslipId = @PayslipId AND l.SourceId IS NOT NULL AND x.RequestInstanceId IS NOT NULL;";
+
+    public async Task<IEnumerable<PayslipShortDay>> GetPayslipShortDaysAsync(int payslipId)
+    {
+        using var db = _factory.Create();
+        return await MissingScriptException.GuardAsync(Scripts.PayslipShortDays109, "payroll.usp_Payslip_ShortDays",
+            () => db.QueryAsync<PayslipShortDay>("payroll.usp_Payslip_ShortDays", new { PayslipId = payslipId },
+                commandType: CommandType.StoredProcedure));
+    }
 
     public async Task<PayslipDetail> GetPayslipAsync(int payslipId)
     {

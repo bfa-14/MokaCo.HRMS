@@ -1,5 +1,7 @@
 using MokaCo.HRMS.Model.Attendance;
 using MokaCo.HRMS.Repository.Attendance;
+using MokaCo.HRMS.Repository.Common;
+using MokaCo.HRMS.Services.Workflow;
 
 namespace MokaCo.HRMS.Services.Attendance;
 
@@ -128,6 +130,54 @@ public class AttendanceService : IAttendanceService
 
     public Task<IEnumerable<WorkedWithoutRoster>> GetWorkedWithoutRosterAsync(DateTime fromDate, DateTime toDate, int? branchId, int? callerUserId = null)
         => _repo.GetWorkedWithoutRosterAsync(fromDate, toDate, branchId, callerUserId);
+
+    /// <summary>
+    /// The days of script 108's list. While that script is not applied the page must still say that the
+    /// days exist: script 87's list, every row open and nobody able to decide it (the decision is 108's).
+    /// </summary>
+    public async Task<IEnumerable<UnrosteredDay>> GetUnrosteredDaysAsync(DateTime fromDate, DateTime toDate, int? branchId, int? employeeId, int? callerUserId)
+    {
+        try
+        {
+            return await _repo.GetUnrosteredDaysAsync(fromDate, toDate, branchId, employeeId, callerUserId);
+        }
+        catch (MissingScriptException)
+        {
+            var rows = await _repo.GetWorkedWithoutRosterAsync(fromDate, toDate, branchId, callerUserId);
+            return rows
+                .Where(row => employeeId is null || row.EmployeeId == employeeId)
+                .Select(row => new UnrosteredDay
+                {
+                    EmployeeId = row.EmployeeId,
+                    EmployeeName = row.EmployeeName,
+                    BranchId = row.BranchId,
+                    BranchName = row.BranchName,
+                    WorkDate = row.WorkDate,
+                    FirstPunch = row.FirstPunch,
+                    LastPunch = row.LastPunch,
+                    PunchCount = row.PunchCount,
+                    WorkedMinutes = row.WorkedMinutes,
+                    State = "Open",
+                    CanDecide = false,
+                })
+                .ToList();
+        }
+    }
+
+    /// <summary>
+    /// The procedure is the authority: it checks the branch, the permission of the day's date (read from
+    /// the role tables at that moment) and the paid period, and adds the day through the roster's own
+    /// writer. Its sentences become 403 / 409 / 400 here.
+    /// </summary>
+    public Task<UnrosteredDayDecisionResult> DecideUnrosteredDayAsync(UnrosteredDayDecisionRequest request, int? callerUserId)
+        => WorkflowSqlErrors.MapAsync(() => _repo.DecideUnrosteredDayAsync(request, callerUserId));
+
+    public Task ReopenUnrosteredDayAsync(UnrosteredDayReopenRequest request, int? callerUserId)
+        => WorkflowSqlErrors.MapAsync(async () =>
+        {
+            await _repo.ReopenUnrosteredDayAsync(request.EmployeeId, request.WorkDate, callerUserId);
+            return true;
+        });
 
     public Task<IEnumerable<QuarantinedDeviceUser>> GetDeviceQuarantineAsync(int? branchId)
         => _repo.GetDeviceQuarantineAsync(branchId);

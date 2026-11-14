@@ -185,6 +185,15 @@ public class PayrollReadiness
 
     /// <summary>Anomalies (late arrival / early departure / missing punch) HR has not decided — script 77. The create procedure refuses the run naming this count.</summary>
     public int UndecidedAnomalies { get; set; }
+
+    /// <summary>Completed days with punches that the approved roster does not know and nobody has decided — script 108.</summary>
+    public int UndecidedUnrosteredDays { get; set; }
+
+    /// <summary>Whether those days block THIS period (setting OffRosterBlocksPayrollFrom); false = counted, not blocking.</summary>
+    public bool UnrosteredDaysBlock { get; set; }
+
+    /// <summary>The month (yyyy-MM) from which an undecided day blocks payroll; null = never.</summary>
+    public string? UnrosteredBlocksFrom { get; set; }
     public bool IsReady { get; set; }
 }
 

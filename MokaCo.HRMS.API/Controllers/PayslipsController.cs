@@ -112,6 +112,27 @@ public class PayslipsController : ControllerBase
     /// that it was paid, and follow the link to the payslip, which opens for them on the same rule.
     /// Every other answer is the same 404 as "not paid yet": it says nothing about whose pay it was.
     /// </summary>
+    /// <summary>
+    /// The days behind the payslip's "N day(s) short" line (script 109). The SAME access rule as opening the payslip:
+    /// PAYROLL_VIEW, or the employee's own payslip once the month is approved.
+    /// </summary>
+    [HttpGet("{id:int}/short-days")]
+    public async Task<IActionResult> ShortDays(int id)
+    {
+        var detail = await _payroll.GetPayslipAsync(id);
+        if (detail.Payslip is null)
+            return NotFound();
+        if (!User.HasPermission("PAYROLL_VIEW"))
+        {
+            var me = await _support.GetEmployeeByUserIdAsync(User.UserId());
+            var isOwn = me is not null && me.EmployeeId == detail.Payslip.EmployeeId;
+            var isApproved = string.Equals(detail.Payslip.RunStatus, "Approved", StringComparison.OrdinalIgnoreCase);
+            if (!(isOwn && isApproved))
+                return StatusCode(403, new { error = "You may only open your own payslips, and only once the month is approved." });
+        }
+        return Ok(await _payroll.GetPayslipShortDaysAsync(id));
+    }
+
     [HttpGet("/api/payroll/lines/lookup")]
     public async Task<IActionResult> LookupLine([FromQuery] string? sourceType, [FromQuery] int? sourceId)
     {

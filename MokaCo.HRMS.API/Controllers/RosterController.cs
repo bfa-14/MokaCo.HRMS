@@ -10,8 +10,10 @@ namespace MokaCo.HRMS.Api.Controllers;
 /// The roster — what each person was SUPPOSED to work.
 ///
 /// This is the page HR lives in, and the reason it matters is not administrative: without a roster
-/// row the processor cannot tell late from early, or absent from a day off. An unrostered day is a
-/// day payroll cannot judge, which is why /gaps exists and why payroll readiness counts them.
+/// row the processor cannot tell late from early, or absent from a day off. A day with no roster row
+/// is a day payroll cannot judge, which is why /gaps exists. Payroll readiness counts the ROSTERED
+/// days that have no record, and (script 108) the days somebody punched on that the approved roster
+/// does not know and nobody has decided.
 ///
 /// Reading is ATTENDANCE_VIEW; writing is ATTENDANCE_MANAGE. Every generator defaults to
 /// Overwrite = false, so re-running one fills the holes and leaves HR's manual changes intact.
@@ -23,8 +25,13 @@ namespace MokaCo.HRMS.Api.Controllers;
 /// roster manager; the month stays Approved and the roster-month read reports ChangedSinceApproval.
 ///
 /// QA3 (ROS-14): every write passes the CALLER to the procedure, which refuses a branch they do not manage unless
-/// they hold EMP_VIEW_ALL — a 403 with the sentence. QA3 (ROS-6): HR may still add a MISSING day in the past of an
-/// approved month (no record, not paid); the procedure derives that day at once.
+/// they hold EMP_VIEW_ALL — a 403 with the sentence. QA3 (ROS-6): a MISSING day in the past of an approved month
+/// (no record, not paid) may still be added; the procedure derives that day at once.
+///
+/// Script 108: WHO may add such a day is a permission, read by the procedure from the role tables —
+/// OFFROSTER_PAST for a past day (it was "whoever holds EMP_VIEW_ALL"), OFFROSTER_TODAY for a missing row of
+/// TODAY when the employee has already punched (planning today for people who have not punched is unchanged).
+/// Adding it here files the same decision as the Daily attendance page does, and today's day is derived at once.
 /// </summary>
 [ApiController]
 [Route("api/roster")]

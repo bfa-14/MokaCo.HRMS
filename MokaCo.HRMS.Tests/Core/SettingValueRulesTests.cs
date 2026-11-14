@@ -25,6 +25,28 @@ public class SettingValueRulesTests
     public void Anything_else_is_refused_with_a_sentence(string value)
         => Assert.Contains("MM-DD", SettingValueRules.Problem("LeaveCarryOverExpiresOn", value));
 
+    /* 108: the month from which an undecided day that is not on the roster blocks payroll. SQL reads a value it
+       cannot parse as "never blocks", so a typo is refused when it is saved. */
+    [Theory]
+    [InlineData("2026-12")]
+    [InlineData("2027-01")]
+    [InlineData(" 2026-12 ")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void A_year_month_or_nothing_is_accepted_for_the_payroll_block(string? value)
+        => Assert.Null(SettingValueRules.Problem("OffRosterBlocksPayrollFrom", value));
+
+    [Theory]
+    [InlineData("12-2026")]
+    [InlineData("2026-13")]
+    [InlineData("2026-00")]
+    [InlineData("2026-1")]
+    [InlineData("2026/12")]
+    [InlineData("December 2026")]
+    [InlineData("1999-12")]
+    public void Any_other_month_text_is_refused_with_a_sentence(string value)
+        => Assert.Contains("yyyy-MM", SettingValueRules.Problem("OffRosterBlocksPayrollFrom", value));
+
     [Fact]
     public void Other_keys_are_not_judged_here()
         => Assert.Null(SettingValueRules.Problem("StandardWorkDayHours", "whatever"));

@@ -33,7 +33,28 @@ public class PayrollReadiness
     /// <summary>Late arrivals, early departures and missing punches HR has not decided (script 77). Until each is excused, deducted or corrected, payroll does not know what the day is worth.</summary>
     public int UndecidedAnomalies { get; set; }
 
-    /// <summary>True only when every counter is zero. Anything else means the month is not safe to pay.</summary>
+    /// <summary>
+    /// Completed days somebody punched on that the approved roster does not know and nobody has decided (script 108):
+    /// not added to the roster, not dismissed, and not in a period already paid for the employee.
+    /// </summary>
+    public int UndecidedUnrosteredDays { get; set; }
+
+    /// <summary>
+    /// Whether <see cref="UndecidedUnrosteredDays"/> blocks THIS period (setting OffRosterBlocksPayrollFrom covers it).
+    /// False = the days are counted and shown, and the month can still be paid.
+    /// </summary>
+    public bool UnrosteredDaysBlock { get; set; }
+
+    /// <summary>The month (yyyy-MM) from which an undecided day blocks payroll; null = never.</summary>
+    public string? UnrosteredBlocksFrom { get; set; }
+
+    /// <summary>The last completed day the counts reach: yesterday, or the month's end. Null from a database without script 108.</summary>
+    public DateTime? CountedUpTo { get; set; }
+
+    /// <summary>
+    /// True only when every BLOCKING counter is zero (the unrostered days count only once
+    /// <see cref="UnrosteredDaysBlock"/> is true). Anything else means the month is not safe to pay.
+    /// </summary>
     public bool IsReady { get; set; }
 }
 

@@ -23,6 +23,9 @@ public interface IPayrollService
 
     // --- payslips ---
     Task<PayslipDetail> GetPayslipAsync(int payslipId);
+
+    /// <summary>The days behind the payslip's "N day(s) short" line (script 109). Available = false without the script.</summary>
+    Task<PayslipShortDays> GetPayslipShortDaysAsync(int payslipId);
     Task<PayslipPaymentResult?> SetPaymentAsync(int payslipId, PayslipPaymentRequest request, int actedByUserId);
 
     Task<IEnumerable<StatutoryReportRow>> GetStatutoryReportAsync(int payrollRunId);

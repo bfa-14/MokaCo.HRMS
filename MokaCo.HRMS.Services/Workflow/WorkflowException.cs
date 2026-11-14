@@ -140,6 +140,27 @@ public static class WorkflowSqlErrors
             || message.Contains("belongs to another branch now", StringComparison.OrdinalIgnoreCase))
             return new WorkflowException(403, message);
 
+        // A day that is not on the roster (108_unrostered_days.sql). The wrong person asking: another
+        // branch's day, or without the permission of the day's date (today / past days).
+        if (message.StartsWith("You can only decide days of the branches you manage", StringComparison.OrdinalIgnoreCase)
+            || message.StartsWith("You may not decide", StringComparison.OrdinalIgnoreCase))
+            return new WorkflowException(403, message);
+
+        // The same day decided a moment ago by somebody else, or no longer one (its roster row or its
+        // record exists now): what is on screen is stale, and the answer is to reload.
+        if (message.StartsWith("This day is no longer waiting for a decision", StringComparison.OrdinalIgnoreCase))
+            return new WorkflowException(409, message);
+
+        // A day report (110_day_reports.sql): the wrong person reporting or deciding, or a stale screen.
+        if (message.StartsWith("You can only report your own days", StringComparison.OrdinalIgnoreCase)
+            || message.StartsWith("You can only decide reports of the branches you manage", StringComparison.OrdinalIgnoreCase)
+            || message.StartsWith("You can only withdraw a report you sent", StringComparison.OrdinalIgnoreCase)
+            || message.StartsWith("Somebody else decides a report about your own day", StringComparison.OrdinalIgnoreCase))
+            return new WorkflowException(403, message);
+        if (message.StartsWith("This report is no longer open", StringComparison.OrdinalIgnoreCase)
+            || message.StartsWith("A report for this day is already waiting", StringComparison.OrdinalIgnoreCase))
+            return new WorkflowException(409, message);
+
         // Everything else the procedures raise is a request-state or input rule, not a 500.
         return new WorkflowException(400, message);
     }

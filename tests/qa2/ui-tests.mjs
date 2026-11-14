@@ -88,14 +88,15 @@ async function main() {
       `path=${p.path} rows=${p.rows} api=${apiHol.length} missing=[${qaHol.filter((n) => !p.text.includes(n)).join(', ')}] errors=[${p.errors.join('; ')}]`,
       p.path === '/core/holidays' && qaHol.length > 0 && qaHol.every((n) => p.text.includes(n)) && p.errors.length === 0);
 
-    /* ---- E4a: Anomalies → Worked without roster ---- */
+    /* ---- E4a: Anomalies → Not on roster (script 108: a list of days with their decisions, no longer a table) ---- */
     await cdp.navigate(`${WEB}/attendance/anomalies?from=${from}&to=${to}&view=unrostered`, 4500);
     p = await page();
     await cdp.screenshot('anomalies-worked-without-roster');
-    const apiUnr = (await apiGet(owner.accessToken, `/api/attendance/worked-without-roster?from=${from}&to=${to}`)) ?? [];
-    check('UI-E4a', 'Anomalies → "Worked without roster" shows what GET /api/attendance/worked-without-roster returns for the month', `${apiUnr.length} row(s), the first employee named`,
-      `rows=${p.rows} api=${apiUnr.length} first=${apiUnr[0]?.employeeName ?? '-'} errors=[${p.errors.join('; ')}]`,
-      p.errors.length === 0 && p.rows === apiUnr.length && (apiUnr.length === 0 || p.text.includes(apiUnr[0].employeeName)));
+    const shownUnr = await cdp.evaluate(`document.querySelectorAll('.unrostered-day').length`);
+    const apiUnr = ((await apiGet(owner.accessToken, `/api/attendance/unrostered-days?from=${from}&to=${to}`)) ?? []).filter((d) => d.state === 'Open');
+    check('UI-E4a', 'Anomalies → "Not on roster" shows the open days GET /api/attendance/unrostered-days returns for the month', `${apiUnr.length} day(s), the first employee named`,
+      `shown=${shownUnr} api=${apiUnr.length} first=${apiUnr[0]?.employeeName ?? '-'} errors=[${p.errors.join('; ')}]`,
+      p.errors.length === 0 && shownUnr === apiUnr.length && (apiUnr.length === 0 || p.text.includes(apiUnr[0].employeeName)));
 
     /* ---- E4b: Anomalies → Unknown device punches, and "Map to employee" through the page's own dialog ----
        A punch under a PIN nobody holds is put on the QA2 terminal (yesterday: an open period), found on the page,
