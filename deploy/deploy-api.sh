@@ -51,9 +51,15 @@ command -v nginx >/dev/null || die "nginx is not installed"
 # the sites this project adds itself (enable-https-ip.sh / enable-tls.sh, the website, the test
 # subdomain, the sis stack handed to Caddy by share-ports-with-caddy.sh) are not "other sites"
 others=$(ls /etc/nginx/sites-enabled/ 2>/dev/null | grep -vE '^(default|mokaco|mokaco-default|mokaco-api|mokaco-test|mokanco-site|mokaco-sis)$' || true)
+# Only a FIRST install writes the port-80 default_server site that could fight with them (section 6 keeps
+# an existing /etc/nginx/sites-available/mokaco untouched), so on a redeploy they are listed, not a stop.
 if [[ -n "$others" ]]; then
-  die "nginx already serves other sites on this shared box: $others
+  if [[ -f /etc/nginx/sites-available/mokaco ]]; then
+    echo "    other nginx sites on this box (left alone; the mokaco site is kept as it is): $(echo $others)"
+  else
+    die "nginx already serves other sites on this shared box: $others
      Adding a default_server for the API would fight with them. Show this to Reda before continuing."
+  fi
 fi
 # On a redeploy the port is held by this service itself. Its process is "dotnet", so ss never shows
 # the service's name: compare the listener's PID with the service's main PID instead.
