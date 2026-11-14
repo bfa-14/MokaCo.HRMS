@@ -432,7 +432,7 @@ public class BookingsController : ControllerBase
     /// empty. Returns the row as stored.
     /// </summary>
     [HttpPost("rooms")]
-    [HasPermission("BOOKING_MANAGE")]
+    [HasPermission("BOOKING_ROOMS")]   // script 111: the catalogue has its own permission
     public async Task<IActionResult> CreateRoom([FromBody] RoomUpsertRequest request)
         => await UpsertRoomAsync(null, request);
 
@@ -442,7 +442,7 @@ public class BookingsController : ControllerBase
     /// a room with its deposit left alone.
     /// </summary>
     [HttpPut("rooms/{id:int}")]
-    [HasPermission("BOOKING_MANAGE")]
+    [HasPermission("BOOKING_ROOMS")]   // script 111: the catalogue has its own permission
     public async Task<IActionResult> UpdateRoom(int id, [FromBody] RoomUpsertRequest request)
         => await UpsertRoomAsync(id, request);
 
@@ -479,7 +479,7 @@ public class BookingsController : ControllerBase
     /// refusal names the day it was on.
     /// </summary>
     [HttpPut("rooms/{id:int}/hours")]
-    [HasPermission("BOOKING_MANAGE")]
+    [HasPermission("BOOKING_ROOMS")]   // script 111: the catalogue has its own permission
     public async Task<IActionResult> SetHours(int id, [FromBody] List<RoomHoursRequest> hours)
     {
         if (hours is null || hours.Count == 0)
@@ -503,7 +503,7 @@ public class BookingsController : ControllerBase
 
     /// <summary>Adds an add-on to a room's price list.</summary>
     [HttpPost("rooms/{id:int}/addons")]
-    [HasPermission("BOOKING_MANAGE")]
+    [HasPermission("BOOKING_ROOMS")]   // script 111: the catalogue has its own permission
     public async Task<IActionResult> CreateAddon(int id, [FromBody] RoomAddonUpsertRequest request)
         => await UpsertAddonAsync(null, id, request);
 
@@ -512,7 +512,7 @@ public class BookingsController : ControllerBase
     /// so nothing already booked moves.
     /// </summary>
     [HttpPut("rooms/{id:int}/addons/{addonId:int}")]
-    [HasPermission("BOOKING_MANAGE")]
+    [HasPermission("BOOKING_ROOMS")]   // script 111: the catalogue has its own permission
     public async Task<IActionResult> UpdateAddon(int id, int addonId, [FromBody] RoomAddonUpsertRequest request)
         => await UpsertAddonAsync(addonId, id, request);
 
@@ -555,7 +555,7 @@ public class BookingsController : ControllerBase
     /// including payments against bookings that were later cancelled.
     /// </summary>
     [HttpGet("report")]
-    [HasPermission("BOOKING_VIEW")]
+    [HasPermission("BOOKING_REPORT")]   // script 111: revenue, not for the booking desk
     public async Task<IActionResult> GetReport(
         [FromQuery] DateTime from,
         [FromQuery] DateTime to,

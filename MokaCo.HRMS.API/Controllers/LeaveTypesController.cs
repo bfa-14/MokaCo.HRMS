@@ -26,9 +26,18 @@ public class LeaveTypesController : ControllerBase
     /// </summary>
     private Task NotifyLeavePolicyAsync() => _live.NotifyAsync("hr", "dashboard");
 
+    /// <summary>
+    /// The leave types. Read by HR's pages (EMP_VIEW) AND by the leave request form of every employee
+    /// (REQUEST_RAISE_SELF): an Employee role holding only the right to raise its own requests got a 403 here, and
+    /// the form's "Leave type" stayed empty - nobody could ask for leave. Either code is enough; the names and rules
+    /// of the leave types are policy every employee may read. Changing them stays LEAVE_POLICY_MANAGE.
+    /// </summary>
     [HttpGet]
-    [HasPermission("EMP_VIEW")]
-    public async Task<IActionResult> GetAll() => Ok(await _leaveTypes.GetAllAsync());
+    public async Task<IActionResult> GetAll()
+        => MayReadPolicy() ? Ok(await _leaveTypes.GetAllAsync()) : Forbid();
+
+    /// <summary>EMP_VIEW (HR's pages) or REQUEST_RAISE_SELF (an employee asking for leave).</summary>
+    private bool MayReadPolicy() => User.HasPermission("EMP_VIEW") || User.HasPermission("REQUEST_RAISE_SELF");
 
     /// <summary>
     /// Which leave types ask for a relation, which relations they cover, and the days each entitles.
@@ -39,9 +48,8 @@ public class LeaveTypesController : ControllerBase
     /// to see, not something they configure.
     /// </summary>
     [HttpGet("relation-entitlements")]
-    [HasPermission("EMP_VIEW")]
     public async Task<IActionResult> GetRelationEntitlements()
-        => Ok(await _leaveTypes.GetRelationEntitlementsAsync());
+        => MayReadPolicy() ? Ok(await _leaveTypes.GetRelationEntitlementsAsync()) : Forbid();
 
     /// <summary>
     /// Creates a leave type, policy and all (hr.usp_LeaveType_Upsert). Returns the row AS STORED so
