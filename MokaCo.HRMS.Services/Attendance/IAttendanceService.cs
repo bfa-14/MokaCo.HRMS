@@ -14,6 +14,12 @@ public interface IAttendanceService
     Task<ProcessResult> ReprocessDayAsync(DateTime workDate);
 
     Task<MarkAbsenteesResult> MarkAbsenteesAsync(DateTime workDate);
+
+    /// <summary>Re-process every day of a range (at most DayRange.MaxDays), one day after the other.</summary>
+    Task<ProcessResult> ReprocessRangeAsync(DateTime fromDate, DateTime toDate);
+
+    /// <summary>Mark absentees on every day of a range (at most DayRange.MaxDays).</summary>
+    Task<MarkAbsenteesResult> MarkAbsenteesRangeAsync(DateTime fromDate, DateTime toDate);
     Task<MarkLeaveDaysResult> MarkLeaveDaysAsync(string periodYearMonth);
 
     Task<IEnumerable<AttendanceRecord>> GetAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId, int? callerUserId = null);

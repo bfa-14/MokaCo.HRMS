@@ -47,6 +47,26 @@ public class AttendanceService : IAttendanceService
     /// <summary>Run AFTER the processor: it writes the records for people who were rostered but never punched at all.</summary>
     public Task<MarkAbsenteesResult> MarkAbsenteesAsync(DateTime workDate) => _repo.MarkAbsenteesAsync(workDate);
 
+    public async Task<ProcessResult> ReprocessRangeAsync(DateTime fromDate, DateTime toDate)
+    {
+        var total = new ProcessResult();
+        foreach (var day in DayRange.Days(fromDate, toDate))
+        {
+            var r = await _repo.ReprocessDayAsync(day);
+            total.EmployeeDaysProcessed += r.EmployeeDaysProcessed;
+            total.LateDaysReprocessed += r.LateDaysReprocessed;
+        }
+        return total;
+    }
+
+    public async Task<MarkAbsenteesResult> MarkAbsenteesRangeAsync(DateTime fromDate, DateTime toDate)
+    {
+        var total = new MarkAbsenteesResult();
+        foreach (var day in DayRange.Days(fromDate, toDate))
+            total.AbsenteesMarked += (await _repo.MarkAbsenteesAsync(day)).AbsenteesMarked;
+        return total;
+    }
+
     public Task<MarkLeaveDaysResult> MarkLeaveDaysAsync(string periodYearMonth) => _repo.MarkLeaveDaysAsync(periodYearMonth);
 
     public Task<IEnumerable<AttendanceRecord>> GetAsync(DateTime fromDate, DateTime toDate, int? employeeId, int? branchId, int? callerUserId = null)
