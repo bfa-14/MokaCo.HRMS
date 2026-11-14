@@ -149,13 +149,30 @@ public class AttendanceIngestionController : ControllerBase
         [FromQuery] DateTime? date,
         [FromQuery] int? deviceId,
         [FromServices] IScopeRepository scopes,
-        [FromQuery] bool unresolvedOnly = false)
+        [FromQuery] bool unresolvedOnly = false,
+        [FromQuery] DateTime? from = null,
+        [FromQuery] DateTime? to = null)
     {
-        if (date is null)
+        // A period (from..to, at most a month) or one day; the raw log is read one day at a time either way.
+        DateTime first, last;
+        if (from is not null || to is not null)
+        {
+            if (from is null || to is null)
+                return BadRequest(new { error = "Give both ends of the period, or one date." });
+            if (DayRange.Problem(from.Value, to.Value) is { } problem)
+                return BadRequest(new { error = problem });
+            (first, last) = (from.Value.Date, to.Value.Date);
+        }
+        else if (date is not null)
+            (first, last) = (date.Value.Date, date.Value.Date);
+        else
             return BadRequest(new { error = "A date is required." });
 
-        var punches = await _import.GetPunchesByDateAsync(date.Value, deviceId, unresolvedOnly);
-        var scope = await scopes.ForCallerAsync(HttpContext, date.Value, date.Value);
-        return Ok(punches.Where(p => scope.SeesPunch(p.EmployeeId, p.BranchId)));
+        var punches = new List<RawPunch>();
+        foreach (var day in DayRange.Days(first, last))
+            punches.AddRange(await _import.GetPunchesByDateAsync(day, deviceId, unresolvedOnly));
+        var scope = await scopes.ForCallerAsync(HttpContext, first, last);
+        // Newest first over the whole period, as a single day has always been.
+        return Ok(punches.Where(p => scope.SeesPunch(p.EmployeeId, p.BranchId)).OrderByDescending(p => p.PunchTimeUtc));
     }
 }

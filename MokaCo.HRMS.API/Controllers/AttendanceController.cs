@@ -276,8 +276,19 @@ public class AttendanceController : ControllerBase
     /// </summary>
     [HttpPost("reprocess")]
     [HasPermission("ATTENDANCE_MANAGE")]
-    public async Task<IActionResult> Reprocess([FromQuery] DateTime? date)
+    public async Task<IActionResult> Reprocess([FromQuery] DateTime? date, [FromQuery] DateTime? from = null, [FromQuery] DateTime? to = null)
     {
+        // A range (from..to, at most a month) re-derives each of its days, one after the other.
+        if (from is not null || to is not null)
+        {
+            if (from is null || to is null)
+                return BadRequest(new { error = "Give both ends of the period, or one date." });
+            if (DayRange.Problem(from.Value, to.Value) is { } problem)
+                return BadRequest(new { error = problem });
+            var range = await _attendance.ReprocessRangeAsync(from.Value, to.Value);
+            await NotifyAttendanceAsync();
+            return Ok(range);
+        }
         if (date is null)
             return BadRequest(new { error = "A date is required — re-processing rebuilds one day." });
 
@@ -293,9 +304,21 @@ public class AttendanceController : ControllerBase
     /// </summary>
     [HttpPost("mark-absentees")]
     [HasPermission("ATTENDANCE_MANAGE")]
-    public async Task<IActionResult> MarkAbsentees([FromQuery] DateTime workDate)
+    public async Task<IActionResult> MarkAbsentees([FromQuery] DateTime? workDate, [FromQuery] DateTime? from = null, [FromQuery] DateTime? to = null)
     {
-        var result = await _attendance.MarkAbsenteesAsync(workDate);
+        if (from is not null || to is not null)
+        {
+            if (from is null || to is null)
+                return BadRequest(new { error = "Give both ends of the period, or one date." });
+            if (DayRange.Problem(from.Value, to.Value) is { } problem)
+                return BadRequest(new { error = problem });
+            var range = await _attendance.MarkAbsenteesRangeAsync(from.Value, to.Value);
+            await NotifyAttendanceAsync();
+            return Ok(range);
+        }
+        if (workDate is null)
+            return BadRequest(new { error = "A date is required." });
+        var result = await _attendance.MarkAbsenteesAsync(workDate.Value);
         await NotifyAttendanceAsync();
         return Ok(result);
     }
