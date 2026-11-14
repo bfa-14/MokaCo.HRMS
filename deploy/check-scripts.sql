@@ -59,7 +59,8 @@ INSERT INTO @S (No, Script, Applied, CheckedBy) VALUES
  (108, N'108_unrostered_days.sql',                IIF(OBJECT_ID('attendance.usp_PayrollReadiness_Get') IS NOT NULL, 1, 0), N'attendance.usp_PayrollReadiness_Get'),
  (109, N'109_payslip_short_days.sql',            IIF(OBJECT_ID('payroll.usp_Payslip_ShortDays') IS NOT NULL, 1, 0), N'payroll.usp_Payslip_ShortDays'),
  (110, N'110_day_reports.sql',                    IIF(OBJECT_ID('attendance.usp_DayReport_Decide') IS NOT NULL, 1, 0), N'attendance.usp_DayReport_Decide'),
- (111, N'111_booking_rooms_report_permissions.sql', IIF(OBJECT_ID('security.usp_Permission_Holders') IS NOT NULL, 1, 0), N'security.usp_Permission_Holders');
+ (111, N'111_booking_rooms_report_permissions.sql', IIF(OBJECT_ID('security.usp_Permission_Holders') IS NOT NULL, 1, 0), N'security.usp_Permission_Holders'),
+ (112, N'112_my_branch_shifts_permission.sql',     IIF(EXISTS (SELECT 1 FROM security.PERMISSION WHERE Code = 'SHIFTS_VIEW_BRANCH'), 1, 0), N'permission SHIFTS_VIEW_BRANCH');
 
 INSERT INTO @S (No, Script, Applied, Admin, CheckedBy) VALUES
  (91, N'91_admin_reseed_identities.sql',          IIF(OBJECT_ID('dbo.usp_Admin_ReseedIdentities') IS NOT NULL, 1, 0), 1, N'admin tool'),
