@@ -64,6 +64,9 @@ public interface IPayrollRepository
     /// </summary>
     Task<PayslipDetail> GetPayslipAsync(int payslipId);
 
+    /// <summary>Script 109: the days behind the payslip's short-days line. Throws MissingScriptException without it.</summary>
+    Task<IEnumerable<PayslipShortDay>> GetPayslipShortDaysAsync(int payslipId);
+
     Task<PayslipPaymentResult?> SetPaymentAsync(
         int payslipId, string paymentMethod, string? paymentReference, int actedByUserId);
 

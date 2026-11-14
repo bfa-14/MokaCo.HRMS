@@ -184,6 +184,8 @@ Status precedence for a day: **approved leave → public holiday → rostered re
 
 **My attendance** (`/my-attendance`, every signed-in person linked to an employee; `GET /api/me/attendance?month=yyyy-MM`, authentication only, the employee taken from the token): today's punches, the next seven days' shifts and one month day by day with HR's decisions on each (excused, deducted, corrected, waiting; a day not on the roster: waiting or dismissed). HR's notes are never sent. No script.
 
+**The days behind "N day(s) short"** (script 109): the payslip line stays one total (`payroll.fn_ShortDays`); `payroll.fn_ShortDayList` is the same rule per day and `payroll.usp_Payslip_ShortDays @PayslipId` lists a payslip's days, up to `PAYROLL_RUN.GeneratedUpTo`. `GET /api/payroll/payslips/{id}/short-days` has the payslip's own access rule (PAYROLL_VIEW, or the employee's own once approved); the payslip page opens it under the line ("See the days") and warns when attendance changed after the run was generated. Nothing that pays changed.
+
 **A day that is not on the roster** (script 108). Punches on a day the approved roster does not know have no attendance record, so the Days grid cannot show them: the Daily attendance page lists them above the grid as "Not on roster" (the Anomalies page has the same list), with the punches behind each. Nothing is paid or deducted until a person decides what the day was - **the system proposes a shift (the one starting nearest the first punch) and never adds a roster row itself**:
 
 - *A working day, on a shift* - the day joins the roster on that shift and is derived from its punches at once (lateness and early leaving measured against the shift);
@@ -344,12 +346,12 @@ Daily and monthly attendance, payroll runs and payslips, bookings (period, room,
 |---|---|---|
 | `tests/qa` | `MokaCo.HRMS/tests/qa` (`bash tests/qa/run.sh`) | 216 checks: rosters, attendance, leaves, payroll, bookings, permissions, cultures, responsive smoke |
 | `tests/qa2` | `MokaCo.HRMS/tests/qa2` (`bash tests/qa2/run.sh`) | 67 checks of **complex** scenarios: same-day combinations, overnight + DST + month end, leave edge cases, roster changes, payroll proration and statutory math, plus browser checks |
-| `tests/qa3` | `MokaCo.HRMS/tests/qa3/<area>/*.sql` (`sqlcmd -I -b -d <db> -i <file>`) | 54 SQL scenarios for the QA3 scripts 98–108; each runs in a transaction it rolls back and prints `ok <name>`. Report: `tests/qa3/QA_REPORT_3.md` |
-| unit + database tests | `dotnet test` | 1771 tests; the database ones run when `MOKACO_TEST_CONNECTION` points at a database with the scripts, otherwise they skip |
+| `tests/qa3` | `MokaCo.HRMS/tests/qa3/<area>/*.sql` (`sqlcmd -I -b -d <db> -i <file>`) | 55 SQL scenarios for the QA3 scripts 98–109; each runs in a transaction it rolls back and prints `ok <name>`. Report: `tests/qa3/QA_REPORT_3.md` |
+| unit + database tests | `dotnet test` | 1779 tests; the database ones run when `MOKACO_TEST_CONNECTION` points at a database with the scripts, otherwise they skip |
 
 Both suites seed everything with a `QA ` / `QA2 ` prefix, run inside transactions where the data is real (payroll), and `cleanup.sql` removes their rows and **verifies integrity**: real row counts plus checksums of rosters, attendance records and the leave ledger must match the baseline taken at seed time. Reports: `QA_REPORT.md` and `tests/qa2/QA_REPORT_2.md` (bug table, rules decided, features added, disposition per finding).
 
-Current state (14 November 2026): `dotnet test` 1771/1771 against a stand-in database with every numbered script up to 108, `tests/qa3` 54/54, web `npm test` 216/216 with `tsc`, lint and build clean; the "Not on roster" screens were also driven in a browser (desktop and phone). The stand-in is rebuilt from the repo scripts on an inferred base, so overnight attribution (`attendance.fn_AttributedWorkDate`) is only approximated there: check it on the test VM. `qa` and `qa2` were last run at 216/216 and 67/67; their cases were updated for QA3 but not re-run (they need the test VM).
+Current state (14 November 2026): `dotnet test` 1779/1779 against a stand-in database with every numbered script up to 109, `tests/qa3` 55/55 (the new 09_payslip_short_days included), web `npm test` 218/218 with `tsc`, lint and build clean; the "Not on roster" screens were also driven in a browser (desktop and phone). The stand-in is rebuilt from the repo scripts on an inferred base, so overnight attribution (`attendance.fn_AttributedWorkDate`) is only approximated there: check it on the test VM. `qa` and `qa2` were last run at 216/216 and 67/67; their cases were updated for QA3 but not re-run (they need the test VM).
 
 If a suite is interrupted, run its `cleanup.sql` before anything else — it also restores the settings the suite changed.
 

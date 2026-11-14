@@ -1,4 +1,5 @@
 using MokaCo.HRMS.Model.Payroll;
+using MokaCo.HRMS.Repository.Common;
 using MokaCo.HRMS.Repository.Payroll;
 using MokaCo.HRMS.Services.Workflow;
 
@@ -133,6 +134,27 @@ public class PayrollService : IPayrollService
     // ─────────────────────────────── payslips ───────────────────────────────
 
     public Task<PayslipDetail> GetPayslipAsync(int payslipId) => _repo.GetPayslipAsync(payslipId);
+
+    public async Task<PayslipShortDays> GetPayslipShortDaysAsync(int payslipId)
+    {
+        try
+        {
+            var days = (await _repo.GetPayslipShortDaysAsync(payslipId)).ToList();
+            var first = days.FirstOrDefault();
+            return new PayslipShortDays
+            {
+                CountedFrom = first?.CountedFrom,
+                CountedUpTo = first?.CountedUpTo,
+                LineQuantity = first?.LineQuantity,
+                TotalMissingDays = days.Sum(d => d.MissingDays),
+                Days = days,
+            };
+        }
+        catch (MissingScriptException)
+        {
+            return new PayslipShortDays { Available = false };
+        }
+    }
 
     public Task<PayslipPaymentResult?> SetPaymentAsync(int payslipId, PayslipPaymentRequest request, int actedByUserId)
         => WorkflowSqlErrors.MapAsync(() => _repo.SetPaymentAsync(

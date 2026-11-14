@@ -23,6 +23,7 @@ public static class Scripts
     /// script 103's answer and the list to script 87's (nothing can be decided).
     /// </summary>
     public const string Unrostered108 = "docs/108_unrostered_days.sql";
+    public const string PayslipShortDays109 = "docs/109_payslip_short_days.sql";
 
     /// <summary>
     /// QA3 DEPLOY GUARD: every numbered script this build of the API calls, in apply order, each with the
@@ -49,5 +50,6 @@ public static class Scripts
         new("docs/107_qa3_tier_chains.sql", "workflow.usp_TierChains_Align"),
         // The last procedure the script creates (the API's readiness read).
         new(Unrostered108, "attendance.usp_PayrollReadiness_Get"),
+        new(PayslipShortDays109, "payroll.usp_Payslip_ShortDays"),
     ];
 }

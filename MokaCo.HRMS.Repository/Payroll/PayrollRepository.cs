@@ -266,6 +266,14 @@ CROSS APPLY (SELECT CASE l.SourceType
     END AS RequestInstanceId) x
 WHERE l.PayslipId = @PayslipId AND l.SourceId IS NOT NULL AND x.RequestInstanceId IS NOT NULL;";
 
+    public async Task<IEnumerable<PayslipShortDay>> GetPayslipShortDaysAsync(int payslipId)
+    {
+        using var db = _factory.Create();
+        return await MissingScriptException.GuardAsync(Scripts.PayslipShortDays109, "payroll.usp_Payslip_ShortDays",
+            () => db.QueryAsync<PayslipShortDay>("payroll.usp_Payslip_ShortDays", new { PayslipId = payslipId },
+                commandType: CommandType.StoredProcedure));
+    }
+
     public async Task<PayslipDetail> GetPayslipAsync(int payslipId)
     {
         using var db = _factory.Create();
