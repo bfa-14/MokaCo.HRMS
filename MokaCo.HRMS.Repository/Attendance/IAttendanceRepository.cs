@@ -52,6 +52,18 @@ public interface IAttendanceRepository
     /// <summary>Employee-days with punches but no record because the approved roster has no row for them (SQL 83).</summary>
     Task<IEnumerable<WorkedWithoutRoster>> GetWorkedWithoutRosterAsync(DateTime fromDate, DateTime toDate, int? branchId, int? callerUserId = null);
 
+    /// <summary>
+    /// The same days with their state and whether the caller may decide each (script 108). Throws
+    /// <see cref="Common.MissingScriptException"/> while that script is not applied.
+    /// </summary>
+    Task<IEnumerable<UnrosteredDay>> GetUnrosteredDaysAsync(DateTime fromDate, DateTime toDate, int? branchId, int? employeeId, int? callerUserId);
+
+    /// <summary>The decision on one such day: a shift, a rest day worked, or not work (script 108).</summary>
+    Task<UnrosteredDayDecisionResult> DecideUnrosteredDayAsync(UnrosteredDayDecisionRequest request, int? callerUserId);
+
+    /// <summary>A dismissal taken back (script 108).</summary>
+    Task ReopenUnrosteredDayAsync(int employeeId, DateTime workDate, int? callerUserId);
+
     /// <summary>D9: the unknown device users, one line per (device, PIN).</summary>
     Task<IEnumerable<QuarantinedDeviceUser>> GetDeviceQuarantineAsync(int? branchId);
 

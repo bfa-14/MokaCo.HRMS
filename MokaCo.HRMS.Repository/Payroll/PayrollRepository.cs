@@ -1,5 +1,6 @@
 using System.Data;
 using Dapper;
+using Microsoft.Data.SqlClient;
 using MokaCo.HRMS.Model.Payroll;
 using MokaCo.HRMS.Repository.Common;
 
@@ -218,13 +219,27 @@ public class PayrollRepository : IPayrollRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    /// <summary>
+    /// Script 108's answer (the unrostered days among the counts); script 103's eleven columns on a
+    /// database that does not have 108 yet.
+    /// </summary>
     public async Task<PayrollReadiness?> GetReadinessAsync(string periodYearMonth)
     {
         using var db = _factory.Create();
-        return await db.QuerySingleOrDefaultAsync<PayrollReadiness>(
-            "attendance.usp_Attendance_PayrollReadiness",
-            new { PeriodYearMonth = periodYearMonth },
-            commandType: CommandType.StoredProcedure);
+        try
+        {
+            return await db.QuerySingleOrDefaultAsync<PayrollReadiness>(
+                "attendance.usp_PayrollReadiness_Get",
+                new { PeriodYearMonth = periodYearMonth },
+                commandType: CommandType.StoredProcedure);
+        }
+        catch (SqlException ex) when (MissingScriptException.IsMissingObject(ex.Number))
+        {
+            return await db.QuerySingleOrDefaultAsync<PayrollReadiness>(
+                "attendance.usp_Attendance_PayrollReadiness",
+                new { PeriodYearMonth = periodYearMonth },
+                commandType: CommandType.StoredProcedure);
+        }
     }
 
     // ─────────────────────────────── payslips ───────────────────────────────

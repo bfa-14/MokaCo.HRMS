@@ -1,5 +1,6 @@
 using System.Data;
 using Dapper;
+using Microsoft.Data.SqlClient;
 using MokaCo.HRMS.Model.Attendance;
 using MokaCo.HRMS.Repository.Common;
 
@@ -237,13 +238,27 @@ public class AttendanceRepository : IAttendanceRepository
             commandType: CommandType.StoredProcedure);
     }
 
+    /// <summary>
+    /// Script 108's answer (every count, the unrostered days among them). On a database that does not
+    /// have that script yet, script 103's eleven columns: the page still opens, without the eighth count.
+    /// </summary>
     public async Task<PayrollReadiness> GetPayrollReadinessAsync(string periodYearMonth)
     {
         using var db = _factory.Create();
-        return await db.QuerySingleAsync<PayrollReadiness>(
-            "attendance.usp_Attendance_PayrollReadiness",
-            new { PeriodYearMonth = periodYearMonth },
-            commandType: CommandType.StoredProcedure);
+        try
+        {
+            return await db.QuerySingleAsync<PayrollReadiness>(
+                "attendance.usp_PayrollReadiness_Get",
+                new { PeriodYearMonth = periodYearMonth },
+                commandType: CommandType.StoredProcedure);
+        }
+        catch (SqlException ex) when (MissingScriptException.IsMissingObject(ex.Number))
+        {
+            return await db.QuerySingleAsync<PayrollReadiness>(
+                "attendance.usp_Attendance_PayrollReadiness",
+                new { PeriodYearMonth = periodYearMonth },
+                commandType: CommandType.StoredProcedure);
+        }
     }
 
     /// <summary>
@@ -307,6 +322,42 @@ public class AttendanceRepository : IAttendanceRepository
         return await db.QueryAsync<WorkedWithoutRoster>(
             "attendance.usp_Attendance_GetWorkedWithoutRoster",
             new { FromDate = fromDate.Date, ToDate = toDate.Date, BranchId = branchId, CallerUserId = callerUserId },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task<IEnumerable<UnrosteredDay>> GetUnrosteredDaysAsync(DateTime fromDate, DateTime toDate, int? branchId, int? employeeId, int? callerUserId)
+    {
+        using var db = _factory.Create();
+        return await MissingScriptException.GuardAsync(Scripts.Unrostered108, "attendance.usp_UnrosteredDay_GetList",
+            () => db.QueryAsync<UnrosteredDay>(
+                "attendance.usp_UnrosteredDay_GetList",
+                new { FromDate = fromDate.Date, ToDate = toDate.Date, BranchId = branchId, EmployeeId = employeeId, CallerUserId = callerUserId },
+                commandType: CommandType.StoredProcedure));
+    }
+
+    public async Task<UnrosteredDayDecisionResult> DecideUnrosteredDayAsync(UnrosteredDayDecisionRequest request, int? callerUserId)
+    {
+        using var db = _factory.Create();
+        return await db.QuerySingleAsync<UnrosteredDayDecisionResult>(
+            "attendance.usp_UnrosteredDay_Decide",
+            new
+            {
+                request.EmployeeId,
+                WorkDate = request.WorkDate.Date,
+                request.Decision,
+                request.ShiftId,
+                request.Note,
+                CallerUserId = callerUserId,
+            },
+            commandType: CommandType.StoredProcedure);
+    }
+
+    public async Task ReopenUnrosteredDayAsync(int employeeId, DateTime workDate, int? callerUserId)
+    {
+        using var db = _factory.Create();
+        await db.ExecuteAsync(
+            "attendance.usp_UnrosteredDay_Reopen",
+            new { EmployeeId = employeeId, WorkDate = workDate.Date, CallerUserId = callerUserId },
             commandType: CommandType.StoredProcedure);
     }
 

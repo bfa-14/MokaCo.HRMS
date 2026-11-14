@@ -47,6 +47,21 @@ public interface IAttendanceService
     /// <summary>Employee-days with punches but no record because the approved roster has no row for them (SQL 83).</summary>
     Task<IEnumerable<WorkedWithoutRoster>> GetWorkedWithoutRosterAsync(DateTime fromDate, DateTime toDate, int? branchId, int? callerUserId = null);
 
+    /// <summary>
+    /// The same days, each with its state (open / dismissed) and whether THIS caller may decide it (script 108).
+    /// </summary>
+    Task<IEnumerable<UnrosteredDay>> GetUnrosteredDaysAsync(DateTime fromDate, DateTime toDate, int? branchId, int? employeeId, int? callerUserId);
+
+    /// <summary>
+    /// What one such day was: a shift, a rest day that was worked, or not work. The first two add the
+    /// roster row and derive the day at once. A refusal is a <see cref="Workflow.WorkflowException"/>
+    /// carrying the procedure's own sentence.
+    /// </summary>
+    Task<UnrosteredDayDecisionResult> DecideUnrosteredDayAsync(UnrosteredDayDecisionRequest request, int? callerUserId);
+
+    /// <summary>Takes a dismissal back: the day is open again.</summary>
+    Task ReopenUnrosteredDayAsync(UnrosteredDayReopenRequest request, int? callerUserId);
+
     /// <summary>D9: the unknown device users, one line per (device, PIN).</summary>
     Task<IEnumerable<QuarantinedDeviceUser>> GetDeviceQuarantineAsync(int? branchId);
 

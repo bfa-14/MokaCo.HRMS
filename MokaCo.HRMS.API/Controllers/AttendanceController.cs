@@ -25,6 +25,9 @@ namespace MokaCo.HRMS.Api.Controllers;
 ///                       the anomaly queue with its decisions (script 77). These directly change
 ///                       what a person is PAID, which is why they are held apart from MANAGE:
 ///                       whoever runs the processor cannot also rewrite hours.
+///   OFFROSTER_TODAY /   deciding a day with punches that the approved roster does not know (script 108):
+///   OFFROSTER_PAST      today's days / past days. Checked by the procedure, live, inside the caller's
+///                       branches - see DecideUnrosteredDay.
 /// </summary>
 [ApiController]
 [Route("api/attendance")]
@@ -379,6 +382,81 @@ public class AttendanceController : ControllerBase
             return BadRequest(new { error = "'from' must be on or before 'to'." });
 
         return Ok(await _attendance.GetWorkedWithoutRosterAsync(from, to, branchId, User.UserId()));
+    }
+
+    /* ---- days that are not on the roster (script 108) ---- */
+
+    /// <summary>
+    /// The same days as worked-without-roster, as the pages show them: each with its state (open, or
+    /// dismissed with the reason), what stands in the way of adding it (a paid period, a roster waiting
+    /// for approval, a day outside the employment) and CanDecide - whether THIS caller may decide THIS
+    /// day. Branch-scoped like every attendance list.
+    /// </summary>
+    [HttpGet("unrostered-days")]
+    [HasPermission("ATTENDANCE_VIEW")]
+    public async Task<IActionResult> GetUnrosteredDays(
+        [FromQuery] DateTime from, [FromQuery] DateTime to,
+        [FromQuery] int? branchId = null, [FromQuery] int? employeeId = null)
+    {
+        if (from > to)
+            return BadRequest(new { error = "'from' must be on or before 'to'." });
+
+        return Ok(await _attendance.GetUnrosteredDaysAsync(from, to, branchId, employeeId, User.UserId()));
+    }
+
+    /// <summary>
+    /// What one such day was. Shift / RestDay add the day to the roster and derive it from its punches at
+    /// once; Dismiss says the punches were not work (a note is required) and writes nothing to the roster
+    /// or to attendance.
+    ///
+    /// WHO MAY: the two permissions OFFROSTER_TODAY and OFFROSTER_PAST, by the day's date, inside the
+    /// caller's branches. No attribute names them because which of the two applies depends on the day,
+    /// and because the PROCEDURE is the authority: it reads the role tables at the moment of the decision,
+    /// so a grant or a withdrawal on the Role permissions page counts at once, not at the next sign-in
+    /// (the token's claims are up to a session old). The class-level ATTENDANCE_VIEW floor still applies.
+    /// </summary>
+    [HttpPost("unrostered-days/decide")]
+    public async Task<IActionResult> DecideUnrosteredDay([FromBody] UnrosteredDayDecisionRequest request)
+    {
+        if (request.Decision is not ("Shift" or "RestDay" or "Dismiss"))
+            return BadRequest(new { error = "Decision must be Shift, RestDay or Dismiss." });
+        if (request.Decision == "Shift" && request.ShiftId is null)
+            return BadRequest(new { error = "Choose the shift the day was worked on." });
+        if (request.Decision == "Dismiss" && string.IsNullOrWhiteSpace(request.Note))
+            return BadRequest(new { error = "Say why these punches were not work. The note is kept with the decision." });
+        if (request.Note is { Length: > 400 })
+            return BadRequest(new { error = "The note can be at most 400 characters." });
+
+        try
+        {
+            var result = await _attendance.DecideUnrosteredDayAsync(request, User.UserId());
+
+            // A day added to the roster is a new attendance day, and an open day is what payroll readiness counts.
+            await _live.NotifyAsync("attendance", "payroll", "dashboard");
+            return Ok(result);
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Takes a dismissal back: the day is open again. The same people as the decision (the procedure checks).
+    /// </summary>
+    [HttpPost("unrostered-days/reopen")]
+    public async Task<IActionResult> ReopenUnrosteredDay([FromBody] UnrosteredDayReopenRequest request)
+    {
+        try
+        {
+            await _attendance.ReopenUnrosteredDayAsync(request, User.UserId());
+            await _live.NotifyAsync("attendance", "payroll", "dashboard");
+            return NoContent();
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
     }
 
     /// <summary>D9: unknown device users — punches that arrived under a PIN enrolled to nobody, one line per (device, PIN).</summary>

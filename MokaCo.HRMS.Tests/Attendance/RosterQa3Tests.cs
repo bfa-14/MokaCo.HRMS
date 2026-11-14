@@ -107,7 +107,9 @@ public class RosterQa3Tests
     [InlineData("This day is already in an approved roster and attendance was recorded — correct the attendance record instead.")]
     [InlineData("This day is already in an approved roster and is in the past — it can no longer be changed.")]
     [InlineData("This day is already in an approved roster and is in the past — a generator does not fill it; HR can add the missing day on its own.")]
-    [InlineData("This day is already in an approved roster and is in the past — only HR can add the missing day.")]
+    // 108: who may add a missing day is a permission (OFFROSTER_PAST / OFFROSTER_TODAY), no longer "only HR".
+    [InlineData("This day is already in an approved roster and is in the past — adding the missing day needs the permission to decide past days that are not on the roster.")]
+    [InlineData("This day is already in an approved roster month and the employee has punched today — adding the day needs the permission to decide today's days that are not on the roster.")]
     public void Each_lock_reason_is_a_conflict_with_its_sentence(string message)
     {
         var ex = WorkflowSqlErrors.MapMessage(message);

@@ -18,6 +18,13 @@ public static class Scripts
     public const string Security105 = "docs/105_qa3_security.sql";
 
     /// <summary>
+    /// Days with punches that the approved roster does not know: the list, the decision, the two
+    /// permissions and the eighth payroll-readiness count. Without it the readiness reads fall back to
+    /// script 103's answer and the list to script 87's (nothing can be decided).
+    /// </summary>
+    public const string Unrostered108 = "docs/108_unrostered_days.sql";
+
+    /// <summary>
     /// QA3 DEPLOY GUARD: every numbered script this build of the API calls, in apply order, each with the
     /// object it is checked by. SchemaCheck looks for them at startup; while one is missing the log names
     /// it and /health says "schema":"behind" (deploy-test.sh refuses that, deploy-api.sh warns). A new
@@ -40,5 +47,7 @@ public static class Scripts
         new(Security105, "hr.usp_Scope_CallerEmployees"),
         new("docs/106_qa3_webhr.sql", "hr.usp_Employee_GetSwapCounterparts"),
         new("docs/107_qa3_tier_chains.sql", "workflow.usp_TierChains_Align"),
+        // The last procedure the script creates (the API's readiness read).
+        new(Unrostered108, "attendance.usp_PayrollReadiness_Get"),
     ];
 }
