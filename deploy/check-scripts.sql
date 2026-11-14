@@ -57,7 +57,8 @@ INSERT INTO @S (No, Script, Applied, CheckedBy) VALUES
  (106, N'106_qa3_webhr.sql',                      IIF(OBJECT_ID('hr.usp_Employee_GetSwapCounterparts') IS NOT NULL, 1, 0), N'hr.usp_Employee_GetSwapCounterparts'),
  (107, N'107_qa3_tier_chains.sql',                IIF(OBJECT_ID('workflow.usp_TierChains_Align') IS NOT NULL, 1, 0), N'workflow.usp_TierChains_Align'),
  (108, N'108_unrostered_days.sql',                IIF(OBJECT_ID('attendance.usp_PayrollReadiness_Get') IS NOT NULL, 1, 0), N'attendance.usp_PayrollReadiness_Get'),
- (109, N'109_payslip_short_days.sql',            IIF(OBJECT_ID('payroll.usp_Payslip_ShortDays') IS NOT NULL, 1, 0), N'payroll.usp_Payslip_ShortDays');
+ (109, N'109_payslip_short_days.sql',            IIF(OBJECT_ID('payroll.usp_Payslip_ShortDays') IS NOT NULL, 1, 0), N'payroll.usp_Payslip_ShortDays'),
+ (110, N'110_day_reports.sql',                    IIF(OBJECT_ID('attendance.usp_DayReport_Decide') IS NOT NULL, 1, 0), N'attendance.usp_DayReport_Decide');
 
 INSERT INTO @S (No, Script, Applied, Admin, CheckedBy) VALUES
  (91, N'91_admin_reseed_identities.sql',          IIF(OBJECT_ID('dbo.usp_Admin_ReseedIdentities') IS NOT NULL, 1, 0), 1, N'admin tool'),

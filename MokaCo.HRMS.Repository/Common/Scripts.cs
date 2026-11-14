@@ -24,6 +24,7 @@ public static class Scripts
     /// </summary>
     public const string Unrostered108 = "docs/108_unrostered_days.sql";
     public const string PayslipShortDays109 = "docs/109_payslip_short_days.sql";
+    public const string DayReports110 = "docs/110_day_reports.sql";
 
     /// <summary>
     /// QA3 DEPLOY GUARD: every numbered script this build of the API calls, in apply order, each with the
@@ -51,5 +52,6 @@ public static class Scripts
         // The last procedure the script creates (the API's readiness read).
         new(Unrostered108, "attendance.usp_PayrollReadiness_Get"),
         new(PayslipShortDays109, "payroll.usp_Payslip_ShortDays"),
+        new(DayReports110, "attendance.usp_DayReport_Decide"),
     ];
 }
