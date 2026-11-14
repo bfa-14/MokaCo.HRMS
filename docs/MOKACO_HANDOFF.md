@@ -103,7 +103,7 @@ Permission codes (`security.PERMISSION`, shown as module cards on Security → R
 ```
 EMP_VIEW, EMP_EDIT, EMP_VIEW_ALL
 ATTENDANCE_VIEW, ATTENDANCE_CORRECT, ATTENDANCE_IMPORT, ATTENDANCE_MANAGE, DEVICE_MANAGE
-OFFROSTER_TODAY, OFFROSTER_PAST
+OFFROSTER_TODAY, OFFROSTER_PAST, BOOKING_ROOMS, BOOKING_REPORT
 LEAVE_POLICY_MANAGE, ORG_MANAGE, COMPONENT_MANAGE, CORE_MANAGE, SETTING_MANAGE
 PAYROLL_VIEW, PAYROLL_RUN, PAYROLL_APPROVE
 REQUEST_RAISE_SELF, REQUEST_RAISE_OTHERS, REQUEST_VIEW_ALL
@@ -187,6 +187,8 @@ Status precedence for a day: **approved leave → public holiday → rostered re
 **The days behind "N day(s) short"** (script 109): the payslip line stays one total (`payroll.fn_ShortDays`); `payroll.fn_ShortDayList` is the same rule per day and `payroll.usp_Payslip_ShortDays @PayslipId` lists a payslip's days, up to `PAYROLL_RUN.GeneratedUpTo`. `GET /api/payroll/payslips/{id}/short-days` has the payslip's own access rule (PAYROLL_VIEW, or the employee's own once approved); the payslip page opens it under the line ("See the days") and warns when attendance changed after the run was generated. Nothing that pays changed.
 
 **"Something is wrong with this day"** (script 110, `attendance.DAY_REPORT`): the employee reports their own day, the branch manager a day of the branches they manage (`POST /api/day-reports`, sign-in only; the procedure checks who). HR's queue is `GET /api/day-reports` (ATTENDANCE_CORRECT, branch-scoped, never one's own day). **Accept** raises a correction with the reported times, requested by the reporter, approves it and marks the report - one transaction (`DayReportRepository.AcceptAsync`); it needs an attendance record for the day and at least one reported time. **Reject** needs a note the reporter reads; the reporter may withdraw while it is open; one open report per employee-day. Reports do not block payroll.
+
+**Bookings: rooms and report** (script 111): the Rooms page and the room writes of the API need `BOOKING_ROOMS`, the bookings report `BOOKING_REPORT` (they needed BOOKING_MANAGE / BOOKING_VIEW, so the booking desk saw both). Granted once, on creation, to Admin (roles with ROLE_MANAGE or USER_MANAGE), Owner and General Manager; reading the rooms stays BOOKING_VIEW (the calendar needs them).
 
 **A day that is not on the roster** (script 108). Punches on a day the approved roster does not know have no attendance record, so the Days grid cannot show them: the Daily attendance page lists them above the grid as "Not on roster" (the Anomalies page has the same list), with the punches behind each. Nothing is paid or deducted until a person decides what the day was - **the system proposes a shift (the one starting nearest the first punch) and never adds a roster row itself**:
 
