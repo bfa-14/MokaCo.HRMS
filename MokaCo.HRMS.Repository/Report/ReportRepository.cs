@@ -74,4 +74,17 @@ public class ReportRepository : IReportRepository
             Rows = (await multi.ReadAsync<LeaveBalanceRow>()).ToList(),
         };
     }
+
+    public Task<(WorkedTimeStandard Standard, IEnumerable<WorkedTimeEmployeeDay> Days)> GetWorkedTimeDaysAsync(DateTime from, DateTime to, int? branchId, int? employeeId)
+        => MissingScriptException.GuardAsync(Scripts.WorkedTime113, "report.usp_Report_WorkedTime_Days", async () =>
+        {
+            using var db = _factory.Create();
+            using var multi = await db.QueryMultipleAsync(
+                "report.usp_Report_WorkedTime_Days",
+                new { From = from.Date, To = to.Date, BranchId = branchId, EmployeeId = employeeId },
+                commandType: CommandType.StoredProcedure);
+            var standard = await multi.ReadSingleAsync<WorkedTimeStandard>();
+            IEnumerable<WorkedTimeEmployeeDay> days = (await multi.ReadAsync<WorkedTimeEmployeeDay>()).ToList();
+            return (standard, days);
+        });
 }

@@ -59,7 +59,7 @@ public class PayrollPermissionTests
     public void Reports_AreReportView()
     {
         var actions = Actions(typeof(ReportsController)).ToList();
-        Assert.Equal(3, actions.Count);
+        Assert.Equal(4, actions.Count); // monthly, daily, leave balance, worked time
         Assert.All(actions, a => Assert.Equal("REPORT_VIEW", PermissionOf(a.Action)));
     }
 }

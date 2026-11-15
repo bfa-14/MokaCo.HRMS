@@ -245,6 +245,7 @@ builder.Services.AddHostedService<EmailWorker>();
 
 // --- DI: services (Report) ---
 builder.Services.AddScoped<IReportService, ReportService>();
+builder.Services.AddScoped<IWorkedTimeReportService, WorkedTimeReportService>();
 
 // --- DI: services (Workflow) ---
 builder.Services.AddScoped<IDefinitionService, DefinitionService>();
@@ -304,6 +305,16 @@ builder.Services.AddQuartz(q =>
         .WithIdentity("NightlyAttendanceTrigger")
         // seconds-first cron: 01:00 every day
         .WithCronSchedule("0 0 1 * * ?"));
+
+    // Attendance: every hour (at half past), process the punches that have arrived, so a day's worked time is never
+    // more than an hour old - roster or not. The same processor as the nightly run; it takes everything unprocessed
+    // and runs one at a time (an application lock), so it is safe beside the nightly run and the manual button.
+    var hourlyPunchProcessingJobKey = new JobKey("HourlyPunchProcessingJob");
+    q.AddJob<HourlyPunchProcessingJob>(opts => opts.WithIdentity(hourlyPunchProcessingJobKey));
+    q.AddTrigger(t => t
+        .ForJob(hourlyPunchProcessingJobKey)
+        .WithIdentity("HourlyPunchProcessingTrigger")
+        .WithCronSchedule("0 30 * * * ?"));
 
     // Bookings: every five minutes, cancel website payment holds whose clock ran out unpaid
     // (booking.usp_Booking_ExpireHolds). Tidying, not enforcement — every availability query
