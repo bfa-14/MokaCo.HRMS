@@ -28,6 +28,8 @@ public static class Scripts
     public const string BookingPermissions111 = "docs/111_booking_rooms_report_permissions.sql";
     /// <summary>The Worked time report's calendar: who was employed which day, in which branch, and the holidays.</summary>
     public const string WorkedTime113 = "docs/113_worked_time_report.sql";
+    /// <summary>The Worked time report counts the days missing from an approved roster, measured from their punches.</summary>
+    public const string WorkedTimePunchDays114 = "docs/114_worked_time_punch_days.sql";
 
     /// <summary>
     /// QA3 DEPLOY GUARD: every numbered script this build of the API calls, in apply order, each with the
@@ -58,5 +60,6 @@ public static class Scripts
         new(DayReports110, "attendance.usp_DayReport_Decide"),
         new(BookingPermissions111, "security.usp_Permission_Holders"),
         new(WorkedTime113, "report.usp_Report_WorkedTime_Days"),
+        new(WorkedTimePunchDays114, "report.usp_Report_WorkedTime_PunchDays"),
     ];
 }

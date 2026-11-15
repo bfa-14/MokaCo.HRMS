@@ -8,8 +8,8 @@ namespace MokaCo.HRMS.Model.Report;
 /// payroll). Expected time is the standard month spread over its calendar days: StandardDaysPerMonth x
 /// StandardDayMinutes / days in the month for each day employed, nothing on a public holiday, nothing (or half) on a
 /// day of approved leave. Both are counted up to <see cref="WorkedTimeHeader.CountedTo"/> (yesterday at the latest:
-/// today is still being worked). Days punched but not on an approved roster are shown apart ("to decide"), never in
-/// the totals.
+/// today is still being worked). Every punched day counts, on the roster or not: a day missing from an approved
+/// roster is measured from its punches exactly as the processor measures a day with no shift (script 114).
 /// </summary>
 public class WorkedTimeReport
 {
@@ -70,11 +70,11 @@ public class WorkedTimeRow
     /// <summary>Worked / expected x 100, one decimal; null when nothing was expected.</summary>
     public decimal? ProgressPercent { get; set; }
 
-    /// <summary>Punched days that are not on an approved roster and wait for a decision (Daily attendance > Not on
-    /// roster). Not in the worked figures above.</summary>
+    /// <summary>Of the days worked, those missing from an approved roster (they wait for a decision on Daily
+    /// attendance > Not on roster). Counted in the figures above, measured from their punches.</summary>
     public int NotOnRosterDays { get; set; }
 
-    /// <summary>Their first-to-last punch span, as the Not on roster list shows it.</summary>
+    /// <summary>Their worked minutes (part of <see cref="WorkedMinutes"/>).</summary>
     public int NotOnRosterMinutes { get; set; }
 }
 
@@ -118,6 +118,20 @@ public class WorkedTimeEmployeeDay
     /// <summary>A working shift on the branch's approved roster: the attendance day's WorkedMinutes is then the shift
     /// window and the time after it is OvertimeMinutes.</summary>
     public bool HasRosterShift { get; set; }
+}
+
+/// <summary>A row of report.usp_Report_WorkedTime_PunchDays (script 114): a punched day missing from an approved roster,
+/// measured from its punches as the processor measures a day with no shift.</summary>
+public class WorkedTimePunchDay
+{
+    public int EmployeeId { get; set; }
+    public DateTime WorkDate { get; set; }
+    public int? BranchId { get; set; }
+    public DateTime? FirstIn { get; set; }
+    public DateTime? LastOut { get; set; }
+    public int PunchCount { get; set; }
+    public int WorkedMinutes { get; set; }
+    public bool MissingPunch { get; set; }
 }
 
 /// <summary>The first result of report.usp_Report_WorkedTime_Days: the standard the progress is measured against.</summary>

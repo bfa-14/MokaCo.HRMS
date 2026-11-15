@@ -11,4 +11,8 @@ public interface IReportRepository
     /// <summary>report.usp_Report_WorkedTime_Days (script 113): the standard day and month, and one row per employee per
     /// day of their employment in the period (the branch of that day, a public holiday's name).</summary>
     Task<(WorkedTimeStandard Standard, IEnumerable<WorkedTimeEmployeeDay> Days)> GetWorkedTimeDaysAsync(DateTime from, DateTime to, int? branchId, int? employeeId);
+
+    /// <summary>report.usp_Report_WorkedTime_PunchDays (script 114): the punched days missing from an approved roster,
+    /// measured from their punches (dismissed days left out).</summary>
+    Task<IEnumerable<WorkedTimePunchDay>> GetWorkedTimePunchDaysAsync(DateTime from, DateTime to, int? employeeId);
 }

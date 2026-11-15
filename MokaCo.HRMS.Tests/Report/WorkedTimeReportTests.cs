@@ -115,25 +115,42 @@ public class WorkedTimeReportTests
     }
 
     [Fact]
-    public void Days_not_on_the_roster_are_apart_and_a_dismissed_one_is_left_out()
+    public void Days_not_on_the_roster_count_like_any_day_worked_measured_from_their_punches()
     {
+        // Day 1 is on the attendance days; day 2 is punched but missing from the approved roster (script 114 measured it:
+        // 540 minutes, so 60 beyond the standard day); day 3 has a missing punch.
         var input = Input(Nov1, Nov1.AddDays(6), Nov1.AddDays(10));
         input.EmployeeDays = Employed(1, "Lina Saab", Nov1, Nov1.AddDays(6));
         input.Records = [Day(1, "Lina Saab", Nov1, 480)];
-        input.Unrostered =
+        input.PunchDays =
         [
-            new UnrosteredDay { EmployeeId = 1, EmployeeName = "Lina Saab", BranchName = "Hamra", WorkDate = Nov1.AddDays(1), FirstPunch = Nov1.AddDays(1).AddHours(9), LastPunch = Nov1.AddDays(1).AddHours(15), PunchCount = 2, WorkedMinutes = 360, State = "Open" },
-            new UnrosteredDay { EmployeeId = 1, EmployeeName = "Lina Saab", BranchName = "Hamra", WorkDate = Nov1.AddDays(2), WorkedMinutes = 200, PunchCount = 2, State = "Dismissed" },
+            new WorkedTimePunchDay { EmployeeId = 1, WorkDate = Nov1.AddDays(1), BranchId = 7, FirstIn = Nov1.AddDays(1).AddHours(8), LastOut = Nov1.AddDays(1).AddHours(17), PunchCount = 2, WorkedMinutes = 540 },
+            new WorkedTimePunchDay { EmployeeId = 1, WorkDate = Nov1.AddDays(2), BranchId = 7, FirstIn = Nov1.AddDays(2).AddHours(9), PunchCount = 1, WorkedMinutes = 0, MissingPunch = true },
         ];
 
         var report = WorkedTimeReportService.Build(input);
         var row = Assert.Single(report.Rows);
-        Assert.Equal(480, row.WorkedMinutes);
+        Assert.Equal(3, row.DaysWorked);
+        Assert.Equal(1020, row.WorkedMinutes);
+        Assert.Equal(60, row.OvertimeMinutes);
+        Assert.Equal(1, row.MissingPunchDays);
+        Assert.Equal(2, row.NotOnRosterDays);
+        Assert.Equal(540, row.NotOnRosterMinutes);
+        Assert.Equal(1020, report.Totals.WorkedMinutes);
+        Assert.Contains(report.Days, d => d.Kind == "NotOnRoster" && d.WorkedMinutes == 540 && d.OvertimeMinutes == 60);
+    }
+
+    [Fact]
+    public void A_not_on_roster_day_that_already_has_an_attendance_day_is_not_counted_twice()
+    {
+        var input = Input(Nov1, Nov1, Nov1.AddDays(5));
+        input.EmployeeDays = Employed(1, "Lina Saab", Nov1, Nov1);
+        input.Records = [Day(1, "Lina Saab", Nov1, 480)];
+        input.PunchDays = [new WorkedTimePunchDay { EmployeeId = 1, WorkDate = Nov1, BranchId = 7, WorkedMinutes = 480, PunchCount = 2 }];
+
+        var row = WorkedTimeReportService.Build(input).Rows[0];
         Assert.Equal(1, row.DaysWorked);
-        Assert.Equal(1, row.NotOnRosterDays);
-        Assert.Equal(360, row.NotOnRosterMinutes);
-        Assert.Contains(report.Days, d => d.Kind == "NotOnRoster" && d.WorkedMinutes == 360);
-        Assert.DoesNotContain(report.Days, d => d.WorkDate == Nov1.AddDays(2));
+        Assert.Equal(480, row.WorkedMinutes);
     }
 
     [Fact]
