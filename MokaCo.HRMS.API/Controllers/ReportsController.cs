@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Repository.HR;
 using MokaCo.HRMS.Services.Report;
+using MokaCo.HRMS.Services.Workflow;
 
 namespace MokaCo.HRMS.Api.Controllers;
 
@@ -65,6 +66,30 @@ public class ReportsController : ControllerBase
         var scope = await scopes.ForCallerAsync(HttpContext, from, to);
         report.Rows = report.Rows.Where(r => scope.SeesEmployee(r.EmployeeId)).ToList();
         return Ok(report);
+    }
+
+    /// <summary>
+    /// Worked time: per employee and for any period (at most <see cref="WorkedTimeReportService.MaxDays"/> days), the
+    /// days and hours worked and the progress against the standard month, with or without a roster; the day-by-day
+    /// list comes with it. Scoped like the other reports.
+    /// </summary>
+    [HttpGet("worked-time")]
+    [HasPermission("REPORT_VIEW")]
+    public async Task<IActionResult> WorkedTime([FromQuery] DateTime from, [FromQuery] DateTime to, [FromQuery] int? branchId,
+        [FromQuery] int? employeeId, [FromServices] IWorkedTimeReportService workedTime, [FromServices] IScopeRepository scopes)
+    {
+        if (from == default || to == default || to < from)
+            return BadRequest(new { error = "Choose the first and the last day of the period (the last on or after the first)." });
+        try
+        {
+            var scope = await scopes.ForCallerAsync(HttpContext, from, to);
+            // Per day, by the branch of the day - the Daily attendance read's rule - not per person.
+            return Ok(await workedTime.GetAsync(from, to, branchId, employeeId, scope.SeesBranchRow));
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
     }
 
     private static bool IsYearMonth(string value)

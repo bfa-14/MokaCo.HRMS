@@ -64,6 +64,21 @@ public class NightlyAttendanceJob : IJob
         // Beirut's calendar, not the server's: a server on UTC is still on "yesterday" until 02:00 or 03:00 Beirut time.
         var today = BeirutTime.Now.Date;
         var yesterday = today.AddDays(-1);
+
+        // Yesterday once more, now that it has ended: the hourly run built its days while it was being worked, and
+        // something may have changed after its last punch - a roster month approved that afternoon (approval
+        // re-derives only up to the day before), a holiday or a shift changed. The same as Daily attendance's
+        // Re-process for one day: manual days and paid periods are left alone. Its own try: a failure here must not
+        // stop the absentees below.
+        try
+        {
+            await _attendance.ReprocessDayAsync(yesterday);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Re-processing yesterday ({Yesterday:yyyy-MM-dd}) failed; Daily attendance > Re-process can redo it.", yesterday);
+        }
+
         var absentees = await _attendance.MarkAbsenteesAsync(yesterday);
 
         var period = today.ToString("yyyy-MM");

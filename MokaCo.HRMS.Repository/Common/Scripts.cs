@@ -26,6 +26,8 @@ public static class Scripts
     public const string PayslipShortDays109 = "docs/109_payslip_short_days.sql";
     public const string DayReports110 = "docs/110_day_reports.sql";
     public const string BookingPermissions111 = "docs/111_booking_rooms_report_permissions.sql";
+    /// <summary>The Worked time report's calendar: who was employed which day, in which branch, and the holidays.</summary>
+    public const string WorkedTime113 = "docs/113_worked_time_report.sql";
 
     /// <summary>
     /// QA3 DEPLOY GUARD: every numbered script this build of the API calls, in apply order, each with the
@@ -55,5 +57,6 @@ public static class Scripts
         new(PayslipShortDays109, "payroll.usp_Payslip_ShortDays"),
         new(DayReports110, "attendance.usp_DayReport_Decide"),
         new(BookingPermissions111, "security.usp_Permission_Holders"),
+        new(WorkedTime113, "report.usp_Report_WorkedTime_Days"),
     ];
 }
