@@ -9,8 +9,9 @@ namespace MokaCo.HRMS.Services.Report;
 
 public interface IWorkedTimeReportService
 {
-    /// <summary>The Worked time report for the period; <paramref name="sees"/> keeps the employees the caller may see.</summary>
-    Task<WorkedTimeReport> GetAsync(DateTime from, DateTime to, int? branchId, int? employeeId, Func<int, bool> sees);
+    /// <summary>The Worked time report for the period. <paramref name="sees"/> (employee, branch of the day) keeps the
+    /// days the caller may see - per day, so a transferred employee's days in another branch stay out.</summary>
+    Task<WorkedTimeReport> GetAsync(DateTime from, DateTime to, int? branchId, int? employeeId, Func<int, int?, bool> sees);
 }
 
 /// <summary>
@@ -24,7 +25,11 @@ public interface IWorkedTimeReportService
 /// month that are missing from its roster have no attendance day yet: they are listed apart as "to decide" with their
 /// punch span, and stay out of the totals until somebody decides them.
 ///
-/// The reads run unscoped and the caller's scope is applied here, to every row, day and total, like the other reports.
+/// ONE CALENDAR FOR EVERYTHING: the days each person was employed, with the branch of each day (script 113). Every
+/// attendance day, leave day and "to decide" day is kept only when it falls on one of those days - so a branch filter
+/// puts a day's worked and expected time in the same branch, and a day outside the employment is never counted.
+/// The reads run unscoped and the caller's scope is applied here per day (employee + branch of the day), like the
+/// Daily attendance read.
 /// </summary>
 public class WorkedTimeReportService : IWorkedTimeReportService
 {
@@ -42,7 +47,7 @@ public class WorkedTimeReportService : IWorkedTimeReportService
         _roster = roster;
     }
 
-    public async Task<WorkedTimeReport> GetAsync(DateTime from, DateTime to, int? branchId, int? employeeId, Func<int, bool> sees)
+    public async Task<WorkedTimeReport> GetAsync(DateTime from, DateTime to, int? branchId, int? employeeId, Func<int, int?, bool> sees)
     {
         if (from == default || to == default) throw new WorkflowException(400, "Choose the first and the last day.");
         from = from.Date;
@@ -50,10 +55,11 @@ public class WorkedTimeReportService : IWorkedTimeReportService
         if (to < from) throw new WorkflowException(400, "The end of the period must be on or after its start.");
         if ((to - from).TotalDays + 1 > MaxDays) throw new WorkflowException(400, $"Choose at most {MaxDays} days at a time.");
 
+        // The calendar is filtered by branch (as of each day); the rest is read for the people and matched to it.
         var (standard, employeeDays) = await _reports.GetWorkedTimeDaysAsync(from, to, branchId, employeeId);
-        var records = await _attendance.GetAsync(from, to, employeeId, branchId);
-        var unrostered = await _attendance.GetUnrosteredDaysAsync(from, to, branchId, employeeId, null);
-        var leave = await _roster.GetLeaveDaysAsync(from, to, branchId, null);
+        var records = await _attendance.GetAsync(from, to, employeeId, null);
+        var unrostered = await _attendance.GetUnrosteredDaysAsync(from, to, null, employeeId, null);
+        var leave = await _roster.GetLeaveDaysAsync(from, to, null, null);
 
         return Build(new WorkedTimeInput
         {
@@ -70,6 +76,18 @@ public class WorkedTimeReportService : IWorkedTimeReportService
             GeneratedUtc = DateTime.UtcNow,
         });
     }
+
+    /// <summary>Is an attendance day a day worked? A first punch on a working, rest or holiday day; or a day HR
+    /// credited with worked time (an adjusted day keeps its status, an absence included). Never a leave day.</summary>
+    public static bool IsWorked(AttendanceRecord r)
+        => r.Status != "Leave"
+           && ((r.FirstInUtc is not null && r.Status is "Present" or "RestDay" or "Holiday") || (r.IsManual && r.WorkedMinutes > 0));
+
+    /// <summary>The time worked on an attendance day, extra time included. On a day with an approved roster shift the
+    /// day's WorkedMinutes is the shift window and the time after it is OvertimeMinutes; elsewhere WorkedMinutes is
+    /// already first in to last out (its overtime is inside it).</summary>
+    public static int WorkedOf(AttendanceRecord r, bool hasRosterShift)
+        => r.WorkedMinutes + (hasRosterShift && r.Status != "RestDay" ? r.OvertimeMinutes : 0);
 
     /// <summary>Pure: everything the report shows, from what was read.</summary>
     public static WorkedTimeReport Build(WorkedTimeInput input)
@@ -92,33 +110,35 @@ public class WorkedTimeReportService : IWorkedTimeReportService
             },
         };
 
-        var rows = new Dictionary<int, WorkedTimeRow>();
-        var expected = new Dictionary<int, decimal>();
-        WorkedTimeRow RowOf(int employeeId, string name, string branch, string department = "")
-        {
-            if (!rows.TryGetValue(employeeId, out var row))
-            {
-                row = new WorkedTimeRow { EmployeeId = employeeId, FullName = name, BranchName = branch, DepartmentName = department };
-                rows[employeeId] = row;
-                expected[employeeId] = 0;
-            }
-            return row;
-        }
+        // The calendar: the employed days the caller may see (branch of the day), in the chosen branch.
+        var calendar = input.EmployeeDays
+            .Where(d => input.Sees(d.EmployeeId, d.BranchId))
+            .GroupBy(d => (d.EmployeeId, d.WorkDate.Date))
+            .ToDictionary(g => g.Key, g => g.First());
+        WorkedTimeEmployeeDay? DayOf(int employeeId, DateTime date) => calendar.GetValueOrDefault((employeeId, date.Date));
 
+        var records = input.Records
+            .Where(r => DayOf(r.EmployeeId, r.WorkDate) is { } d && input.Sees(r.EmployeeId, r.BranchId ?? d.BranchId))
+            .ToList();
+        var recordDays = records.Select(r => (r.EmployeeId, r.WorkDate.Date)).ToHashSet();
         var leave = input.Leave
-            .Where(l => input.Sees(l.EmployeeId) && l.DaysOnLeave > 0)
+            .Where(l => l.DaysOnLeave > 0 && DayOf(l.EmployeeId, l.Date) is not null)
             .GroupBy(l => (l.EmployeeId, l.Date.Date))
             .ToDictionary(g => g.Key, g => Math.Min(1m, g.Sum(l => l.DaysOnLeave)));
-        var recordDays = input.Records
-            .Where(r => input.Sees(r.EmployeeId))
-            .Select(r => (r.EmployeeId, r.WorkDate.Date))
-            .ToHashSet();
+
+        var rows = new Dictionary<int, WorkedTimeRow>();
+        var expected = new Dictionary<int, decimal>();
 
         // EXPECTED: the standard month spread over its calendar days, for the days employed (in the branch, when one
         // is chosen). A public holiday expects nothing; approved leave expects nothing (half a day of leave, half).
-        foreach (var day in input.EmployeeDays.Where(d => input.Sees(d.EmployeeId)).OrderBy(d => d.WorkDate))
+        foreach (var day in calendar.Values.OrderBy(d => d.WorkDate))
         {
-            var row = RowOf(day.EmployeeId, day.FullName, day.BranchName, day.DepartmentName);
+            if (!rows.TryGetValue(day.EmployeeId, out var row))
+            {
+                row = new WorkedTimeRow { EmployeeId = day.EmployeeId };
+                rows[day.EmployeeId] = row;
+                expected[day.EmployeeId] = 0;
+            }
             row.FullName = day.FullName;
             row.DepartmentName = day.DepartmentName;
             row.BranchName = day.BranchName; // the latest day's branch wins: where they are now in this period
@@ -132,7 +152,8 @@ public class WorkedTimeReportService : IWorkedTimeReportService
                 if (!hasRecord)
                     report.Days.Add(new WorkedTimeDay
                     {
-                        EmployeeId = day.EmployeeId, WorkDate = date, BranchName = day.BranchName, Kind = "Holiday", Note = day.HolidayName,
+                        EmployeeId = day.EmployeeId, WorkDate = date, BranchName = day.BranchName, Kind = "Holiday",
+                        Note = day.HolidayName, NoteAr = day.HolidayNameAr,
                     });
                 continue;
             }
@@ -149,16 +170,17 @@ public class WorkedTimeReportService : IWorkedTimeReportService
                 });
         }
 
-        // WORKED: the attendance days. A day counts as worked when it has a first punch and is not a leave or an
-        // absence (a worked rest day or holiday counts).
-        foreach (var r in input.Records.Where(r => input.Sees(r.EmployeeId) && IsCounted(r.WorkDate)))
+        // WORKED: the attendance days on the calendar.
+        foreach (var r in records.Where(r => IsCounted(r.WorkDate)))
         {
-            var row = RowOf(r.EmployeeId, r.FullName, r.BranchName ?? string.Empty);
-            var worked = r.FirstInUtc is not null && r.Status is "Present" or "RestDay" or "Holiday";
+            var day = DayOf(r.EmployeeId, r.WorkDate)!;
+            var row = rows[r.EmployeeId];
+            var worked = IsWorked(r);
+            var minutes = worked ? WorkedOf(r, day.HasRosterShift) : 0;
             if (worked)
             {
                 row.DaysWorked++;
-                row.WorkedMinutes += r.WorkedMinutes;
+                row.WorkedMinutes += minutes;
                 row.OvertimeMinutes += r.OvertimeMinutes;
                 if (r.HasAnomaly) row.MissingPunchDays++;
             }
@@ -166,21 +188,26 @@ public class WorkedTimeReportService : IWorkedTimeReportService
             {
                 EmployeeId = r.EmployeeId,
                 WorkDate = r.WorkDate.Date,
-                BranchName = r.BranchName ?? string.Empty,
+                BranchName = r.BranchName ?? day.BranchName,
                 Kind = r.Status,
                 FirstIn = r.FirstInUtc,
                 LastOut = r.LastOutUtc,
-                WorkedMinutes = worked ? r.WorkedMinutes : 0,
+                WorkedMinutes = minutes,
                 OvertimeMinutes = worked ? r.OvertimeMinutes : 0,
                 MissingPunch = worked && r.HasAnomaly,
                 IsManual = r.IsManual,
+                Note = r.Status == "Holiday" ? day.HolidayName : null,
+                NoteAr = r.Status == "Holiday" ? day.HolidayNameAr : null,
             });
         }
 
         // TO DECIDE: punched, not on the approved roster, no attendance day yet. Apart, never in the totals.
-        foreach (var u in input.Unrostered.Where(u => input.Sees(u.EmployeeId) && u.State == "Open" && IsCounted(u.WorkDate)))
+        foreach (var u in input.Unrostered.Where(u => u.State == "Open" && IsCounted(u.WorkDate)
+                                                      && DayOf(u.EmployeeId, u.WorkDate) is not null
+                                                      && input.Sees(u.EmployeeId, u.BranchId)
+                                                      && !recordDays.Contains((u.EmployeeId, u.WorkDate.Date))))
         {
-            var row = RowOf(u.EmployeeId, u.EmployeeName, u.BranchName);
+            var row = rows[u.EmployeeId];
             row.NotOnRosterDays++;
             row.NotOnRosterMinutes += u.WorkedMinutes;
             report.Days.Add(new WorkedTimeDay
@@ -203,11 +230,11 @@ public class WorkedTimeReportService : IWorkedTimeReportService
         }
 
         report.Rows = rows.Values.OrderBy(r => r.FullName, StringComparer.OrdinalIgnoreCase).ThenBy(r => r.EmployeeId).ToList();
-        report.Days = report.Days.OrderBy(d => report.Rows.FindIndex(r => r.EmployeeId == d.EmployeeId)).ThenBy(d => d.WorkDate).ToList();
+        var order = report.Rows.Select((r, i) => (r.EmployeeId, i)).ToDictionary(x => x.EmployeeId, x => x.i);
+        report.Days = report.Days.OrderBy(d => order.GetValueOrDefault(d.EmployeeId, int.MaxValue)).ThenBy(d => d.WorkDate).ToList();
         report.Header.BranchName = input.BranchId is null
             ? null
-            : input.EmployeeDays.FirstOrDefault(d => d.BranchId == input.BranchId)?.BranchName
-              ?? input.Records.FirstOrDefault(r => r.BranchId == input.BranchId)?.BranchName;
+            : input.EmployeeDays.FirstOrDefault(d => d.BranchId == input.BranchId)?.BranchName;
 
         var totals = new WorkedTimeRow
         {
@@ -246,6 +273,8 @@ public class WorkedTimeInput
     public List<AttendanceRecord> Records { get; set; } = [];
     public List<UnrosteredDay> Unrostered { get; set; } = [];
     public List<RosterLeaveDay> Leave { get; set; } = [];
-    public Func<int, bool> Sees { get; set; } = _ => true;
+
+    /// <summary>(employee, branch of the day) the caller may see.</summary>
+    public Func<int, int?, bool> Sees { get; set; } = (_, _) => true;
     public DateTime GeneratedUtc { get; set; }
 }

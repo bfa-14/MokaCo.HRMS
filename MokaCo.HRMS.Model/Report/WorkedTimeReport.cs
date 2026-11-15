@@ -46,8 +46,11 @@ public class WorkedTimeRow
     public string BranchName { get; set; } = string.Empty;
     public string DepartmentName { get; set; } = string.Empty;
 
-    /// <summary>Days with a first punch (a worked rest day or holiday counts too).</summary>
+    /// <summary>Days with a first punch (a worked rest day or holiday counts too), or a day HR credited with worked time.</summary>
     public int DaysWorked { get; set; }
+
+    /// <summary>Time worked, extra time included: first in to last out (paired, gaps out) - on a day with an approved
+    /// roster shift, the shift window plus the time after it.</summary>
     public int WorkedMinutes { get; set; }
 
     /// <summary>Worked minutes per day worked; 0 when no day was worked.</summary>
@@ -95,8 +98,9 @@ public class WorkedTimeDay
     /// <summary>Entered or corrected by HR.</summary>
     public bool IsManual { get; set; }
 
-    /// <summary>A holiday's name, or how much of the day was on leave.</summary>
+    /// <summary>A holiday's name, or 'HalfDay' for half a day of leave.</summary>
     public string? Note { get; set; }
+    public string? NoteAr { get; set; }
 }
 
 /// <summary>A row of report.usp_Report_WorkedTime_Days (script 113): one employee on one day of their employment.</summary>
@@ -109,6 +113,11 @@ public class WorkedTimeEmployeeDay
     public int BranchId { get; set; }
     public string BranchName { get; set; } = string.Empty;
     public string? HolidayName { get; set; }
+    public string? HolidayNameAr { get; set; }
+
+    /// <summary>A working shift on the branch's approved roster: the attendance day's WorkedMinutes is then the shift
+    /// window and the time after it is OvertimeMinutes.</summary>
+    public bool HasRosterShift { get; set; }
 }
 
 /// <summary>The first result of report.usp_Report_WorkedTime_Days: the standard the progress is measured against.</summary>

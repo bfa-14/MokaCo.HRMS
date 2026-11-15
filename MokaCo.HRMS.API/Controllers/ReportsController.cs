@@ -83,7 +83,8 @@ public class ReportsController : ControllerBase
         try
         {
             var scope = await scopes.ForCallerAsync(HttpContext, from, to);
-            return Ok(await workedTime.GetAsync(from, to, branchId, employeeId, scope.SeesEmployee));
+            // Per day, by the branch of the day - the Daily attendance read's rule - not per person.
+            return Ok(await workedTime.GetAsync(from, to, branchId, employeeId, scope.SeesBranchRow));
         }
         catch (WorkflowException ex)
         {

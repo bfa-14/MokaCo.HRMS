@@ -21,14 +21,15 @@ public class WorkedTimeReportTests
     private static readonly DateTime Nov1 = new(2026, 11, 1);
     private static readonly WorkedTimeStandard Std = new() { StandardDayMinutes = 480, StandardDaysPerMonth = 26 };
 
-    private static List<WorkedTimeEmployeeDay> Employed(int employeeId, string name, DateTime from, DateTime to, string? holidayOn = null)
+    private static List<WorkedTimeEmployeeDay> Employed(int employeeId, string name, DateTime from, DateTime to, string? holidayOn = null,
+        int branchId = 7, string branchName = "Hamra", bool rosterShift = false)
     {
         var days = new List<WorkedTimeEmployeeDay>();
         for (var d = from; d <= to; d = d.AddDays(1))
             days.Add(new WorkedTimeEmployeeDay
             {
-                EmployeeId = employeeId, FullName = name, DepartmentName = "Bar", WorkDate = d, BranchId = 7, BranchName = "Hamra",
-                HolidayName = holidayOn == d.ToString("yyyy-MM-dd") ? "Independence Day" : null,
+                EmployeeId = employeeId, FullName = name, DepartmentName = "Bar", WorkDate = d, BranchId = branchId, BranchName = branchName,
+                HolidayName = holidayOn == d.ToString("yyyy-MM-dd") ? "Independence Day" : null, HasRosterShift = rosterShift,
             });
         return days;
     }
@@ -141,12 +142,73 @@ public class WorkedTimeReportTests
         var input = Input(Nov1, Nov1.AddDays(6), Nov1.AddDays(10));
         input.EmployeeDays = [.. Employed(1, "Lina Saab", Nov1, Nov1.AddDays(6)), .. Employed(2, "Rami Khoury", Nov1, Nov1.AddDays(6))];
         input.Records = [Day(1, "Lina Saab", Nov1, 480), Day(2, "Rami Khoury", Nov1, 300)];
-        input.Sees = id => id == 2;
+        input.Sees = (id, _) => id == 2;
 
         var report = WorkedTimeReportService.Build(input);
         Assert.Equal([2], report.Rows.Select(r => r.EmployeeId));
         Assert.All(report.Days, d => Assert.Equal(2, d.EmployeeId));
         Assert.Equal(300, report.Totals.WorkedMinutes);
+    }
+
+    [Fact]
+    public void Worked_time_means_first_in_to_last_out_with_or_without_an_approved_roster_shift()
+    {
+        // 08:00-18:00 both days. Without a shift the day's worked time is the whole span (overtime inside it); with an
+        // approved 08:00-16:00 shift it is the shift window and the two hours after it are overtime. Same work, same total.
+        var input = Input(Nov1, Nov1.AddDays(1), Nov1.AddDays(5));
+        input.EmployeeDays = [.. Employed(1, "Lina Saab", Nov1, Nov1), .. Employed(1, "Lina Saab", Nov1.AddDays(1), Nov1.AddDays(1), rosterShift: true)];
+        input.Records = [Day(1, "Lina Saab", Nov1, 600, overtime: 120), Day(1, "Lina Saab", Nov1.AddDays(1), 480, overtime: 120)];
+
+        var report = WorkedTimeReportService.Build(input);
+        Assert.Equal(1200, report.Rows[0].WorkedMinutes);
+        Assert.Equal(240, report.Rows[0].OvertimeMinutes);
+        Assert.Equal([600, 600], report.Days.Select(d => d.WorkedMinutes));
+    }
+
+    [Fact]
+    public void A_day_HR_credited_counts_even_without_a_punch()
+    {
+        var input = Input(Nov1, Nov1, Nov1.AddDays(5));
+        input.EmployeeDays = Employed(1, "Lina Saab", Nov1, Nov1);
+        var adjusted = Day(1, "Lina Saab", Nov1, 480, status: "Absent");
+        adjusted.IsManual = true;
+        input.Records = [adjusted];
+
+        var row = WorkedTimeReportService.Build(input).Rows[0];
+        Assert.Equal(1, row.DaysWorked);
+        Assert.Equal(480, row.WorkedMinutes);
+    }
+
+    [Fact]
+    public void The_scope_is_per_day_so_a_transferred_employees_days_elsewhere_stay_out()
+    {
+        // Lina is in Hamra (7) the 1st-3rd and in Verdun (8) the 4th-6th. The Hamra manager sees only her Hamra days.
+        var input = Input(Nov1, Nov1.AddDays(5), Nov1.AddDays(10));
+        input.EmployeeDays = [.. Employed(1, "Lina Saab", Nov1, Nov1.AddDays(2)), .. Employed(1, "Lina Saab", Nov1.AddDays(3), Nov1.AddDays(5), branchId: 8, branchName: "Verdun")];
+        var verdunDay = Day(1, "Lina Saab", Nov1.AddDays(4), 480);
+        verdunDay.BranchId = 8;
+        verdunDay.BranchName = "Verdun";
+        input.Records = [Day(1, "Lina Saab", Nov1, 480), verdunDay];
+        input.Sees = (_, branch) => branch == 7;
+
+        var report = WorkedTimeReportService.Build(input);
+        Assert.Equal(480, report.Rows[0].WorkedMinutes);
+        Assert.Equal(3 * 416, report.Rows[0].ExpectedMinutes);
+        Assert.DoesNotContain(report.Days, d => d.BranchName == "Verdun");
+    }
+
+    [Fact]
+    public void A_record_off_the_calendar_is_not_counted()
+    {
+        // The calendar is the employment (and the chosen branch): a record outside it - a removed employee's, a day
+        // filed to a branch the person was not in that day under a branch filter - adds neither worked nor expected time.
+        var input = Input(Nov1, Nov1.AddDays(1), Nov1.AddDays(5));
+        input.EmployeeDays = Employed(1, "Lina Saab", Nov1, Nov1.AddDays(1));
+        input.Records = [Day(1, "Lina Saab", Nov1, 480), Day(9, "Removed Person", Nov1, 480)];
+
+        var report = WorkedTimeReportService.Build(input);
+        Assert.Equal([1], report.Rows.Select(r => r.EmployeeId));
+        Assert.Equal(480, report.Totals.WorkedMinutes);
     }
 
     [Theory]
@@ -156,7 +218,7 @@ public class WorkedTimeReportTests
     {
         var reports = new Mock<IReportRepository>(MockBehavior.Strict);
         var service = new WorkedTimeReportService(reports.Object, Mock.Of<IAttendanceService>(), Mock.Of<IRosterService>());
-        var ex = await Assert.ThrowsAsync<WorkflowException>(() => service.GetAsync(Nov1, Nov1.AddDays(lastDayOffset), null, null, _ => true));
+        var ex = await Assert.ThrowsAsync<WorkflowException>(() => service.GetAsync(Nov1, Nov1.AddDays(lastDayOffset), null, null, (_, _) => true));
         Assert.Equal(400, ex.StatusCode);
     }
 
