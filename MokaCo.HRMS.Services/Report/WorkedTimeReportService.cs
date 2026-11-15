@@ -22,8 +22,9 @@ public interface IWorkedTimeReportService
 /// Daily attendance grid's read): punches paired, double presses removed, HR's corrections and manual days included -
 /// so the report never disagrees with the day an employee is shown or paid on. Without an approved roster those days
 /// are measured against the standard day, which is exactly the "attendance only" view. Punched days in an approved
-/// month that are missing from its roster have no attendance day yet: they are listed apart as "to decide" with their
-/// punch span, and stay out of the totals until somebody decides them.
+/// month that are missing from its roster have no attendance day yet: script 114 measures them from their punches
+/// exactly as the processor measures a day with no shift, and they count like any other day worked (marked "not on
+/// the roster" so they can still be decided). A day somebody dismissed is not counted.
 ///
 /// ONE CALENDAR FOR EVERYTHING: the days each person was employed, with the branch of each day (script 113). Every
 /// attendance day, leave day and "to decide" day is kept only when it falls on one of those days - so a branch filter
@@ -58,7 +59,7 @@ public class WorkedTimeReportService : IWorkedTimeReportService
         // The calendar is filtered by branch (as of each day); the rest is read for the people and matched to it.
         var (standard, employeeDays) = await _reports.GetWorkedTimeDaysAsync(from, to, branchId, employeeId);
         var records = await _attendance.GetAsync(from, to, employeeId, null);
-        var unrostered = await _attendance.GetUnrosteredDaysAsync(from, to, null, employeeId, null);
+        var punchDays = await _reports.GetWorkedTimePunchDaysAsync(from, to, employeeId);
         var leave = await _roster.GetLeaveDaysAsync(from, to, null, null);
 
         return Build(new WorkedTimeInput
@@ -70,7 +71,7 @@ public class WorkedTimeReportService : IWorkedTimeReportService
             Standard = standard,
             EmployeeDays = employeeDays.ToList(),
             Records = records.ToList(),
-            Unrostered = unrostered.ToList(),
+            PunchDays = punchDays.ToList(),
             Leave = leave.Where(l => employeeId is null || l.EmployeeId == employeeId).ToList(),
             Sees = sees,
             GeneratedUtc = DateTime.UtcNow,
@@ -201,24 +202,33 @@ public class WorkedTimeReportService : IWorkedTimeReportService
             });
         }
 
-        // TO DECIDE: punched, not on the approved roster, no attendance day yet. Apart, never in the totals.
-        foreach (var u in input.Unrostered.Where(u => u.State == "Open" && IsCounted(u.WorkDate)
-                                                      && DayOf(u.EmployeeId, u.WorkDate) is not null
-                                                      && input.Sees(u.EmployeeId, u.BranchId)
-                                                      && !recordDays.Contains((u.EmployeeId, u.WorkDate.Date))))
+        // NOT ON THE ROSTER: punched, missing from an approved roster, no attendance day yet - measured from the
+        // punches as a day with no shift (script 114) and counted like any day worked. Extra time is what a day with no
+        // shift has: beyond the standard day.
+        foreach (var p in input.PunchDays.Where(p => IsCounted(p.WorkDate) && !recordDays.Contains((p.EmployeeId, p.WorkDate.Date))))
         {
-            var row = rows[u.EmployeeId];
+            if (DayOf(p.EmployeeId, p.WorkDate) is not { } day || !input.Sees(p.EmployeeId, p.BranchId ?? day.BranchId)) continue;
+            var row = rows[p.EmployeeId];
+            var extra = Math.Max(0, p.WorkedMinutes - input.Standard.StandardDayMinutes);
+            row.DaysWorked++;
+            row.WorkedMinutes += p.WorkedMinutes;
+            row.OvertimeMinutes += extra;
+            if (p.MissingPunch) row.MissingPunchDays++;
             row.NotOnRosterDays++;
-            row.NotOnRosterMinutes += u.WorkedMinutes;
+            row.NotOnRosterMinutes += p.WorkedMinutes;
             report.Days.Add(new WorkedTimeDay
             {
-                EmployeeId = u.EmployeeId,
-                WorkDate = u.WorkDate.Date,
-                BranchName = u.BranchName,
+                EmployeeId = p.EmployeeId,
+                WorkDate = p.WorkDate.Date,
+                BranchName = day.BranchName,
                 Kind = "NotOnRoster",
-                FirstIn = u.FirstPunch,
-                LastOut = u.PunchCount > 1 ? u.LastPunch : null,
-                WorkedMinutes = u.WorkedMinutes,
+                FirstIn = p.FirstIn,
+                LastOut = p.LastOut,
+                WorkedMinutes = p.WorkedMinutes,
+                OvertimeMinutes = extra,
+                MissingPunch = p.MissingPunch,
+                Note = day.HolidayName,
+                NoteAr = day.HolidayNameAr,
             });
         }
 
@@ -271,7 +281,8 @@ public class WorkedTimeInput
     public WorkedTimeStandard Standard { get; set; } = new();
     public List<WorkedTimeEmployeeDay> EmployeeDays { get; set; } = [];
     public List<AttendanceRecord> Records { get; set; } = [];
-    public List<UnrosteredDay> Unrostered { get; set; } = [];
+    /// <summary>Punched days missing from an approved roster, measured from their punches (script 114).</summary>
+    public List<WorkedTimePunchDay> PunchDays { get; set; } = [];
     public List<RosterLeaveDay> Leave { get; set; } = [];
 
     /// <summary>(employee, branch of the day) the caller may see.</summary>
