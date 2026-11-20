@@ -195,9 +195,13 @@ public sealed class PlannerInput
     /// each with a minimum of one. So a branch that works mornings and evenings has both covered every
     /// day without anyone setting it up; the drawer shows what was found and the manager can change it.
     /// </summary>
-    public IReadOnlyList<StaffingRule> ShiftCover => _shiftCover ??= ShiftCoverDetected
-        ? ShiftCoverDetector.Detect(this)
-        : Staffing.Where(r => r.ShiftId is not null).ToList();
+    public IReadOnlyList<StaffingRule> ShiftCover => _shiftCover ??= Rotation is { } rotation
+        // The fixed rotation runs two shifts and no other: those are the ones a day must have somebody on. What the
+        // branch ran before (a shift found in its history) is not this method's business.
+        ? [new StaffingRule(null, rotation.MorningShiftId, 1, null), new StaffingRule(null, rotation.EveningShiftId, 1, null)]
+        : ShiftCoverDetected
+            ? ShiftCoverDetector.Detect(this)
+            : Staffing.Where(r => r.ShiftId is not null).ToList();
 
     private IReadOnlyList<StaffingRule>? _shiftCover;
 

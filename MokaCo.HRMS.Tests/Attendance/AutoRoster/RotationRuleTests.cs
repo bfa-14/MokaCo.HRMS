@@ -212,6 +212,20 @@ public class RotationRuleTests
     }
 
     [Fact]
+    public void The_shifts_a_day_must_have_somebody_on_are_the_rotations_two()
+    {
+        // The branch worked the Day shift for months: the fair method would ask for it every day. The rotation does not.
+        var world = new RosterWorld { Today = new DateOnly(2026, 11, 1), Rotation = Stored() }.WithStaff(People.Length);
+        for (var d = new DateOnly(2026, 9, 1); d < new DateOnly(2026, 11, 1); d = d.AddDays(1))
+            for (var e = 1; e <= 4; e++)
+                world.Work(e, d, RosterWorld.Day);
+
+        var run = world.Plan(new DateOnly(2026, 12, 1), configure: r => r.Method = "Rotation");
+        Assert.Equal([RosterWorld.Morning, RosterWorld.Evening], run.Input.ShiftCover.Select(r => r.ShiftId!.Value));
+        Assert.DoesNotContain(run.Preview.Issues, i => i.Code == RosterPlanValidator.ShiftUncovered);
+    }
+
+    [Fact]
     public void The_rotation_must_be_set_up_before_it_can_plan()
     {
         var world = new RosterWorld { Today = new DateOnly(2026, 11, 1) }.WithStaff(3);
