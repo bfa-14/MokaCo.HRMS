@@ -101,6 +101,7 @@ builder.Services.AddScoped<IGateRepository, GateRepository>();
 // --- DI: repositories (Core) ---
 builder.Services.AddScoped<ICurrencyRepository, CurrencyRepository>();
 builder.Services.AddScoped<IHolidayRepository, HolidayRepository>();
+builder.Services.AddScoped<IPrepBookRepository, PrepBookRepository>();
 builder.Services.AddScoped<IExchangeRateRepository, ExchangeRateRepository>();
 builder.Services.AddScoped<IDashboardRepository, DashboardRepository>();
 
@@ -192,6 +193,7 @@ builder.Services.AddSingleton<IGoogleTokenValidator>(sp => new GoogleTokenValida
 // --- DI: services (Core) ---
 builder.Services.AddScoped<ICurrencyService, CurrencyService>();
 builder.Services.AddScoped<IHolidayService, HolidayService>();
+builder.Services.AddScoped<IPrepBookService, PrepBookService>();
 builder.Services.AddScoped<IExchangeRateService, ExchangeRateService>();
 builder.Services.AddScoped<IDashboardService, DashboardService>();
 // Manual "email the employee" only. The WORKER does not resolve this — a background service has no

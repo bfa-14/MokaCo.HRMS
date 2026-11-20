@@ -62,7 +62,8 @@ INSERT INTO @S (No, Script, Applied, CheckedBy) VALUES
  (111, N'111_booking_rooms_report_permissions.sql', IIF(OBJECT_ID('security.usp_Permission_Holders') IS NOT NULL, 1, 0), N'security.usp_Permission_Holders'),
  (112, N'112_my_branch_shifts_permission.sql',     IIF(EXISTS (SELECT 1 FROM security.PERMISSION WHERE Code = 'SHIFTS_VIEW_BRANCH'), 1, 0), N'permission SHIFTS_VIEW_BRANCH'),
  (113, N'113_worked_time_report.sql',              IIF(OBJECT_ID('report.usp_Report_WorkedTime_Days') IS NOT NULL, 1, 0), N'report.usp_Report_WorkedTime_Days'),
- (114, N'114_worked_time_punch_days.sql',          IIF(OBJECT_ID('report.usp_Report_WorkedTime_PunchDays') IS NOT NULL, 1, 0), N'report.usp_Report_WorkedTime_PunchDays');
+ (114, N'114_worked_time_punch_days.sql',          IIF(OBJECT_ID('report.usp_Report_WorkedTime_PunchDays') IS NOT NULL, 1, 0), N'report.usp_Report_WorkedTime_PunchDays'),
+ (115, N'115_recipe_book.sql',                     IIF(OBJECT_ID('core.usp_PrepBook_Get') IS NOT NULL, 1, 0), N'core.usp_PrepBook_Get');
 
 INSERT INTO @S (No, Script, Applied, Admin, CheckedBy) VALUES
  (91, N'91_admin_reseed_identities.sql',          IIF(OBJECT_ID('dbo.usp_Admin_ReseedIdentities') IS NOT NULL, 1, 0), 1, N'admin tool'),
