@@ -20,7 +20,7 @@ AS
 BEGIN
     SET NOCOUNT ON;
     DECLARE @BasicType INT = (SELECT ComponentTypeId FROM hr.COMPONENT_TYPE WHERE SystemCode = 'BASIC');
-    UPDATE core.SETTING SET SettingValue = v.V FROM core.SETTING s JOIN (VALUES ('StandardWorkingDaysPerMonth','26'), ('StandardWorkDayHours','8'),
+    UPDATE core.SETTING SET SettingValue = v.V FROM core.SETTING s JOIN (VALUES ('StandardWorkingDaysPerMonth','26'),
         ('TaxFamilyDeductionAnnualUsd','0'), ('PayrollPrimaryCurrency','USD'), ('HolidayWorkRate','2.0')) v(K, V) ON v.K = s.SettingKey;
     UPDATE hr.APPROVAL_TIER SET MinBasicSalary = NULL, MaxBasicSalary = NULL;
     INSERT INTO hr.EMPLOYEE (BranchId, DepartmentId, PositionId, FullName, HireDate)
@@ -176,7 +176,7 @@ WHERE ps.PayrollRunId = @Run AND ps.EmployeeId = @E AND l.SourceType = 'Tip';
 IF @x <> CONCAT(@Td1, ':50.00:Tips of 2099-03-05|', @Td2, ':70.00:Tips of 2099-03-20')
     BEGIN SET @fails += 1; RAISERROR('06 D: tips are not one line per distribution (%s).', 16, 1, @x); END
 /* the unpaid holiday costs a day in the approved roster month only (100.00); the paid holiday worked on a rest day earns
-   240 / 480 x 100 x (2.0 - 1) = 50.00 */
+   240 / 480 x 100 x (2.0 - 1) = 50.00 - 480 being the employee's own day (script 117: their last working day's standard) */
 SELECT @x = CONCAT('draft ', ISNULL(SUM(CASE WHEN ps.EmployeeId = @E AND c.SystemCode = 'ABSENCE' THEN l.Amount END), 0),
                    ', approved ', ISNULL(SUM(CASE WHEN ps.EmployeeId = @E2 AND c.SystemCode = 'ABSENCE' THEN l.Amount END), 0),
                    ', holiday work ', ISNULL(SUM(CASE WHEN ps.EmployeeId = @E2 AND c.SystemCode = 'HOLIDAY_WORK' THEN l.Amount END), 0))

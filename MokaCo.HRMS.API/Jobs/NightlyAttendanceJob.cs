@@ -33,6 +33,7 @@ public class NightlyAttendanceJob : IJob
     private readonly IRequestService _requests;
     private readonly ILeaveYearService _leaveYear;
     private readonly IEmployeeService _employees;
+    private readonly IShiftService _shifts;
     private readonly ILogger<NightlyAttendanceJob> _logger;
 
     public NightlyAttendanceJob(
@@ -43,8 +44,10 @@ public class NightlyAttendanceJob : IJob
         IRequestService requests,
         ILeaveYearService leaveYear,
         IEmployeeService employees,
+        IShiftService shifts,
         ILogger<NightlyAttendanceJob> logger)
     {
+        _shifts = shifts;
         _leaveYear = leaveYear;
         _employees = employees;
         _attendance = attendance;
@@ -57,6 +60,19 @@ public class NightlyAttendanceJob : IJob
 
     public async Task Execute(IJobExecutionContext context)
     {
+        // Script 117: a change of shift hours dated ahead takes its place on its day. Days are judged against the hours
+        // in force on their date whatever this does; it only keeps what the shift list SHOWS at today's hours.
+        try
+        {
+            var shiftsUpdated = await _shifts.SyncCurrentAsync();
+            if (shiftsUpdated > 0)
+                _logger.LogInformation("Nightly attendance: {Count} shift(s) now show the hours that start today.", shiftsUpdated);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Nightly attendance: could not bring the shifts to today's hours; the rest of the run goes on.");
+        }
+
         // No date: consume EVERYTHING still unprocessed, not just yesterday. If the API was down for
         // two days, a date-scoped run would silently leave the older punches behind forever.
         var processed = await _attendance.ProcessAsync(null);

@@ -2,9 +2,10 @@ namespace MokaCo.HRMS.Model.Attendance;
 
 /// <summary>
 /// Maps to attendance.SHIFT. A shift is what gives the words "late", "a full day" and "overtime"
-/// a meaning for a given person on a given date. Without a rostered shift the processor falls back
-/// to core.SETTING.StandardWorkDayHours and CANNOT judge lateness at all (there is no start time
-/// to be late against).
+/// a meaning for a given person on a given date. Its hours are DATED (attendance.SHIFT_HOURS, script 117):
+/// this row shows the hours in force today, a day is judged against the hours in force on that day.
+/// Without a rostered shift a day is measured against the shift its first punch fits - for its length
+/// only: there is no start time to be late against.
 /// </summary>
 public class Shift
 {

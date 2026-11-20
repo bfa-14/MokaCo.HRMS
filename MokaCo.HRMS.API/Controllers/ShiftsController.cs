@@ -7,8 +7,10 @@ namespace MokaCo.HRMS.Api.Controllers;
 
 /// <summary>
 /// Shift definitions — the thing that gives "late", "a full day" and "overtime" a meaning.
-/// Anyone with ATTENDANCE_VIEW may read them; changing one changes how future days are judged, so
-/// that needs ATTENDANCE_MANAGE.
+/// Anyone with ATTENDANCE_VIEW may read them; changing one changes how days are judged, so
+/// that needs ATTENDANCE_MANAGE. A shift's hours are DATED (script 117): PUT takes the day new hours start
+/// (and optionally the day they end - the hours before then come back), GET {id}/hours is the history,
+/// DELETE {id}/hours/{shiftHoursId} takes one change back.
 /// </summary>
 [ApiController]
 [Route("api/shifts")]
@@ -43,7 +45,7 @@ public class ShiftsController : ControllerBase
         if (request.EndTime < request.StartTime && !request.CrossesMidnight)
             return BadRequest(new { error = "This shift ends before it starts. Tick 'crosses midnight' if it is an overnight shift." });
 
-        var id = await _shifts.CreateAsync(request);
+        var id = await _shifts.CreateAsync(request, User.UserId());
         await _live.NotifyAsync("attendance", "dashboard");
         return CreatedAtAction(nameof(GetAll), new { id }, new { shiftId = id });
     }
@@ -52,17 +54,36 @@ public class ShiftsController : ControllerBase
     [HasPermission("ATTENDANCE_MANAGE")]
     public async Task<IActionResult> Update(int id, [FromBody] ShiftUpdateRequest request)
     {
-        // QA3 (ATT-7): the same checks as Create. Changing the times of a shift that has already been worked is refused
-        // by the procedure (409): create a new shift and roster it from the date it starts.
+        // The same checks as Create. Script 117: the hours of a shift that has been worked change FROM A DAY
+        // (EffectiveFrom; today when none is sent), never for the days before it - a paid day keeps its hours (409).
         if (request.EndTime == request.StartTime)
             return BadRequest(new { error = "A shift cannot start and end at the same time." });
 
         if (request.EndTime < request.StartTime && !request.CrossesMidnight)
             return BadRequest(new { error = "This shift ends before it starts. Tick 'crosses midnight' if it is an overnight shift." });
 
-        await _shifts.UpdateAsync(id, request);
+        await _shifts.UpdateAsync(id, request, User.UserId());
         // Shift times decide what counts as late and as overtime on every day rostered to them.
         await _live.NotifyAsync("attendance", "dashboard");
         return NoContent();
+    }
+
+    /// <summary>The shift's hours over time, oldest first: each row with the days it applies to.</summary>
+    [HttpGet("{id:int}/hours")]
+    [HasPermission("ATTENDANCE_VIEW")]
+    public async Task<IActionResult> GetHours(int id) => Ok(await _shifts.GetHoursAsync(id));
+
+    /// <summary>Takes one change of hours back (not the shift's first hours); the days it covered are derived again.</summary>
+    [HttpDelete("{id:int}/hours/{shiftHoursId:int}")]
+    [HasPermission("ATTENDANCE_MANAGE")]
+    public async Task<IActionResult> DeleteHours(int id, int shiftHoursId)
+    {
+        var rows = await _shifts.GetHoursAsync(id);
+        if (rows.All(r => r.ShiftHoursId != shiftHoursId))
+            return NotFound(new { error = "That change of hours was not found for this shift." });
+
+        var result = await _shifts.DeleteHoursAsync(shiftHoursId, User.UserId());
+        await _live.NotifyAsync("attendance", "dashboard");
+        return Ok(result);
     }
 }

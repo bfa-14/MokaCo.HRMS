@@ -12,7 +12,7 @@ namespace MokaCo.HRMS.Model.Core;
 /// </summary>
 public class Setting
 {
-    /// <summary>e.g. 'StandardWorkDayHours'. The primary key — settings are addressed by name, not id.</summary>
+    /// <summary>e.g. 'StandardWorkingDaysPerMonth'. The primary key — settings are addressed by name, not id.</summary>
     public string SettingKey { get; set; } = string.Empty;
 
     /// <summary>

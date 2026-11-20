@@ -49,5 +49,5 @@ public class SettingValueRulesTests
 
     [Fact]
     public void Other_keys_are_not_judged_here()
-        => Assert.Null(SettingValueRules.Problem("StandardWorkDayHours", "whatever"));
+        => Assert.Null(SettingValueRules.Problem("StandardWorkingDaysPerMonth", "whatever"));
 }

@@ -511,26 +511,40 @@ public class AttendanceAnomalyTests
         Assert.Contains("must be after the in time", refused.Message);
     }
 
-    /* ---- ATT-7 / ROS-9 / REL-10: a shift that has been worked keeps its times; its name can still change ---- */
+    /* ---- script 117: a shift that has been worked changes its hours FROM A DAY; the days before keep theirs ---- */
     [DbFact]
-    public async Task A_shift_that_has_been_worked_keeps_its_times()
+    public async Task A_worked_shifts_hours_change_from_a_day_and_the_days_before_keep_theirs()
     {
         await using var f = await ExampleDayAsync();
         var shiftId = await f.Db.ExecuteScalarAsync<int>(
             "SELECT ShiftId FROM attendance.SHIFT_ASSIGNMENT WHERE EmployeeId = @EmployeeId AND WorkDate = @D", new { f.EmployeeId, D = Day }, f.Tx);
+        var before = await f.RecordAsync(Day);
 
-        var refused = await Assert.ThrowsAsync<SqlException>(() => f.Db.ExecuteAsync(
-            "attendance.usp_Shift_Update",
-            new { ShiftId = shiftId, Name = "ZZ 07-15", StartTime = new TimeSpan(6, 45, 0), EndTime = new TimeSpan(15, 0, 0), GraceMinutes = (int?)null, CrossesMidnight = false, BreakMinutes = 0, IsActive = true },
-            f.Tx, commandType: System.Data.CommandType.StoredProcedure));
-        Assert.Contains("already in use", refused.Message);
-        Assert.Contains("Create a new shift", refused.Message);
-
+        // No date given: the new hours start today (the worked day is in the past). Script 100 refused this outright.
         await f.Db.ExecuteAsync(
             "attendance.usp_Shift_Update",
-            new { ShiftId = shiftId, Name = "ZZ 07-15 (old)", StartTime = new TimeSpan(7, 0, 0), EndTime = new TimeSpan(15, 0, 0), GraceMinutes = (int?)null, CrossesMidnight = false, BreakMinutes = 0, IsActive = false },
+            new { ShiftId = shiftId, Name = "ZZ 07-15 (earlier)", StartTime = new TimeSpan(6, 45, 0), EndTime = new TimeSpan(15, 0, 0), GraceMinutes = (int?)null, CrossesMidnight = false, BreakMinutes = 0, IsActive = true },
+            f.Tx, commandType: System.Data.CommandType.StoredProcedure);
+
+        Assert.Equal("ZZ 07-15 (earlier)", await f.Db.ExecuteScalarAsync<string>("SELECT Name FROM attendance.SHIFT WHERE ShiftId = @S", new { S = shiftId }, f.Tx));
+        Assert.Equal(new TimeSpan(6, 45, 0), await f.Db.ExecuteScalarAsync<TimeSpan>("SELECT StartTime FROM attendance.SHIFT WHERE ShiftId = @S", new { S = shiftId }, f.Tx));
+        Assert.Equal(new TimeSpan(7, 0, 0), await f.Db.ExecuteScalarAsync<TimeSpan>(
+            "SELECT StartTime FROM attendance.fn_ShiftHoursOn(@S, @D)", new { S = shiftId, D = Day }, f.Tx));
+        Assert.Equal(2, await f.Db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM attendance.SHIFT_HOURS WHERE ShiftId = @S", new { S = shiftId }, f.Tx));
+
+        // Derived again, the worked day is judged exactly as before: against the hours in force on it.
+        await f.ComputeAsync(Day);
+        var after = await f.RecordAsync(Day);
+        Assert.Equal((before.LateMinutes, before.EarlyExitMinutes, before.WorkedMinutes, before.DayFraction),
+                     (after.LateMinutes, after.EarlyExitMinutes, after.WorkedMinutes, after.DayFraction));
+
+        // The name and Active still change on their own.
+        await f.Db.ExecuteAsync(
+            "attendance.usp_Shift_Update",
+            new { ShiftId = shiftId, Name = "ZZ 07-15 (old)", StartTime = new TimeSpan(6, 45, 0), EndTime = new TimeSpan(15, 0, 0), GraceMinutes = (int?)null, CrossesMidnight = false, BreakMinutes = 0, IsActive = false },
             f.Tx, commandType: System.Data.CommandType.StoredProcedure);
         Assert.Equal("ZZ 07-15 (old)", await f.Db.ExecuteScalarAsync<string>("SELECT Name FROM attendance.SHIFT WHERE ShiftId = @S", new { S = shiftId }, f.Tx));
+        Assert.Equal(2, await f.Db.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM attendance.SHIFT_HOURS WHERE ShiftId = @S", new { S = shiftId }, f.Tx));
     }
 
     /* ---- a public holiday worked with a lost out-punch is a missing punch (its premium is paid on worked minutes) ---- */

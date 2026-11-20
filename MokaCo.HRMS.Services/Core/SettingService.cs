@@ -4,9 +4,10 @@ using MokaCo.HRMS.Repository.Core;
 namespace MokaCo.HRMS.Services.Core;
 
 /// <summary>
-/// Global policy values. Small surface, large blast radius: changing StandardWorkDayHours changes
+/// Global policy values. Small surface, large blast radius: changing FullDayThreshold changes
 /// what a full day means for everyone, and changing ExitLeaveBasis changes whether people are
-/// docked for the leave they took or the leave they were granted.
+/// docked for the leave they took or the leave they were granted. (The LENGTH of a working day is not
+/// here any more: it is each shift's own, script 117.)
 /// </summary>
 public class SettingService : ISettingService
 {

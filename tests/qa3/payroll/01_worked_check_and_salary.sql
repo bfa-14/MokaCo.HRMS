@@ -1,5 +1,5 @@
 /* QA3 payroll (unit E) - the handoff 7.5 worked check, exact; a raise added without closing the old row (PAY-6 / REL-2);
-   unpaid deductions capped at the basic (QA3 decision); the hour rate on StandardWorkDayHours (PAY-14); the branch of
+   unpaid deductions capped at the basic (QA3 decision); the hour of overtime on the day's own shift (script 117); the branch of
    the period on the payslip (PAY-15).
    Runs on a dev database with docs/103_qa3_payroll.sql applied, inside a transaction that is rolled back; months of 2099,
    the procedures' clock injected; its own NSSF / tax / rate / settings so the figures do not depend on the database.
@@ -13,7 +13,7 @@ DECLARE @c TABLE (PayrollRunId INT, PeriodYearMonth CHAR(7), [Status] VARCHAR(12
 /* ---- the configuration of the handoff's worked check, for 2099 only (rolled back) ---- */
 SET @Hr = (SELECT TOP 1 UserId FROM security.[USER] u WHERE payroll.fn_UserHasRole(u.UserId, N'HR') = 1 OR payroll.fn_UserHasRole(u.UserId, N'Admin') = 1 ORDER BY UserId);
 SET @Owner = (SELECT TOP 1 UserId FROM security.[USER] u WHERE payroll.fn_UserHasRole(u.UserId, N'Owner') = 1 ORDER BY UserId);
-UPDATE core.SETTING SET SettingValue = v.V FROM core.SETTING s JOIN (VALUES ('StandardWorkingDaysPerMonth','26'), ('StandardWorkDayHours','8'), ('NssfCeilingUsd','2500'),
+UPDATE core.SETTING SET SettingValue = v.V FROM core.SETTING s JOIN (VALUES ('StandardWorkingDaysPerMonth','26'), ('NssfCeilingUsd','2500'),
     ('TaxFamilyDeductionAnnualUsd','0'), ('PayrollPrimaryCurrency','USD'), ('PayrollRateType','QA3'), ('LeavePayoutOnTermination','1'), ('HolidayWorkRate','2.0')) v(K, V) ON v.K = s.SettingKey;
 UPDATE hr.APPROVAL_TIER SET MinBasicSalary = NULL, MaxBasicSalary = NULL;
 INSERT INTO core.EXCHANGE_RATE (FromCurrency, ToCurrency, RateType, EffectiveDate, Rate) VALUES ('USD', 'LBP', 'QA3', '2099-01-01', 90000);
@@ -56,8 +56,7 @@ INSERT INTO workflow.REQUEST_INSTANCE (RequestTypeId, WorkflowDefinitionId, Empl
 SET @Ri = SCOPE_IDENTITY();
 INSERT INTO workflow.OVERTIME_REQUEST (RequestInstanceId, EmployeeId, WorkDate, RequestedMinutes, ApprovedMinutes, RateMultiplier) VALUES (@Ri, @E4, '2099-03-10', 120, 120, 1.5);
 INSERT INTO attendance.ATTENDANCE_RECORD (EmployeeId, WorkDate, [Status], DayFraction, StandardMinutes, WorkedMinutes, OvertimeMinutes, [Source])
-VALUES (@E4, '2099-03-10', 'Present', 1, 480, 600, 120, 'Manual');
-UPDATE core.SETTING SET SettingValue = '10' WHERE SettingKey = 'StandardWorkDayHours';        -- PAY-14: the hour rate follows this key
+VALUES (@E4, '2099-03-10', 'Present', 1, 600, 720, 120, 'Manual');        -- script 117: a 10-hour shift that day - the hour of overtime follows it
 
 /* ---- the run ---- */
 INSERT INTO @c EXEC payroll.usp_PayrollRun_Create @PeriodYearMonth = '2099-03', @CreatedByUserId = @Hr, @Notes = N'QA3 payroll 01', @AsOfDate = '2099-04-02';
@@ -84,9 +83,9 @@ WHERE ps.PayrollRunId = @Run AND ps.EmployeeId = @E3 AND l.SourceType = 'Leave';
 IF @a <> 2600 OR @x NOT LIKE N'%capped%' OR (SELECT NetUsd FROM payroll.PAYSLIP WHERE PayrollRunId = @Run AND EmployeeId = @E3) <> 0
     BEGIN SET @x = CONCAT(@a, ' ', @x); SET @fails += 1; RAISERROR('01: the unpaid month was not capped at the basic: %s', 16, 1, @x); END
 
-/* PAY-14: hour rate = 2080 / 26 / 10 (StandardWorkDayHours) = 8.00; 120 min x 1.5 = 24.00. PAY-15: the branch on the 31st */
+/* script 117: hour rate = 2080 / 26 / 10 (the hours of that day's shift) = 8.00; 120 min x 1.5 = 24.00. PAY-15: the branch on the 31st */
 SET @a = (SELECT SUM(l.Amount) FROM payroll.PAYSLIP ps JOIN payroll.PAYSLIP_LINE l ON l.PayslipId = ps.PayslipId WHERE ps.PayrollRunId = @Run AND ps.EmployeeId = @E4 AND l.SourceType = 'Overtime');
-IF @a <> 24.00 BEGIN SET @x = CAST(@a AS NVARCHAR(30)); SET @fails += 1; RAISERROR('01: overtime paid %s, not 24.00 at StandardWorkDayHours 10.', 16, 1, @x); END
+IF @a <> 24.00 BEGIN SET @x = CAST(@a AS NVARCHAR(30)); SET @fails += 1; RAISERROR('01: overtime paid %s, not 24.00 on a 10-hour day.', 16, 1, @x); END
 IF (SELECT BranchName FROM payroll.PAYSLIP WHERE PayrollRunId = @Run AND EmployeeId = @E4) <> N'QA3 Pay Branch Two'
     BEGIN SET @fails += 1; RAISERROR('01: the payslip does not carry the branch of the period.', 16, 1); END
 

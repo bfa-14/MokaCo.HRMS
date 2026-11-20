@@ -35,6 +35,9 @@ public static class Scripts
     /// <summary>The auto-roster's fixed rotation: the branch's start date and shifts, and each person's line.</summary>
     public const string RosterRotation116 = "docs/116_roster_rotation.sql";
 
+    /// <summary>Shift hours by date (attendance.SHIFT_HOURS), the day's length from its shift, the setting StandardWorkDayHours removed.</summary>
+    public const string ShiftHours117 = "docs/117_shift_hours_by_date.sql";
+
     /// <summary>
     /// QA3 DEPLOY GUARD: every numbered script this build of the API calls, in apply order, each with the
     /// object it is checked by. SchemaCheck looks for them at startup; while one is missing the log names
@@ -67,5 +70,6 @@ public static class Scripts
         new(WorkedTimePunchDays114, "report.usp_Report_WorkedTime_PunchDays"),
         new(RecipeBook115, "core.usp_PrepBook_Get"),
         new(RosterRotation116, "attendance.usp_RosterRotation_Get"),
+        new(ShiftHours117, "attendance.usp_Shift_SetHours"),
     ];
 }
