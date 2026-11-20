@@ -61,8 +61,8 @@ public static class AutoRosterInputFactory
 
     /// <summary>
     /// Builds the planner's input. Throws <see cref="ArgumentException"/> with <see cref="Problem"/>'s sentence on a bad
-    /// request. <paramref name="rotation"/> is the branch's stored fixed rotation: read (and required) only when the
-    /// request's method is Rotation.
+    /// request. <paramref name="rotation"/> is the branch's stored fixed rotation: required when the request's method
+    /// is Rotation; in both methods its Lead 1 and Lead 2 are the branch's shift leaders.
     /// </summary>
     public static PlannerInput Create(AutoRosterContext context, AutoRosterRequest request, RosterRotationDto? rotation = null)
     {
@@ -104,6 +104,10 @@ public static class AutoRosterInputFactory
                     m.EmployeeId, m.Group == 1 ? 1 : 0, RosterCalendar.Mod(m.SingleRestDay, 7), RosterCalendar.Mod(m.PairRestDay, 7),
                     m.LeadSlot is "L1" or "L2" ? m.LeadSlot : null, m.SortOrder));
         var rotationMissing = new List<int>();
+        var shiftLeads = (rotation?.Members ?? [])
+            .Where(m => m.LeadSlot is "L1" or "L2")
+            .Select(m => m.EmployeeId)
+            .ToFrozenSet();
 
         var staff = context.Staff
             .GroupBy(s => s.EmployeeId)
@@ -221,6 +225,7 @@ public static class AutoRosterInputFactory
                 ? new RotationSetup(RosterCalendar.WeekStart(rotation!.StartDate!.Value), rotation.MorningShiftId!.Value, rotation.EveningShiftId!.Value, members.ToFrozenDictionary())
                 : null,
             RotationMissing = rotationMissing,
+            ShiftLeads = shiftLeads,
             Settings = settings,
             MonthLocked = header.OpenRequestId is not null,
             DefaultShiftId = request.DefaultShiftId,

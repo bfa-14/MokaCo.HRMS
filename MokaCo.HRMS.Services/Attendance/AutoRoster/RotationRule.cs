@@ -28,6 +28,9 @@ public sealed record RotationSetup(DateOnly StartDate, int MorningShiftId, int E
 ///   · A WORKING DAY is a morning or an evening. L1 has mornings on even weeks and evenings on odd ones, L2 the
 ///     opposite: each shift keeps a lead. Everybody else goes, in the order of the list, to the shift with fewer
 ///     people so far that day; on a tie the weeks, the days and the rows take turns.
+///   · TWO LEADS NEVER SHARE A SHIFT. On the sheet that follows from the rule; on a real roster one lead's day may
+///     be decided by somebody else (a hand edit, a saved day). The other lead then takes the OTHER shift, whatever
+///     the week says.
 ///
 /// The sheet knows nothing of the real world; the auto-roster does, and it wins: a day the run may not change
 /// (paid, past, recorded, pinned, a hand edit the mode protects), a leave day and a public holiday are handled as
@@ -144,8 +147,31 @@ public static class RotationRule
         var setup = input.Rotation!;
         var ordered = Ordered(setup, input.Staff.Where(s => s.OnRotation).Select(s => s.EmployeeId));
 
+        var leads = ordered.Where(m => m.LeadSlot is not null).ToList();
+
         foreach (var date in grid.Days)
         {
+            // The shift a lead is ALREADY on today by somebody else's decision: the other lead keeps off it.
+            var leadFixedOn = new Dictionary<int, int>();
+            foreach (var lead in leads)
+            {
+                var c = grid[lead.EmployeeId, date];
+                if (!c.IsPlannable && c.InBranch && c.State == CellState.Work && c.Leave != LeaveKind.Full
+                    && c.ShiftId is { } on && (on == setup.MorningShiftId || on == setup.EveningShiftId))
+                    leadFixedOn[lead.EmployeeId] = on;
+            }
+
+            int ShiftFor(RotationMember member, int mornings, int evenings, int sheetRow)
+            {
+                var byRule = IsMorning(setup, member, date, mornings, evenings, sheetRow) ? setup.MorningShiftId : setup.EveningShiftId;
+                if (member.LeadSlot is null)
+                    return byRule;
+                var taken = leadFixedOn.Where(f => f.Key != member.EmployeeId).Select(f => f.Value).Distinct().ToList();
+                return taken.Count == 1 && taken[0] == byRule
+                    ? (byRule == setup.MorningShiftId ? setup.EveningShiftId : setup.MorningShiftId)
+                    : byRule;
+            }
+
             int mornings = 0, evenings = 0;
             for (var i = 0; i < ordered.Count; i++)
             {
@@ -166,7 +192,7 @@ public static class RotationRule
                     else
                     {
                         cell.State = CellState.Work;
-                        cell.ShiftId = IsMorning(setup, member, date, mornings, evenings, FirstSheetRow + i) ? setup.MorningShiftId : setup.EveningShiftId;
+                        cell.ShiftId = ShiftFor(member, mornings, evenings, FirstSheetRow + i);
                         cell.ReasonCode = member.LeadSlot is null ? ReasonBalance : ReasonLead;
                         cell.ReasonArgs = null;
                     }
@@ -175,7 +201,7 @@ public static class RotationRule
                 {
                     // A working day somebody else decided and that still needs its shift: an empty leave day (it gets a
                     // working row so the leave costs what it was priced at), a holiday's cover, a draft edit without one.
-                    cell.ShiftId = IsMorning(setup, member, date, mornings, evenings, FirstSheetRow + i) ? setup.MorningShiftId : setup.EveningShiftId;
+                    cell.ShiftId = ShiftFor(member, mornings, evenings, FirstSheetRow + i);
                 }
 
                 // What the next people balance against: who is really on each shift here today.

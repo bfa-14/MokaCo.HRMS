@@ -122,6 +122,8 @@ public class AutoRosterServiceTests
             direct.Cells.Select(c => (c.EmployeeId, c.WorkDate, c.State, c.ShiftId, c.Change)),
             preview.Cells.Select(c => (c.EmployeeId, c.WorkDate, c.State, c.ShiftId, c.Change)));
         h.Repo.Verify(r => r.GetContextAsync(RosterWorld.Branch, Dec, null, Caller), Times.Once);
+        // The stored rotation is read by both methods: its Lead 1 and Lead 2 are the branch's shift leaders.
+        h.Repo.Verify(r => r.GetRotationAsync(RosterWorld.Branch, Caller), Times.Once);
         h.Repo.VerifyNoOtherCalls();
     }
 

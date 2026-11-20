@@ -41,6 +41,7 @@ public static class RosterPlanValidator
     public const string PatternRestWorked = "PATTERN_REST_WORKED";
     public const string LongRun = "LONG_RUN";
     public const string RotationNotSet = "ROTATION_NOT_SET";
+    public const string LeadsSameShift = "LEADS_SAME_SHIFT";
 
     /// <summary>Every issue of a decided grid, sorted (errors first, then by date, employee, code).</summary>
     public static List<AutoRosterIssue> Validate(PlannerInput input, RosterGrid grid, IReadOnlyDictionary<int, ResolvedRhythm> rhythms)
@@ -67,6 +68,7 @@ public static class RosterPlanValidator
             CheckShiftTiming(input, grid, employee.EmployeeId, issues);
         }
         CheckStaffing(input, grid, issues);
+        CheckLeads(input, grid, issues);
         return Sort(issues);
     }
 
@@ -429,6 +431,32 @@ public static class RosterPlanValidator
                     issue.ShiftId = rule.ShiftId;
                     issues.Add(issue);
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Two shift leaders on the same shift while another shift the day must cover has none: the planner never
+    /// does that, so it is a day somebody decided by hand (or a saved day). A warning - the manager may mean it.
+    /// </summary>
+    private static void CheckLeads(PlannerInput input, RosterGrid grid, List<AutoRosterIssue> issues)
+    {
+        if (input.MonthLocked || input.ShiftLeads.Count < 2)
+            return;
+
+        foreach (var date in RosterCalendar.Days(input.MonthStart, input.MonthEnd))
+        {
+            if (date < input.Today)
+                continue;
+            var leads = grid.CellsOn(date)
+                .Where(c => input.ShiftLeads.Contains(c.EmployeeId) && c.InBranch && c.CountsAsWorkForRun && c.ShiftId is not null)
+                .ToList();
+            foreach (var group in leads.GroupBy(c => c.ShiftId!.Value).Where(g => g.Count() >= 2).OrderBy(g => g.Key))
+            {
+                var name = input.Shifts.TryGetValue(group.Key, out var s) ? s.Name : $"shift {group.Key}";
+                var issue = Issue(Warning, LeadsSameShift, null, date, $"{group.Count()} shift leaders are on {name}; each shift should keep one.");
+                issue.ShiftId = group.Key;
+                issues.Add(issue);
             }
         }
     }

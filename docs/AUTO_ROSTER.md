@@ -478,3 +478,10 @@ followed by a late two-day week can give eleven working days in a row: the rule'
 saved and the manager moves a day off in the grid. Somebody on rotation without a line on the list is not planned
 and is named (`ROTATION_NOT_SET`). The request's `method` is `"Rotation"`; the list is always read as stored, never
 from the request, so the commit checks by the same list the preview planned with.
+
+**Shift leaders (both methods).** The people the rotation list names Lead 1 and Lead 2 are the branch's shift
+leaders (`PlannerInput.ShiftLeads`, read from the stored list whichever method plans). Two leaders are never
+planned onto the same shift: under the rotation, when one lead's day was decided by somebody else, the other takes
+the other shift whatever the week says; under Fair, after the cover, a leader on a shift that holds two changes
+places with somebody on the shift that holds none (`WORK_LEAD_APART`), so both shifts keep their numbers. A day
+where both leaders were placed by hand is left alone and reported (`LEADS_SAME_SHIFT`, a warning).

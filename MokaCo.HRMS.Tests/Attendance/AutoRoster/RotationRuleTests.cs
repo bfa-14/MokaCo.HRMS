@@ -225,6 +225,103 @@ public class RotationRuleTests
         Assert.DoesNotContain(run.Preview.Issues, i => i.Code == RosterPlanValidator.ShiftUncovered);
     }
 
+    /* ---- two shift leaders never share a shift ---- */
+
+    private static IEnumerable<DateOnly> December => Enumerable.Range(1, 31).Select(d => new DateOnly(2026, 12, d));
+
+    private static int? ShiftOf(AutoRosterPreview preview, int employee, DateOnly day)
+        => preview.Cells.Single(c => c.EmployeeId == employee && c.WorkDate == day) is { State: "work" } cell ? cell.ShiftId : null;
+
+    [Fact]
+    public void A_lead_keeps_off_the_shift_the_other_lead_was_put_on_by_hand()
+    {
+        // Wednesday 2 December, week 0: the rule has Lead 1 on the morning and Lead 2 on the evening. Somebody put
+        // Lead 2 on the MORNING by hand: Lead 1 takes the evening, so each shift still has a lead.
+        var day = new DateOnly(2026, 12, 2);
+        var world = new RosterWorld { Today = new DateOnly(2026, 11, 1), Rotation = Stored() }.WithStaff(People.Length);
+        world.Work(2, day, RosterWorld.Morning);
+
+        var run = world.Plan(new DateOnly(2026, 12, 1), configure: r => r.Method = "Rotation");
+
+        Assert.Equal(RosterWorld.Morning, ShiftOf(run.Preview, 2, day));
+        Assert.Equal(RosterWorld.Evening, ShiftOf(run.Preview, 1, day));
+        Assert.DoesNotContain(run.Preview.Issues, i => i.Code == RosterPlanValidator.LeadsSameShift);
+        // Every other day of the month the two leads are apart as the rule has them.
+        Assert.All(December, d =>
+        {
+            if (ShiftOf(run.Preview, 1, d) is { } a && ShiftOf(run.Preview, 2, d) is { } b)
+                Assert.NotEqual(a, b);
+        });
+    }
+
+    [Fact]
+    public void Two_leads_put_on_one_shift_by_hand_are_reported_not_changed()
+    {
+        var day = new DateOnly(2026, 12, 2);
+        var world = new RosterWorld { Today = new DateOnly(2026, 11, 1), Rotation = Stored() }.WithStaff(People.Length);
+        world.Work(1, day, RosterWorld.Evening);
+        world.Work(2, day, RosterWorld.Evening);
+
+        var run = world.Plan(new DateOnly(2026, 12, 1), configure: r => r.Method = "Rotation");
+
+        Assert.Equal(RosterWorld.Evening, ShiftOf(run.Preview, 1, day));
+        Assert.Equal(RosterWorld.Evening, ShiftOf(run.Preview, 2, day));
+        var issue = Assert.Single(run.Preview.Issues, i => i.Code == RosterPlanValidator.LeadsSameShift);
+        Assert.Equal((day, "warning", (int?)RosterWorld.Evening), (issue.Date!.Value, issue.Severity, issue.ShiftId));
+    }
+
+    [Fact]
+    public void The_fair_method_keeps_the_two_leads_on_different_shifts()
+    {
+        // Everybody's own shift is the morning (the last two months), and the day must cover a morning and an evening:
+        // left alone, both leads would stay on the morning whenever the cover moves somebody else.
+        var world = new RosterWorld { Today = new DateOnly(2026, 11, 1), Rotation = Stored() }.WithStaff(People.Length);
+        for (var d = new DateOnly(2026, 10, 1); d < new DateOnly(2026, 12, 1); d = d.AddDays(1))
+            for (var e = 1; e <= People.Length; e++)
+                world.Work(e, d, RosterWorld.Morning);
+        world.Min(2, shiftId: RosterWorld.Morning);
+        world.Min(2, shiftId: RosterWorld.Evening);
+
+        var run = world.Plan(new DateOnly(2026, 12, 1));
+
+        Assert.Equal([1, 2], run.Input.ShiftLeads.Order());
+        var together = December.Count(d => ShiftOf(run.Preview, 1, d) is { } a && ShiftOf(run.Preview, 2, d) is { } b && a == b);
+        Assert.Equal(0, together);
+        Assert.Contains(December, d => ShiftOf(run.Preview, 1, d) is not null && ShiftOf(run.Preview, 2, d) is not null);
+        Assert.DoesNotContain(run.Preview.Issues, i => i.Code == RosterPlanValidator.LeadsSameShift);
+        // The cover is as good as without leads: moving a lead changes places with somebody, it does not thin a shift.
+        var noLeads = Stored();
+        noLeads.Members.ForEach(m => m.LeadSlot = null);
+        world.Rotation = noLeads;
+        var plain = world.Plan(new DateOnly(2026, 12, 1));
+        static IEnumerable<(DateOnly?, int?, string)> Cover(AutoRosterPreview p) => p.Issues
+            .Where(i => i.Code is RosterPlanValidator.ShiftUncovered or RosterPlanValidator.ShortStaffed)
+            .Select(i => (i.Date, i.ShiftId, i.Message));
+        Assert.Equal(Cover(plain.Preview), Cover(run.Preview));
+    }
+
+    [Fact]
+    public void Without_leads_the_fair_method_plans_as_before()
+    {
+        RosterWorld World(RosterRotationDto? rotation)
+        {
+            var world = new RosterWorld { Today = new DateOnly(2026, 11, 1), Rotation = rotation }.WithStaff(People.Length);
+            world.Min(2, shiftId: RosterWorld.Morning);
+            world.Min(2, shiftId: RosterWorld.Evening);
+            return world;
+        }
+        var noLeads = Stored();
+        noLeads.Members.ForEach(m => m.LeadSlot = null);
+
+        var plain = World(null).Plan(new DateOnly(2026, 12, 1));
+        var listed = World(noLeads).Plan(new DateOnly(2026, 12, 1));
+
+        Assert.Empty(listed.Input.ShiftLeads);
+        Assert.Equal(
+            plain.Preview.Cells.Select(c => (c.EmployeeId, c.WorkDate, c.State, c.ShiftId)),
+            listed.Preview.Cells.Select(c => (c.EmployeeId, c.WorkDate, c.State, c.ShiftId)));
+    }
+
     [Fact]
     public void The_rotation_must_be_set_up_before_it_can_plan()
     {

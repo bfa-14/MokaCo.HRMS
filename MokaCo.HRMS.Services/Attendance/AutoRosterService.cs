@@ -155,14 +155,12 @@ public class AutoRosterService : IAutoRosterService
         var context = await ContextAsync(request.BranchId, monthStart, callerUserId);
 
         // The fixed rotation is read as STORED (never from the request): the preview and the commit that follows
-        // it then plan and check by the same list.
-        RosterRotationDto? rotation = null;
-        if (AutoRosterInputFactory.IsRotation(request))
-        {
-            rotation = await GetRotationAsync(request.BranchId, callerUserId);
-            if (AutoRosterInputFactory.RotationProblem(rotation, context) is { } rotationProblem)
-                throw new WorkflowException(400, rotationProblem);
-        }
+        // it then plan and check by the same list. The other method reads it too: its Lead 1 and Lead 2 are the
+        // branch's shift leaders, kept on different shifts whichever method plans.
+        var rotation = await GetRotationAsync(request.BranchId, callerUserId);
+        if (AutoRosterInputFactory.IsRotation(request)
+            && AutoRosterInputFactory.RotationProblem(rotation, context) is { } rotationProblem)
+            throw new WorkflowException(400, rotationProblem);
         return AutoRosterInputFactory.Create(context, request, rotation);
     }
 

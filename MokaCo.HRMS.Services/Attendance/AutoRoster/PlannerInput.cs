@@ -150,6 +150,13 @@ public sealed class PlannerInput
     /// stand and not planned (the rule has nothing to go by), and the preview says so.</summary>
     public IReadOnlyList<int> RotationMissing { get; init; } = [];
 
+    /// <summary>
+    /// The branch's SHIFT LEADERS: the people its rotation list names Lead 1 and Lead 2 (script 116), whichever method
+    /// plans. Two leaders are never planned onto the same shift on a day - each shift keeps one - and a day somebody
+    /// else decided that puts them together is reported (LEADS_SAME_SHIFT).
+    /// </summary>
+    public IReadOnlySet<int> ShiftLeads { get; init; } = FrozenSet<int>.Empty;
+
     public PlannerSettings Settings { get; init; } = PlannerSettings.Default;
 
     /// <summary>A roster approval is waiting for this branch-month: the whole month is refused (MONTH_LOCKED).</summary>

@@ -245,7 +245,7 @@ public sealed class RosterWorld
         Mode = mode,
     };
 
-    /// <summary>The branch's stored fixed rotation (script 116); read when a request's method is Rotation.</summary>
+    /// <summary>The branch's stored fixed rotation (script 116): the Rotation method plans by it, and in both methods its leads are the shift leaders.</summary>
     public RosterRotationDto? Rotation { get; set; }
 
     public Run Plan(DateOnly month, string mode = "FillEmpty", Action<AutoRosterRequest>? configure = null, int branch = Branch)
