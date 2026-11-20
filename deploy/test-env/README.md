@@ -181,6 +181,12 @@ Two branches in both repos: **`main` is what production runs**; **`dev` is where
 | Work and test | pushed to `dev` | laptop: `bash deploy/sync-test.sh` · VM: `bash ~/test-env/deploy-test.sh` |
 | Ready for production | `dev` merged into `main` | laptop: `bash deploy/sync-prod.sh` · VM: `bash ~/src/MokaCo.HRMS/deploy/update-prod.sh --web` (backup, missing scripts, API, website) |
 
+- **Without a laptop** (a tablet, a phone): on the VM, `bash ~/src-test/MokaCo.HRMS/deploy/fetch-code.sh test` downloads
+  `dev` into `~/src-test` and `... fetch-code.sh prod` downloads `main` into `~/src` - the same result as the two
+  sync scripts. When the GitHub repositories are private it needs a token: a fine-grained one for the two
+  repositories with "Contents: Read-only", saved once with `... fetch-code.sh token` (typed at a hidden prompt, kept
+  in `~/.config/mokaco/github-token`; never in a chat or a tracked file). `... fetch-code.sh check` says whether
+  GitHub answers.
 - `sync-test.sh` sends what is **pushed** on `dev` to `~/src-test` on the VM; `deploy-test.sh` builds only
   from there, into the test folders, and restarts only `mokaco-api-test`.
 - `sync-prod.sh` sends what is **pushed** on `main` to `~/src`, whatever the laptop has checked out (the old
