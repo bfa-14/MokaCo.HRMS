@@ -30,6 +30,8 @@ public static class Scripts
     public const string WorkedTime113 = "docs/113_worked_time_report.sql";
     /// <summary>The Worked time report counts the days missing from an approved roster, measured from their punches.</summary>
     public const string WorkedTimePunchDays114 = "docs/114_worked_time_punch_days.sql";
+    /// <summary>The drink recipes: the book an admin uploads, stored in the database, and its two permissions.</summary>
+    public const string RecipeBook115 = "docs/115_recipe_book.sql";
 
     /// <summary>
     /// QA3 DEPLOY GUARD: every numbered script this build of the API calls, in apply order, each with the
@@ -61,5 +63,6 @@ public static class Scripts
         new(BookingPermissions111, "security.usp_Permission_Holders"),
         new(WorkedTime113, "report.usp_Report_WorkedTime_Days"),
         new(WorkedTimePunchDays114, "report.usp_Report_WorkedTime_PunchDays"),
+        new(RecipeBook115, "core.usp_PrepBook_Get"),
     ];
 }
