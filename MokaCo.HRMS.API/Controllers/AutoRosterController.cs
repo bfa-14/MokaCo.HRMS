@@ -137,6 +137,26 @@ public class AutoRosterController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// The branch's FIXED ROTATION (the auto-roster's "Rotation" method, script 116): where it starts (a Monday), its
+    /// morning and evening shift, and the list in order with each person's group, days off and lead. Replaces what is
+    /// stored. It writes no roster row: the rotation is applied by the next preview and saved by its commit.
+    /// </summary>
+    [HttpPut("rotation")]
+    [HasPermission("ATTENDANCE_MANAGE")]
+    public async Task<IActionResult> SaveRotation([FromBody] RosterRotationDto rotation)
+    {
+        try
+        {
+            await _auto.SaveRotationAsync(rotation, User.UserId());
+            return Ok(await _auto.GetRotationAsync(rotation.BranchId, User.UserId()));
+        }
+        catch (WorkflowException ex)
+        {
+            return StatusCode(ex.StatusCode, new { error = ex.Message });
+        }
+    }
+
     /// <summary>The drawer's staff list: on rotation, and optionally a new 6/5 anchor ("this week is a 5-day week").</summary>
     [HttpPut("rhythm")]
     [HasPermission("ATTENDANCE_MANAGE")]

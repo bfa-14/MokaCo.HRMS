@@ -76,8 +76,16 @@ public static class RosterPlanner
         var rhythms = ResolveRhythms(input, grid);
         var run = new Run(input, grid, rhythms);
         run.PlanHolidays();
-        run.PlanWeeks();
-        run.AssignShifts();
+        if (input.Rotation is null)
+        {
+            run.PlanWeeks();
+            run.AssignShifts();
+        }
+        else
+        {
+            // The fixed rotation: the rule decides the free days and their shifts (no fairness, no shift cover).
+            RotationRule.Apply(input, grid);
+        }
 
         var issues = RosterPlanValidator.Validate(input, grid, rhythms);
         return new RosterPlan
@@ -282,6 +290,10 @@ public static class RosterPlanner
     /// </summary>
     public static IReadOnlyDictionary<int, ResolvedRhythm> ResolveRhythms(PlannerInput input, RosterGrid grid)
     {
+        // The fixed rotation carries its own 6/5: the start date's week and each person's group.
+        if (input.Rotation is not null)
+            return RotationRule.ResolveRhythms(input);
+
         var result = new SortedDictionary<int, ResolvedRhythm>();
         var weeks = grid.WeekStarts;
         var firstWeek = weeks.Count > 0 ? weeks[0] : RosterCalendar.WeekStart(input.WindowFrom);

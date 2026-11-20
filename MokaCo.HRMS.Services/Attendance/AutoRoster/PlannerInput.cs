@@ -138,6 +138,18 @@ public sealed class PlannerInput
     public required DateOnly Today { get; init; }
 
     public RosterMode Mode { get; init; } = RosterMode.FillEmpty;
+
+    /// <summary>
+    /// The method. Null = the fair planner (weekend fairness, staffing, shift cover). Set = THE FIXED ROTATION
+    /// (<see cref="RotationRule"/>, script 116): rest days and shifts follow the branch's rotation list instead.
+    /// Facts, leave, holidays, the validator and the save are the same either way.
+    /// </summary>
+    public RotationSetup? Rotation { get; init; }
+
+    /// <summary>Fixed rotation only: people on rotation who have no line on the rotation list. They are shown as they
+    /// stand and not planned (the rule has nothing to go by), and the preview says so.</summary>
+    public IReadOnlyList<int> RotationMissing { get; init; } = [];
+
     public PlannerSettings Settings { get; init; } = PlannerSettings.Default;
 
     /// <summary>A roster approval is waiting for this branch-month: the whole month is refused (MONTH_LOCKED).</summary>

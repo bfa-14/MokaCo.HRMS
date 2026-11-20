@@ -437,3 +437,44 @@ Open:
   not send it yet.
 - `ValidateSubmission` raises WORK_WITHOUT_SHIFT for an unchanged submitted day on a retired shift
   (the SQL accepts it). The web never sends such a day.
+
+
+---
+
+## 9. The fixed rotation (second method, script 116)
+
+The drawer offers two methods. **Fair** is everything above. **Fixed rotation** is the owner's spreadsheet rule,
+`RotationRule.cs`, applied to the same grid: facts, leave, holidays, the preview, the manager's edits, the validator
+and the one atomic save are unchanged; only the choice of rest days (§2.5) and of shifts (§2.6) is replaced.
+
+**Stored** (`attendance.ROSTER_ROTATION`, `ROSTER_ROTATION_MEMBER`; `PUT api/roster/auto/rotation`, ATTENDANCE_MANAGE,
+scope as every auto-roster call): per branch a start date (a Monday: week 0), a morning and an evening shift; per
+person a group (0/1), the day off of a one-day week, the first of the two days off of a two-day week (0 = Monday …
+6 = Sunday), an optional lead slot (L1 / L2, one each at most) and the place in the list.
+
+**The rule**, with `w` = whole weeks since the start date and `dy` the weekday (0 = Monday):
+
+```
+sh   = (2 × (w div 2)) mod 7                      the days off move two weekdays every two weeks
+off  = (w + group) even ? dy ∈ { (pair + sh) mod 7, (pair + 1 + sh) mod 7 }     two days off: a 5-day week
+                        : dy = (single + sh) mod 7                              one day off: a 6-day week
+work = L1 → morning on even w, evening on odd w;  L2 → the opposite
+       others, down the list → the shift with fewer people so far that day; a tie → (w + dy + sheetRow) even ? morning : evening
+```
+
+`sheetRow` is 4 + the place in the list (the sheet's first person is on row 4). INT and MOD are Excel's: they floor
+and never go negative, so a month before the start date follows the rule too. `RotationRuleTests` holds the code
+against an independent reading of the formula, cell for cell, and against the planner on an untouched month.
+
+**What the sheet never knew** wins: a fact (paid, past, recorded, pinned, a hand edit the mode protects) is not
+changed; a public holiday is a day off unless cover is asked (§2.4); an empty leave day gets a working row (D5).
+The shifts are balanced against who is really on each shift that day - a fixed row counts, a full-day leave counts
+for neither. The 6/5 it implies is saved as the rhythm (anchor = the start week, 5 working days there for group 0,
+6 for group 1), so the week strip, the validator and a later run of the Fair method read the same alternation.
+
+**Differences from Fair, on purpose:** no weekend fairness, no staffing or shift cover, no turnaround avoidance -
+they are still *reported* by the validator. `CONSECUTIVE_CAP` is a **warning** under this method (a one-day week
+followed by a late two-day week can give eleven working days in a row: the rule's own shape), so the plan can be
+saved and the manager moves a day off in the grid. Somebody on rotation without a line on the list is not planned
+and is named (`ROTATION_NOT_SET`). The request's `method` is `"Rotation"`; the list is always read as stored, never
+from the request, so the commit checks by the same list the preview planned with.

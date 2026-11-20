@@ -27,7 +27,33 @@ public class AutoRosterService : IAutoRosterService
             throw new WorkflowException(400, "The month must look like 2026-12.");
 
         var context = await ContextAsync(branchId, monthStart, callerUserId);
-        return AutoRosterSetupFactory.Create(context, monthStart);
+        var setup = AutoRosterSetupFactory.Create(context, monthStart);
+        setup.Rotation = await GetRotationAsync(branchId, callerUserId);
+        return setup;
+    }
+
+    public async Task<RosterRotationDto> GetRotationAsync(int branchId, int? callerUserId)
+    {
+        if (branchId <= 0)
+            throw new WorkflowException(400, "Choose a branch.");
+        return await WorkflowSqlErrors.MapAsync(() => _repo.GetRotationAsync(branchId, callerUserId));
+    }
+
+    /// <summary>The procedure owns every rule (a Monday, two active shifts, one L1 and one L2 at most, people of this branch).</summary>
+    public async Task SaveRotationAsync(RosterRotationDto rotation, int? callerUserId)
+    {
+        if (rotation is null || rotation.BranchId <= 0)
+            throw new WorkflowException(400, "Choose a branch.");
+        rotation.Members ??= [];
+        // The order of the list as sent is the order of the rotation: numbered here, so a client cannot send two people the same place.
+        for (var i = 0; i < rotation.Members.Count; i++)
+            rotation.Members[i].SortOrder = i + 1;
+
+        await WorkflowSqlErrors.MapAsync(async () =>
+        {
+            await _repo.SaveRotationAsync(rotation, callerUserId);
+            return true;
+        });
     }
 
     public async Task<AutoRosterPreview> PreviewAsync(AutoRosterRequest request, int? callerUserId)
@@ -127,7 +153,17 @@ public class AutoRosterService : IAutoRosterService
 
         RosterCalendar.TryParseMonth(request.Month, out var monthStart);
         var context = await ContextAsync(request.BranchId, monthStart, callerUserId);
-        return AutoRosterInputFactory.Create(context, request);
+
+        // The fixed rotation is read as STORED (never from the request): the preview and the commit that follows
+        // it then plan and check by the same list.
+        RosterRotationDto? rotation = null;
+        if (AutoRosterInputFactory.IsRotation(request))
+        {
+            rotation = await GetRotationAsync(request.BranchId, callerUserId);
+            if (AutoRosterInputFactory.RotationProblem(rotation, context) is { } rotationProblem)
+                throw new WorkflowException(400, rotationProblem);
+        }
+        return AutoRosterInputFactory.Create(context, request, rotation);
     }
 
     /// <summary>Lookback NULL: the procedure uses the RosterFairnessLookbackWeeks setting.</summary>

@@ -38,4 +38,10 @@ public interface IAutoRosterRepository
 
     /// <summary>attendance.usp_RosterRhythm_Save — on rotation, and optionally a new 6/5 anchor, per employee.</summary>
     Task SaveRhythmAsync(IEnumerable<RosterRhythmDto> rows, int? callerUserId);
+
+    /// <summary>attendance.usp_RosterRotation_Get (script 116): the branch's fixed rotation - its start date, its two shifts and the list. Unset fields are null, the list may be empty.</summary>
+    Task<RosterRotationDto> GetRotationAsync(int branchId, int? callerUserId);
+
+    /// <summary>attendance.usp_RosterRotation_Save: replaces the branch's rotation and the lines of its people.</summary>
+    Task SaveRotationAsync(RosterRotationDto rotation, int? callerUserId);
 }

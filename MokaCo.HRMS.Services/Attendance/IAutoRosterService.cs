@@ -28,6 +28,12 @@ public interface IAutoRosterService
     Task<IEnumerable<StaffingRequirementDto>> GetStaffingAsync(int branchId, int? callerUserId);
     Task SaveStaffingAsync(int branchId, IEnumerable<StaffingRequirementDto> rows, int? callerUserId);
     Task SaveRhythmAsync(IEnumerable<RosterRhythmDto> rows, int? callerUserId);
+
+    /// <summary>The branch's fixed rotation (the auto-roster's "Rotation" method), as stored.</summary>
+    Task<RosterRotationDto> GetRotationAsync(int branchId, int? callerUserId);
+
+    /// <summary>Saves the branch's fixed rotation: start date (a Monday), the morning and evening shift, the list.</summary>
+    Task SaveRotationAsync(RosterRotationDto rotation, int? callerUserId);
 }
 
 /// <summary>

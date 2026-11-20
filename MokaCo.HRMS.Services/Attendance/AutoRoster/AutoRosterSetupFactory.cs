@@ -121,6 +121,7 @@ public static class AutoRosterSetupFactory
             Month = request.Month,
             Mode = request.Mode,
             RhythmStart = request.RhythmStart,
+            Method = request.Method,
             DefaultShiftId = request.DefaultShiftId,
             HolidayCover = request.HolidayCover,
             OffRotationEmployeeIds = request.OffRotationEmployeeIds,

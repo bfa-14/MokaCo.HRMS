@@ -13,6 +13,25 @@ namespace MokaCo.HRMS.Services.Attendance.AutoRoster;
 public static class AutoRosterInputFactory
 {
     public static readonly string[] Modes = ["FillEmpty", "ReplanAuto", "ReplanAll"];
+    public const string MethodFair = "Fair";
+    public const string MethodRotation = "Rotation";
+
+    /// <summary>The request asks for the fixed rotation (script 116). Null, empty and "Fair" are the fair planner.</summary>
+    public static bool IsRotation(AutoRosterRequest request)
+        => string.Equals(request.Method?.Trim(), MethodRotation, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>What stops the fixed rotation from being planned as stored, in a sentence, or null when it can be.</summary>
+    public static string? RotationProblem(RosterRotationDto? rotation, AutoRosterContext context)
+    {
+        if (rotation?.StartDate is null || rotation.MorningShiftId is null || rotation.EveningShiftId is null)
+            return "Set up the rotation first: its start date, its morning and evening shift, and the list.";
+        var active = context.Shifts.Where(s => s.IsActive).Select(s => s.ShiftId).ToHashSet();
+        if (!active.Contains(rotation.MorningShiftId.Value) || !active.Contains(rotation.EveningShiftId.Value))
+            return "A shift of the rotation is no longer active: choose its morning and evening shift again.";
+        if (rotation.Members.Count == 0)
+            return "The rotation list is empty: add the people to it first.";
+        return null;
+    }
 
     /// <summary>
     /// The sentence a 400 should carry when the request cannot be planned at all, or null when it can.
@@ -28,6 +47,9 @@ public static class AutoRosterInputFactory
             return "The month must look like 2026-12.";
         if (!TryParseMode(request.Mode, out _))
             return "Choose a real mode.";
+        if (!string.IsNullOrWhiteSpace(request.Method) && !IsRotation(request)
+            && !string.Equals(request.Method.Trim(), MethodFair, StringComparison.OrdinalIgnoreCase))
+            return "The method is Fair or Rotation.";
         if (request.RhythmStart is { } start && !string.IsNullOrWhiteSpace(start) && !TryParseRhythmStart(start, out _))
             return "The rhythm start must be Aligned or Staggered.";
         if (request.HolidayCover.Any(c => c.Count < 0))
@@ -37,12 +59,19 @@ public static class AutoRosterInputFactory
         return null;
     }
 
-    /// <summary>Builds the planner's input. Throws <see cref="ArgumentException"/> with <see cref="Problem"/>'s sentence on a bad request.</summary>
-    public static PlannerInput Create(AutoRosterContext context, AutoRosterRequest request)
+    /// <summary>
+    /// Builds the planner's input. Throws <see cref="ArgumentException"/> with <see cref="Problem"/>'s sentence on a bad
+    /// request. <paramref name="rotation"/> is the branch's stored fixed rotation: read (and required) only when the
+    /// request's method is Rotation.
+    /// </summary>
+    public static PlannerInput Create(AutoRosterContext context, AutoRosterRequest request, RosterRotationDto? rotation = null)
     {
         ArgumentNullException.ThrowIfNull(context);
         if (Problem(request) is { } problem)
             throw new ArgumentException(problem, nameof(request));
+        var useRotation = IsRotation(request);
+        if (useRotation && RotationProblem(rotation, context) is { } rotationProblem)
+            throw new ArgumentException(rotationProblem, nameof(rotation));
 
         RosterCalendar.TryParseMonth(request.Month, out var monthStart);
         TryParseMode(request.Mode, out var mode);
@@ -66,14 +95,33 @@ public static class AutoRosterInputFactory
             ? list.ToHashSet()
             : context.Rhythm.Where(r => !r.OnRotation).Select(r => r.EmployeeId).ToHashSet();
 
+        // The fixed rotation plans the people on its list. Somebody on rotation without a line is shown as they stand
+        // and not planned - the rule has nothing to go by - and the preview names them (ROTATION_NOT_SET).
+        var members = new Dictionary<int, RotationMember>();
+        if (useRotation)
+            foreach (var m in rotation!.Members.OrderBy(m => m.SortOrder).ThenBy(m => m.EmployeeId))
+                members.TryAdd(m.EmployeeId, new RotationMember(
+                    m.EmployeeId, m.Group == 1 ? 1 : 0, RosterCalendar.Mod(m.SingleRestDay, 7), RosterCalendar.Mod(m.PairRestDay, 7),
+                    m.LeadSlot is "L1" or "L2" ? m.LeadSlot : null, m.SortOrder));
+        var rotationMissing = new List<int>();
+
         var staff = context.Staff
             .GroupBy(s => s.EmployeeId)
             .Select(g => g.First())
             .OrderBy(s => s.EmployeeId)
-            .Select(s => new PlannerEmployee(
-                s.EmployeeId, s.FullName, s.PositionId, s.Position,
-                s.HireDate is { } h ? D(h) : null, s.TerminationDate is { } t ? D(t) : null,
-                OnRotation: !offRotation.Contains(s.EmployeeId)))
+            .Select(s =>
+            {
+                var onRotation = !offRotation.Contains(s.EmployeeId);
+                if (useRotation && onRotation && !members.ContainsKey(s.EmployeeId))
+                {
+                    rotationMissing.Add(s.EmployeeId);
+                    onRotation = false;
+                }
+                return new PlannerEmployee(
+                    s.EmployeeId, s.FullName, s.PositionId, s.Position,
+                    s.HireDate is { } h ? D(h) : null, s.TerminationDate is { } t ? D(t) : null,
+                    OnRotation: onRotation);
+            })
             .ToList();
 
         var branchOfDay = new Dictionary<EmpDay, int>();
@@ -169,6 +217,10 @@ public static class AutoRosterInputFactory
             HistoryFrom = historyFrom,
             Today = today,
             Mode = mode,
+            Rotation = useRotation
+                ? new RotationSetup(RosterCalendar.WeekStart(rotation!.StartDate!.Value), rotation.MorningShiftId!.Value, rotation.EveningShiftId!.Value, members.ToFrozenDictionary())
+                : null,
+            RotationMissing = rotationMissing,
             Settings = settings,
             MonthLocked = header.OpenRequestId is not null,
             DefaultShiftId = request.DefaultShiftId,

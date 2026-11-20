@@ -102,8 +102,8 @@ public class AutoRosterControllerTests
     }
 
     [Fact]
-    public void The_controller_has_exactly_the_seven_endpoints()
-        => Assert.Equal(7, typeof(AutoRosterController)
+    public void The_controller_has_exactly_the_eight_endpoints()   // the seven of script 96 and the fixed rotation's save (script 116)
+        => Assert.Equal(8, typeof(AutoRosterController)
             .GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
             .Count(m => m.GetCustomAttributes<HttpMethodAttribute>().Any()));
 
