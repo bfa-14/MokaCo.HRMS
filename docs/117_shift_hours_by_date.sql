@@ -23,7 +23,9 @@
    3. Both writers of a day (usp_Attendance_ComputeDay, usp_Attendance_ManualUpsert) read the hours in force ON THAT
       DAY. A day WITHOUT a rostered shift is measured against the shift its first punch fits (the active shift whose
       start is nearest, attendance.fn_ShiftByPunch): that shift gives the day its length and its break - still no
-      late or early rule without a roster. The record remembers it (ATTENDANCE_RECORD.RelatedShiftId).
+      late or early rule without a roster. The record remembers it (ATTENDANCE_RECORD.RelatedShiftId). A shift's first
+      hours count for all the past (its first row is dated 2000-01-01) and only ACTIVE shifts are fitted - on purpose:
+      shifts defined today measure the punches of the weeks before them when those days are derived again.
    4. core.fn_StandardDayMinutes no longer reads a setting: it is the length of the DEFAULT shift (the active shift
       most rostered in the last 90 days; else the first active shift; else 8 hours) and is only the fallback for a
       day no shift can be related to.
@@ -38,7 +40,13 @@
    A payroll run in Review reads as out of date once (its hour basis changed): regenerate it.
 
    The numbered bodies re-issued here are the current ones (scripts 100, 103, 87, 114) with the changes marked
-   'script 117'. MARKER for the deploy guard: attendance.usp_Shift_SetHours.
+   'script 117'. MARKER for the deploy guard: report.usp_Report_WorkedTime_PunchDaysByShift - the LAST procedure the
+   script creates, so a run that stopped half-way still reads as missing.
+
+   NOT COVERED (production's own objects, whose text the repo does not hold): attendance.fn_AttributedWorkDate still
+   reads an OVERNIGHT shift's present end time when it attributes a small-hours punch to the night before, and the
+   correction / day-report forms read a shift's present "crosses midnight" flag. Day shifts are not concerned; after
+   changing the hours of an overnight shift, check the nights around the change on Daily attendance.
 
    Idempotent. Apply: sqlcmd -C -I -b -d <database> -i docs/117_shift_hours_by_date.sql
    ============================================================================ */
@@ -232,14 +240,24 @@ BEGIN
                       WHERE sa.EmployeeId = a.EmployeeId AND sa.WorkDate = a.WorkDate AND sa.ShiftId = @ShiftId))
       AND payroll.fn_IsPeriodPaid(a.EmployeeId, a.WorkDate) = 0;
 
-    DECLARE @a BIGINT, @e INT, @d DATE, @m BIT;
+    /* The change of hours is already saved when this runs. A day that cannot be derived (a manual entry now outside
+       the employment, say) is left as it stands and does not fail the change: it is derived the next time something
+       touches it. Only the days really derived are counted. */
+    DECLARE @a BIGINT, @e INT, @d DATE, @m BIT, @rc INT, @Outer INT = @@TRANCOUNT;
     DECLARE sh_cur CURSOR LOCAL FAST_FORWARD FOR SELECT AttendanceId, EmployeeId, WorkDate, IsManual FROM @day ORDER BY WorkDate, EmployeeId;
     OPEN sh_cur; FETCH NEXT FROM sh_cur INTO @a, @e, @d, @m;
     WHILE @@FETCH_STATUS = 0
     BEGIN
-        IF @m = 1 EXEC attendance.usp_Attendance_RecomputeManualDay @AttendanceId = @a;
-        ELSE      EXEC attendance.usp_Attendance_ComputeDay @EmployeeId = @e, @WorkDate = @d;
-        SET @Days = @Days + 1;
+        BEGIN TRY
+            SET @rc = 0;
+            IF @m = 1 EXEC @rc = attendance.usp_Attendance_RecomputeManualDay @AttendanceId = @a;
+            ELSE      EXEC attendance.usp_Attendance_ComputeDay @EmployeeId = @e, @WorkDate = @d;
+            IF ISNULL(@rc, 0) = 0 SET @Days = @Days + 1;
+        END TRY
+        BEGIN CATCH
+            /* the day's own transaction, if the writer left one open; a caller's transaction is the caller's */
+            IF @Outer = 0 AND @@TRANCOUNT > 0 ROLLBACK TRAN;
+        END CATCH
         FETCH NEXT FROM sh_cur INTO @a, @e, @d, @m;
     END
     CLOSE sh_cur; DEALLOCATE sh_cur;
@@ -335,13 +353,17 @@ BEGIN
                N'The hours the shift had when its history began'
         FROM attendance.SHIFT s WHERE s.ShiftId = @ShiftId;
 
-    /* the hours to come back to: what is in force the day after the period, as things stand before this change */
+    /* the hours to come back to: what is in force the day after the period, as things stand before this change - NOT
+       counting a change that starts on @EffectiveFrom itself: that is the one being replaced (the same period entered
+       again with an earlier end must go back to the hours before it, not to itself) */
     DECLARE @BackFrom DATE = DATEADD(DAY, 1, @EffectiveTo);
     DECLARE @bStart TIME, @bEnd TIME, @bCross BIT, @bBreak INT, @bGrace INT;
     IF @EffectiveTo IS NOT NULL
     BEGIN
-        SELECT @bStart = h.StartTime, @bEnd = h.EndTime, @bCross = h.CrossesMidnight, @bBreak = h.BreakMinutes, @bGrace = h.GraceMinutes
-        FROM attendance.fn_ShiftHoursOn(@ShiftId, @BackFrom) h;
+        SELECT TOP 1 @bStart = h.StartTime, @bEnd = h.EndTime, @bCross = h.CrossesMidnight, @bBreak = h.BreakMinutes, @bGrace = h.GraceMinutes
+        FROM attendance.SHIFT_HOURS h
+        WHERE h.ShiftId = @ShiftId AND h.EffectiveFrom <= @BackFrom AND h.EffectiveFrom <> @EffectiveFrom
+        ORDER BY h.EffectiveFrom DESC;
         DELETE FROM attendance.SHIFT_HOURS WITH (HOLDLOCK)
         WHERE ShiftId = @ShiftId AND EffectiveFrom > @EffectiveFrom AND EffectiveFrom <= @BackFrom;
     END
@@ -989,8 +1011,10 @@ BEGIN
         @ShiftStartUtc = @ShiftStartUtc, @ShiftEndUtc = @ShiftEndUtc, @FirstInUtc = @FirstIn, @LastOutUtc = @LastOut,
         @AutoExcuseEarly = 0, @AutoExcuseNote = @AutoNote, @HalfDayAbsenceMinutes = @HalfAbsMinutes;
 
-    /* QA3 (REL-13): the leave minutes moved - a posting made at the period close follows them */
-    IF ISNULL(@OldExitLeave, 0) <> ISNULL(@ExitLeave, 0)
+    /* QA3 (REL-13): the leave minutes moved - a posting made at the period close follows them. script 117: so does a
+       day whose LENGTH moved (its shift's hours changed): the same minutes are another share of the day. RepostDay
+       changes nothing when the posting already says what the day says. */
+    IF ISNULL(@OldExitLeave, 0) <> ISNULL(@ExitLeave, 0) OR ISNULL(@ExitLeave, 0) > 0
         EXEC workflow.usp_ExitPermission_RepostDay @EmployeeId = @EmployeeId, @WorkDate = @WorkDate;
 
     COMMIT TRAN;
@@ -1077,8 +1101,9 @@ BEGIN
                                  ELSE DATEDIFF(MINUTE, @ShiftStartUtc, @ShiftEndUtc) - @Break END;
     /* script 117: like the machine writer, a day without a rostered shift takes its length and break from the shift
        the first in fits (the default day when there is none) */
+    DECLARE @RelatedShiftId INT;
     IF @IsRest = 0 AND @ShiftStart IS NULL
-        SELECT @Standard = rs.StandardMinutes, @Break = rs.BreakMinutes
+        SELECT @RelatedShiftId = rs.ShiftId, @Standard = rs.StandardMinutes, @Break = rs.BreakMinutes
         FROM attendance.fn_ShiftByPunch(@WorkDate, @FirstInUtc) rs;
 
     /* QA3 (ATT-13, ATT-8): a FULL-day approved leave covering its approved days; a half-day one is handled below */
@@ -1197,6 +1222,9 @@ BEGIN
         SET @AttId = SCOPE_IDENTITY();
     END
 
+    /* script 117: the shift the day was measured against when it has no rostered one */
+    UPDATE attendance.ATTENDANCE_RECORD SET RelatedShiftId = @RelatedShiftId WHERE AttendanceId = @AttId;
+
     /* a manual day has no intervals to show; the paired stretch is the entry itself */
     DELETE FROM attendance.ATTENDANCE_INTERVAL WHERE AttendanceId = @AttId;
 
@@ -1211,8 +1239,9 @@ BEGIN
         @ShiftStartUtc = @ShiftStartUtc, @ShiftEndUtc = @ShiftEndUtc, @FirstInUtc = @FirstInUtc, @LastOutUtc = @LastOutUtc,
         @AutoExcuseEarly = @AutoExcuse, @AutoExcuseNote = @AutoNote, @HalfDayAbsenceMinutes = @HalfAbsMinutes;
 
-    /* QA3 (REL-13): a posting made at the period close follows the day's leave minutes */
-    IF ISNULL(@OldExitLeave, 0) <> ISNULL(@ExitLeave, 0)
+    /* QA3 (REL-13): a posting made at the period close follows the day's leave minutes - script 117: and the day's
+       length (the same minutes are another share of a day whose shift hours changed) */
+    IF ISNULL(@OldExitLeave, 0) <> ISNULL(@ExitLeave, 0) OR ISNULL(@ExitLeave, 0) > 0
         EXEC workflow.usp_ExitPermission_RepostDay @EmployeeId = @EmployeeId, @WorkDate = @WorkDate;
 
     COMMIT TRAN;

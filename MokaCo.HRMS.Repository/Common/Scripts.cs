@@ -70,6 +70,7 @@ public static class Scripts
         new(WorkedTimePunchDays114, "report.usp_Report_WorkedTime_PunchDays"),
         new(RecipeBook115, "core.usp_PrepBook_Get"),
         new(RosterRotation116, "attendance.usp_RosterRotation_Get"),
-        new(ShiftHours117, "attendance.usp_Shift_SetHours"),
+        // The last procedure the script creates: a run that stopped half-way still reads as missing.
+        new(ShiftHours117, "report.usp_Report_WorkedTime_PunchDaysByShift"),
     ];
 }

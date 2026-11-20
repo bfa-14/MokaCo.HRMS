@@ -81,6 +81,21 @@ IF (SELECT COUNT(*) FROM @h) <> 4 OR (SELECT EffectiveTo FROM @h WHERE Effective
    OR (SELECT COUNT(*) FROM @h WHERE IsFirst = 1 AND EffectiveFrom = '2000-01-01' AND StartTime = '06:45') <> 1
     BEGIN SET @fails += 1; SET @n = (SELECT COUNT(*) FROM @h); RAISERROR('03: the history is not first hours / 8th / 10th-12th / back on the 13th (%d rows).', 16, 1, @n); END
 
+/* THE SAME PERIOD ENTERED AGAIN WITH AN EARLIER END goes back to the hours before it (not to itself): 09:00 on the
+   10th-11th only, 06:30 again from the 12th */
+DELETE FROM @t;
+INSERT INTO @t EXEC attendance.usp_Shift_SetHours @ShiftId = @S2, @EffectiveFrom = '2026-09-10', @EffectiveTo = '2026-09-11',
+     @StartTime = '09:00', @EndTime = '17:00', @CrossesMidnight = 0, @BreakMinutes = 30;
+IF (SELECT StartTime FROM attendance.fn_ShiftHoursOn(@S2, '2026-09-11')) <> '09:00' OR (SELECT StartTime FROM attendance.fn_ShiftHoursOn(@S2, '2026-09-12')) <> '06:30'
+   OR (SELECT COUNT(*) FROM attendance.SHIFT_HOURS WHERE ShiftId = @S2) <> 4
+    BEGIN SET @fails += 1; RAISERROR('03: a period entered again with an earlier end did not go back to the hours before it.', 16, 1); END
+/* ... and put back to the 10th-12th for the checks below */
+DELETE FROM @t;
+INSERT INTO @t EXEC attendance.usp_Shift_SetHours @ShiftId = @S2, @EffectiveFrom = '2026-09-10', @EffectiveTo = '2026-09-12',
+     @StartTime = '09:00', @EndTime = '17:00', @CrossesMidnight = 0, @BreakMinutes = 30;
+IF (SELECT StartTime FROM attendance.fn_ShiftHoursOn(@S2, '2026-09-12')) <> '09:00' OR (SELECT StartTime FROM attendance.fn_ShiftHoursOn(@S2, '2026-09-13')) <> '06:30'
+    BEGIN SET @fails += 1; RAISERROR('03: a period entered again with a later end did not reach it.', 16, 1); END
+
 /* REACHING BACK: the worked day itself gets 06:00 for that one day - it is derived again (80 min late), the 8th is 06:30 again */
 DELETE FROM @t;
 INSERT INTO @t EXEC attendance.usp_Shift_SetHours @ShiftId = @S2, @EffectiveFrom = '2026-09-07', @EffectiveTo = '2026-09-07',
