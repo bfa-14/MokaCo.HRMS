@@ -81,6 +81,11 @@ var mpgsOptions = MpgsOptions.FromSettingsOrUnconfigured(key => builder.Configur
 var depositTiming = builder.Configuration.GetSection(OnlineDepositOptions.Section).Get<OnlineDepositOptions>() ?? new OnlineDepositOptions();
 depositTiming.Validate();
 
+// WHISH, the second way to pay a deposit: its keys come from the same place (WHISH_* in api.env), and like the
+// card's they never stop the start. No key at all = Whish is simply not used; some but not all = an error at start
+// naming the missing keys. See WhishOptions.
+var whishOptions = WhishOptions.FromSettings(key => builder.Configuration[key]);
+
 // GOOGLE SIGN-IN GATE (docs/GOOGLE_SIGNIN_GATE.md). Google:MetadataAddress is optional — Google's own
 // discovery document by default; tests point it at a local fake. Anything but https (plain http only
 // on loopback) stops the start here, naming the key.
@@ -286,6 +291,10 @@ builder.Services.AddSingleton(mpgsOptions);
 builder.Services.AddSingleton(depositTiming);
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddHttpClient<IMpgsClient, MpgsClient>(client => client.Timeout = TimeSpan.FromSeconds(60))
+    .RedactLoggedHeaders(_ => true);
+// Whish: the same kind of client. Its secret travels in a request header, so the headers are redacted here too.
+builder.Services.AddSingleton(whishOptions);
+builder.Services.AddHttpClient<IWhishClient, WhishClient>(client => client.Timeout = TimeSpan.FromSeconds(60))
     .RedactLoggedHeaders(_ => true);
 builder.Services.AddScoped<IOnlineDepositService, OnlineDepositService>();
 
@@ -627,6 +636,12 @@ else
     app.Logger.LogError("Online deposits are OFF until the gateway is configured. {Problem}", mpgsOptions.Problem);
 if (mpgsOptions.SendsThreeDsBypass)
     app.Logger.LogWarning("Online deposits: 3-D Secure BYPASS is on (TEST merchant profile, {Flag}). Never in production.", MpgsOptions.TestBypassKey);
+
+// Whish: the host and nothing else (never a key). Half-set keys are an error worth seeing; none at all is silence.
+if (whishOptions.IsConfigured)
+    app.Logger.LogInformation("Whish deposits: {Gateway}. Offered on the website while the setting {Setting} is on.", whishOptions, WhishOptions.EnabledSetting);
+else if (whishOptions.Problem is not null)
+    app.Logger.LogError("Whish deposits are OFF. {Problem}", whishOptions.Problem);
 
 // FIRST IN THE PIPELINE, and therefore INSIDE the developer exception page that WebApplication adds
 // by itself in Development: the handler answers before that page can, so no environment returns a

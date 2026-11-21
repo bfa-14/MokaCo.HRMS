@@ -44,8 +44,9 @@ public class BookingPaymentReconcileJob : IJob
 
     public async Task Execute(IJobExecutionContext context)
     {
-        // No gateway configured: there is nobody to ask. The start already logged which keys are missing.
-        if (!_settle.Gateway.IsConfigured)
+        // No gateway configured (neither the card's nor Whish): there is nobody to ask. The start already logged
+        // which keys are missing.
+        if (!_settle.Gateway.IsConfigured && !_settle.Whish.IsConfigured)
             return;
 
         var due = await _deposits.ListPaymentsToReconcileAsync(_timing.ReconcileAfterMinutes);

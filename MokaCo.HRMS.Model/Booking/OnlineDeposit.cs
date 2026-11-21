@@ -73,3 +73,20 @@ public class PaymentToReconcile
     public DateTime? HoldExpiresUtc { get; set; }
     public bool UnconfirmedAlerted { get; set; }
 }
+
+/// <summary>
+/// booking.usp_Booking_StartWhishAttempt (script 118): the next Whish attempt of a booking whose payment was just
+/// started. <see cref="ExternalId"/> is the id sent to Whish - the reference plus the attempt number,
+/// "MC-K7Q2M9PW-A2" - and is the booking's gateway order id from then on.
+/// </summary>
+public class WhishAttemptStarted
+{
+    public int BookingId { get; set; }
+    public string BookingRef { get; set; } = string.Empty;
+    public string ExternalId { get; set; } = string.Empty;
+    public int Attempt { get; set; }
+    public decimal DepositDue { get; set; }
+    public string CurrencyCode { get; set; } = string.Empty;
+    public DateTime? HoldExpiresUtc { get; set; }
+    public DateTime? PaymentOpenedUtc { get; set; }
+}

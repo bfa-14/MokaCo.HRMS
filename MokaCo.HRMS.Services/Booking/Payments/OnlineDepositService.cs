@@ -12,6 +12,12 @@ public enum SettleTrigger
     GatewayReturn,
 
     /// <summary>
+    /// Whish's server called our callback address (GET /whish/callback): an attempt was processed. Only a SIGNAL -
+    /// the answer is still Whish's status call - and judged exactly like the guest's return trip.
+    /// </summary>
+    GatewayCallback,
+
+    /// <summary>
     /// The Quartz job. An abandoned payment (nothing attempted on the order) is released once the hold
     /// has run out; a failed one after GiveUpAfterMinutes; one it cannot tell about keeps its hold and
     /// is reported to staff once, after GiveUpAfterMinutes. A booking staff already decided (confirmed,
@@ -85,6 +91,9 @@ public enum PayOpenResult
     UnknownBooking,
 }
 
+/// <param name="Method">"card" or "whish": which gateway the payment was opened on.</param>
+/// <param name="SessionId">Card: the checkout session the site hands to the gateway's page.</param>
+/// <param name="CollectUrl">Whish: its hosted payment link, where the site sends the guest.</param>
 public sealed record PaymentOpening(
     PayOpenResult Result,
     string BookingRef,
@@ -92,7 +101,27 @@ public sealed record PaymentOpening(
     decimal Deposit = 0,
     string Currency = "",
     DateTime? HoldExpiresUtc = null,
-    bool Changed = false);
+    bool Changed = false,
+    string Method = PaymentMethods.Card,
+    string? CollectUrl = null);
+
+/// <summary>The ways a deposit is paid online. A booking's current one is read off its gateway order id.</summary>
+public static class PaymentMethods
+{
+    public const string Card = "card";
+    public const string Whish = "whish";
+
+    /// <summary>The name on the payment line (booking.PAYMENT_METHOD).</summary>
+    public const string WhishLineName = "Whish";
+
+    /// <summary>"card" for nothing or "card"; "whish"; null for anything else.</summary>
+    public static string? Parse(string? method) => (method ?? string.Empty).Trim().ToLowerInvariant() switch
+    {
+        "" or Card => Card,
+        Whish => Whish,
+        _ => null,
+    };
+}
 
 /// <summary>
 /// Online deposits end to end: opening a checkout session for a booking, and SETTLING it — one code
@@ -100,11 +129,26 @@ public sealed record PaymentOpening(
 /// reconciliation job and the guest's release, so that a payment is judged, and a paid one recorded,
 /// the same way whoever asks. The SQL expiry sweep never settles: it leaves every booking whose payment
 /// was opened to the reconciliation job.
+///
+/// TWO GATEWAYS, ONE PIPELINE. The card (MPGS) and Whish differ only in who is asked - which gateway
+/// opens the payment, and which one says what became of it (each through its own decision table). What
+/// follows the answer - recording, releasing, keeping the hold, alerting staff - is the same code. Which
+/// gateway a booking is on is read off its gateway order id: the bare reference is a card order,
+/// reference-A&lt;n&gt; a Whish attempt (<see cref="WhishOptions.IsAttemptId"/>).
 /// </summary>
 public interface IOnlineDepositService
 {
     /// <summary>The gateway configuration, for the redirect targets.</summary>
     MpgsOptions Gateway { get; }
+
+    /// <summary>The Whish configuration: its redirect targets and the callback token.</summary>
+    WhishOptions Whish { get; }
+
+    /// <summary>The methods a guest may pay with right now: "card" when its keys are set, "whish" when its keys are set AND its switch is on.</summary>
+    Task<IReadOnlyList<string>> MethodsAsync();
+
+    /// <summary>POST /{ref}/pay with a method: "card" (as <see cref="OpenAsync(string, CancellationToken)"/>) or "whish".</summary>
+    Task<PaymentOpening> OpenAsync(string bookingRef, string method, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// POST /{ref}/pay. The procedure's refusals (not found, not pending, hold expired, already paid,
@@ -119,15 +163,20 @@ public sealed class OnlineDepositService : IOnlineDepositService
 {
     public const string AlertUnconfirmed = "PayUnconfirmed";
 
+    /// <summary>How many earlier Whish attempts of a booking the reconciliation job asks about again.</summary>
+    public const int EarlierAttemptsChecked = 5;
+
     private readonly IOnlineDepositRepository _deposits;
     private readonly IBookingRepository _bookings;
     private readonly IMpgsClient _gateway;
+    private readonly IWhishClient? _whish;
     private readonly OnlineDepositOptions _timing;
     private readonly TimeProvider _clock;
     private readonly ILogger<OnlineDepositService> _log;
 
     public OnlineDepositService(IOnlineDepositRepository deposits, IBookingRepository bookings, IMpgsClient gateway,
-        MpgsOptions options, OnlineDepositOptions timing, ILogger<OnlineDepositService> log, TimeProvider? clock = null)
+        MpgsOptions options, OnlineDepositOptions timing, ILogger<OnlineDepositService> log, TimeProvider? clock = null,
+        IWhishClient? whish = null, WhishOptions? whishOptions = null)
     {
         _deposits = deposits;
         _bookings = bookings;
@@ -136,11 +185,92 @@ public sealed class OnlineDepositService : IOnlineDepositService
         _timing = timing;
         _log = log;
         _clock = clock ?? TimeProvider.System;
+        _whish = whish;
+        Whish = whish is null ? WhishOptions.Unconfigured : whishOptions ?? WhishOptions.Unconfigured;
     }
 
     public MpgsOptions Gateway { get; }
 
+    public WhishOptions Whish { get; }
+
+    public async Task<IReadOnlyList<string>> MethodsAsync()
+    {
+        var methods = new List<string>(2);
+        if (Gateway.IsConfigured) methods.Add(PaymentMethods.Card);
+        if (Whish.IsConfigured && await _deposits.IsWhishEnabledAsync()) methods.Add(PaymentMethods.Whish);
+        return methods;
+    }
+
     /* ---- opening --------------------------------------------------------------------------- */
+
+    public Task<PaymentOpening> OpenAsync(string bookingRef, string method, CancellationToken cancellationToken = default)
+        => PaymentMethods.Parse(method) == PaymentMethods.Whish
+            ? OpenWhishAsync(bookingRef, cancellationToken)
+            : OpenAsync(bookingRef, cancellationToken);
+
+    /// <summary>
+    /// A WHISH ATTEMPT: the same steps as a card session - settle whatever was opened before, let the procedure
+    /// decide and stamp the hold, ask the gateway - with Whish's two differences: every attempt has an id of its own
+    /// (a payment link allows ONE attempt and lives five minutes; a retry is a new payment), and what comes back is
+    /// a link the guest is sent to, where Whish shows the QR code and the six-digit code itself.
+    /// </summary>
+    private async Task<PaymentOpening> OpenWhishAsync(string bookingRef, CancellationToken cancellationToken)
+    {
+        // Not configured, or switched off: like a gateway that did not open a payment, before anything is stamped.
+        if (_whish is null || !Whish.IsConfigured || !await _deposits.IsWhishEnabledAsync())
+            return new PaymentOpening(PayOpenResult.GatewayError, bookingRef, Method: PaymentMethods.Whish);
+
+        // Whatever was opened before - a card session or an earlier Whish attempt - is settled FIRST, through the
+        // one path. Paid: recorded, no new payment. An attempt whose link can still be paid: no second payment
+        // beside it (a guest with two open links could pay twice). Settled as not paid: a fresh id and link.
+        var earlier = await SettleAsync(bookingRef, SettleTrigger.PayAgain, cancellationToken);
+        switch (earlier.Result)
+        {
+            case SettlementResult.Paid or SettlementResult.PaidNeedsStaff:
+                return new PaymentOpening(PayOpenResult.AlreadyPaid, bookingRef, Changed: earlier.Changed, Method: PaymentMethods.Whish);
+
+            case SettlementResult.Unconfirmed:
+                _log.LogWarning("Deposit {Ref}: no new Whish attempt, the earlier payment is unconfirmed ({Reason}).", bookingRef, earlier.Reason);
+                return new PaymentOpening(PayOpenResult.PreviousUnconfirmed, bookingRef, Method: PaymentMethods.Whish);
+
+            case SettlementResult.UnknownBooking:
+                return new PaymentOpening(PayOpenResult.UnknownBooking, bookingRef, Method: PaymentMethods.Whish);
+        }
+
+        // The same procedure as the card: validates (refusals travel as SqlException 50000) and stamps the hold.
+        var started = await _deposits.StartPaymentAsync(bookingRef);
+        if (started is null)
+            return new PaymentOpening(PayOpenResult.UnknownBooking, bookingRef, Method: PaymentMethods.Whish);
+
+        var attempt = await _deposits.StartWhishAttemptAsync(bookingRef);
+        if (attempt is null)
+            return new PaymentOpening(PayOpenResult.UnknownBooking, bookingRef, Method: PaymentMethods.Whish);
+
+        string collectUrl;
+        try
+        {
+            // Both callbacks and both redirects carry the reference and lead to the same two places: each only
+            // makes us ASK Whish what happened, so which one fired never decides anything.
+            collectUrl = await _whish.CreateCollectAsync(
+                attempt.ExternalId, started.DepositDue, started.CurrencyCode, WhishInvoice(started),
+                Whish.CallbackUrl(bookingRef), Whish.CallbackUrl(bookingRef), Whish.ReturnUrl(bookingRef), Whish.ReturnUrl(bookingRef),
+                cancellationToken);
+        }
+        catch (WhishException)
+        {
+            // The hold and the attempt id stay: the job asks Whish later, finds no such payment (or one never
+            // paid) and releases the booking; the guest may press pay again at once (the attempt settles as not paid).
+            return new PaymentOpening(PayOpenResult.GatewayError, bookingRef, Method: PaymentMethods.Whish, Changed: true);
+        }
+
+        return new PaymentOpening(PayOpenResult.Opened, bookingRef, Deposit: started.DepositDue, Currency: started.CurrencyCode,
+            HoldExpiresUtc: started.HoldExpiresUtc, Changed: true, Method: PaymentMethods.Whish, CollectUrl: collectUrl);
+    }
+
+    /// <summary>"MOKA&amp;CO room deposit MC-K7Q2M9PW: Studio, 2026-10-01, 2h" - what the guest reads on Whish's page.</summary>
+    public static string WhishInvoice(PaymentStarted booking)
+        => string.Create(CultureInfo.InvariantCulture,
+            $"MOKA&CO room deposit {booking.BookingRef}: {booking.RoomName}, {booking.BookDate:yyyy-MM-dd}, {booking.Hours:0.##}h");
 
     public async Task<PaymentOpening> OpenAsync(string bookingRef, CancellationToken cancellationToken = default)
     {
@@ -242,13 +372,54 @@ public sealed class OnlineDepositService : IOnlineDepositService
             return new Settlement(SettlementResult.NotApplicable, bookingRef, false, state.Status, "no payment was opened");
         }
 
-        // A session was opened while the gateway was configured, and its keys have since gone: nobody
-        // can be asked, so nothing is judged or written (the hold stays as it is).
-        if (!Gateway.IsConfigured)
-            return new Settlement(SettlementResult.Unconfirmed, bookingRef, false, state.Status, "online deposits are not configured");
+        // WHICH GATEWAY: read off the booking's order id. The bare reference is a card order; reference-A<n> is a
+        // Whish attempt. Each is asked in its own way and answers through its own decision table; from the
+        // decision on, there is one path.
+        var whishAttempt = WhishOptions.AttemptNumber(state.GatewayOrderId, bookingRef);
+        var now = _clock.GetUtcNow().UtcDateTime;
+        PaymentDecision decision;
+        Func<Task<(Settlement Settlement, bool Changed)>> recordPaid;
 
-        var order = await _gateway.RetrieveOrderAsync(bookingRef, cancellationToken);
-        var decision = PaymentDecisionTable.Decide(order, state.DepositDue, state.CurrencyCode);
+        if (whishAttempt is { } attemptNumber)
+        {
+            // Its keys have gone since the attempt was opened: nobody can be asked, nothing is judged or written.
+            if (_whish is null || !Whish.IsConfigured)
+                return new Settlement(SettlementResult.Unconfirmed, bookingRef, false, state.Status, "Whish is not configured");
+
+            var externalId = state.GatewayOrderId!;
+            var lookup = await _whish.GetStatusAsync(externalId, state.CurrencyCode, cancellationToken);
+            var linkOver = state.PaymentOpenedUtc is { } linkOpened && now >= linkOpened + WhishOptions.LinkLifetime + WhishOptions.LinkGrace;
+            decision = WhishDecisionTable.Decide(lookup, linkOver);
+            recordPaid = () => RecordWhishPaidAsync(bookingRef, externalId, lookup.PayerPhoneNumber, state.DepositDue, state.CurrencyCode);
+
+            // AN EARLIER ATTEMPT PAID LATE. A new attempt replaces the id the booking is asked about, so a guest who
+            // paid attempt 1 in its last second - while it still read "pending" and attempt 2 was being opened -
+            // would never be found. The job asks about the attempts before the current one too; the first that
+            // Whish says was paid is recorded, exactly as the current one would be.
+            if (trigger == SettleTrigger.Reconciliation && decision.Outcome != PaymentOutcome.Paid && attemptNumber > 1)
+            {
+                for (var earlier = attemptNumber - 1; earlier >= Math.Max(1, attemptNumber - EarlierAttemptsChecked); earlier--)
+                {
+                    var earlierId = WhishOptions.AttemptId(bookingRef, earlier);
+                    var earlierLookup = await _whish.GetStatusAsync(earlierId, state.CurrencyCode, cancellationToken);
+                    if (earlierLookup is not { Kind: WhishLookupKind.Found, CollectStatus: "success" }) continue;
+
+                    _log.LogWarning("Deposit {Ref}: Whish attempt {Earlier} was paid after attempt {Current} was opened; recorded.", bookingRef, earlier, attemptNumber);
+                    return (await RecordWhishPaidAsync(bookingRef, earlierId, earlierLookup.PayerPhoneNumber, state.DepositDue, state.CurrencyCode)).Settlement;
+                }
+            }
+        }
+        else
+        {
+            // A session was opened while the gateway was configured, and its keys have since gone: nobody
+            // can be asked, so nothing is judged or written (the hold stays as it is).
+            if (!Gateway.IsConfigured)
+                return new Settlement(SettlementResult.Unconfirmed, bookingRef, false, state.Status, "online deposits are not configured");
+
+            var order = await _gateway.RetrieveOrderAsync(bookingRef, cancellationToken);
+            decision = PaymentDecisionTable.Decide(order, state.DepositDue, state.CurrencyCode);
+            recordPaid = () => RecordPaidAsync(bookingRef, order, state.CurrencyCode);
+        }
 
         // QA3 BKG-4: staff decided the booking while the guest was on the gateway's page. Money the gateway
         // captured is recorded (usp_Booking_ConfirmOnlinePayment: 'Recorded' on a confirmed booking,
@@ -259,13 +430,12 @@ public sealed class OnlineDepositService : IOnlineDepositService
             _log.LogInformation("Deposit {Ref} (Reconciliation, {Status}): {Outcome}, {Reason}.", bookingRef, state.Status, decision.Outcome, decision.Reason);
 
             if (decision.Outcome == PaymentOutcome.Paid)
-                return (await RecordPaidAsync(bookingRef, order, state.CurrencyCode)).Settlement;
+                return (await recordPaid()).Settlement;
 
             await _deposits.PaymentCheckedAsync(bookingRef, keepHold: false);
             return new Settlement(SettlementResult.NotApplicable, bookingRef, false, state.Status, "no longer pending: " + decision.Reason);
         }
 
-        var now = _clock.GetUtcNow().UtcDateTime;
         var age = state.PaymentOpenedUtc is { } opened ? now - opened : TimeSpan.MaxValue;
         var patienceOver = age >= TimeSpan.FromMinutes(_timing.GiveUpAfterMinutes);
         var holdOver = state.HoldExpiresUtc is not { } holdUntil || holdUntil <= now;
@@ -275,7 +445,7 @@ public sealed class OnlineDepositService : IOnlineDepositService
         switch (decision.Outcome)
         {
             case PaymentOutcome.Paid:
-                return (await RecordPaidAsync(bookingRef, order, state.CurrencyCode)).Settlement;
+                return (await recordPaid()).Settlement;
 
             // No money was taken on the order and a new checkout is about to be opened on it: nothing is
             // written, and above all the hold is not released under the guest who is paying again.
@@ -283,7 +453,7 @@ public sealed class OnlineDepositService : IOnlineDepositService
             case PaymentOutcome.Unconfirmed when decision.NothingAttempted && trigger == SettleTrigger.PayAgain:
                 return new Settlement(SettlementResult.NotPaid, bookingRef, false, state.Status, decision.Reason);
 
-            case PaymentOutcome.Failed when trigger != SettleTrigger.Reconciliation || patienceOver:
+            case PaymentOutcome.Failed when trigger != SettleTrigger.Reconciliation || patienceOver || decision.Final:
                 return await ReleaseAsync(state, decision.Reason, ifNotReleased: SettlementResult.Failed, markChecked: true);
 
             // ABANDONED: the gateway answered and nothing was ever attempted on the order, so nothing can
@@ -330,6 +500,39 @@ public sealed class OnlineDepositService : IOnlineDepositService
 
         if (result == SettlementResult.PaidNeedsStaff)
             _log.LogWarning("Deposit {Ref}: paid but {Outcome}; recorded, staff alerted.", bookingRef, recorded.Outcome);
+
+        return (new Settlement(result, bookingRef, changed, recorded.Status, recorded.Outcome), changed);
+    }
+
+    /// <summary>
+    /// A paid Whish attempt, recorded by the SAME procedure as a card payment (so: Confirmed, the payment line, the
+    /// guest's messages, the staff alert, the same five outcomes), under the attempt's own id and the method name
+    /// "Whish". The amount is the booking's deposit: the payment was created with it, and Whish reports none.
+    /// </summary>
+    private async Task<(Settlement Settlement, bool Changed)> RecordWhishPaidAsync(string bookingRef, string externalId, string? payerPhone, decimal deposit, string currency)
+    {
+        var recorded = await _deposits.ConfirmOnlinePaymentAsync(bookingRef, deposit, currency, externalId, payerPhone, PaymentMethods.WhishLineName)
+                       ?? throw new InvalidOperationException($"Recording the Whish deposit of {bookingRef} returned nothing.");
+
+        var changed = recorded.Outcome != OnlinePaymentRecorded.Replay;
+        var result = recorded.Outcome is OnlinePaymentRecorded.PaidButClosed or OnlinePaymentRecorded.SlotClash
+            ? SettlementResult.PaidNeedsStaff
+            : SettlementResult.Paid;
+
+        if (changed)
+        {
+            try
+            {
+                await _deposits.SetWhishPayerAsync(bookingRef, externalId, payerPhone);
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning(ex, "Deposit {Ref}: the Whish payer could not be noted (the payment itself is recorded).", bookingRef);
+            }
+        }
+
+        if (result == SettlementResult.PaidNeedsStaff)
+            _log.LogWarning("Deposit {Ref}: paid on Whish but {Outcome}; recorded, staff alerted.", bookingRef, recorded.Outcome);
 
         return (new Settlement(result, bookingRef, changed, recorded.Status, recorded.Outcome), changed);
     }

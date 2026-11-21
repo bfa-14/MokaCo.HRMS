@@ -197,13 +197,15 @@ public class PaymentEndpointTests
     }
 
     [Fact]
-    public void Only_verify_is_exempt_from_the_gate()
+    public void Only_the_gateways_own_trips_are_exempt_from_the_gate()
     {
+        // The card gateway's return, and Whish's two: its server's callback and the guest's return from its page.
         var exempt = typeof(PublicBookingController).GetMethods()
             .Where(m => m.GetCustomAttribute<GatewayReturnAttribute>() is not null)
-            .Select(m => m.Name);
+            .Select(m => m.Name)
+            .Order();
 
-        Assert.Equal([nameof(PublicBookingController.Verify)], exempt);
+        Assert.Equal([nameof(PublicBookingController.Verify), nameof(PublicBookingController.WhishCallback), nameof(PublicBookingController.WhishReturn)], exempt);
     }
 
     private sealed class StubGate(PublicBookingSnapshot snapshot) : IPublicBookingGate
