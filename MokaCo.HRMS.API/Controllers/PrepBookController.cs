@@ -64,9 +64,10 @@ public class PrepBookController : ControllerBase
     public Task<IActionResult> Label(int label) => Scan("label", label);
 
     /// <summary>
-    /// Uploads the recipe book (one .zip: recipes.json + the scans) and REPLACES the one on file. The service checks
-    /// every file by its own bytes and refuses with a sentence that says what is wrong; nothing is replaced unless
-    /// the whole book is good.
+    /// Uploads the guide and REPLACES the one on file: the guide itself as a PDF (the service draws every page and
+    /// publishes a book of pages), or a recipe book (one .zip: recipes.json + the scans). What the file is, is decided
+    /// by its own bytes; it is refused with a sentence that says what is wrong, and nothing is replaced unless the
+    /// whole upload is good.
     /// </summary>
     [HttpPost("upload")]
     [HasPermission("PREP_BOOK_MANAGE")]
@@ -75,7 +76,7 @@ public class PrepBookController : ControllerBase
     public async Task<IActionResult> Upload(IFormFile? file)
     {
         if (file is null || file.Length == 0)
-            return BadRequest(new { error = "Choose the recipe book (.zip)." });
+            return BadRequest(new { error = "Choose the guide (PDF) or the recipe book (.zip)." });
         try
         {
             await using var stream = file.OpenReadStream();

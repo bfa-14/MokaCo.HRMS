@@ -22,4 +22,15 @@
     <!-- Local developer settings (secrets): never part of a publish -->
     <Content Update="appsettings.Local*.json" CopyToPublishDirectory="Never" />
   </ItemGroup>
+
+  <!-- The PDF libraries of the Recipes page (PDFium, SkiaSharp) ship their native code for every platform: about
+       300 MB. The server is Linux (x64, or arm64 should it ever move): a publish keeps those two and drops the rest.
+       Only these libraries are touched; a build or a test run on a developer's machine keeps everything. -->
+  <Target Name="KeepOnlyServerPdfLibraries" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <_PdfNative Include="@(ResolvedFileToPublish)" Condition="'%(Filename)' == 'libpdfium' Or '%(Filename)' == 'pdfium' Or '%(Filename)' == 'libSkiaSharp'" />
+      <_PdfNativeDrop Include="@(_PdfNative)" Condition="!$([System.String]::Copy('%(RelativePath)').Replace('\', '/').StartsWith('runtimes/linux-x64/')) And !$([System.String]::Copy('%(RelativePath)').Replace('\', '/').StartsWith('runtimes/linux-arm64/'))" />
+      <ResolvedFileToPublish Remove="@(_PdfNativeDrop)" />
+    </ItemGroup>
+  </Target>
 </Project>

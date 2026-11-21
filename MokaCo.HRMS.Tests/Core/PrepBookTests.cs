@@ -110,7 +110,7 @@ public class PrepBookTests
     [Fact]
     public void What_is_not_a_zip_is_refused()
     {
-        Assert.Contains("not a .zip", Refusal(new MemoryStream(Encoding.UTF8.GetBytes("hello, not a zip at all"))));
+        Assert.Contains("neither a PDF nor a .zip", Refusal(new MemoryStream(Encoding.UTF8.GetBytes("hello, not a zip at all"))));
         Assert.Contains("empty", Refusal(new MemoryStream()));
     }
 
@@ -184,5 +184,115 @@ public class PrepBookTests
         Assert.Equal(view, actions[nameof(PrepBookController.Label)]);
         Assert.Equal(manage, actions[nameof(PrepBookController.Upload)]);
         Assert.Equal(manage, actions[nameof(PrepBookController.Info)]);
+    }
+
+    /* ---- the guide as a PDF: the system draws its pages (the PDFs below are made here, with invented text) ---- */
+
+    private static byte[] Pdf(params string?[] pageTitles)
+    {
+        var builder = new UglyToad.PdfPig.Writer.PdfDocumentBuilder();
+        var font = builder.AddStandard14Font(UglyToad.PdfPig.Fonts.Standard14Fonts.Standard14Font.Helvetica);
+        foreach (var title in pageTitles)
+        {
+            var page = builder.AddPage(UglyToad.PdfPig.Content.PageSize.A5, isPortrait: false);
+            if (title is null) continue;
+            page.AddText(title, 28, new UglyToad.PdfPig.Core.PdfPoint(40, 340), font);
+            page.AddText("2 shots of water - stir gently", 14, new UglyToad.PdfPig.Core.PdfPoint(40, 300), font);
+        }
+        return builder.Build();
+    }
+
+    [Fact]
+    public void A_pdf_becomes_a_book_of_pages_each_drawn_named_and_found_by_its_text()
+    {
+        var package = PrepBookPdfReader.Read(Pdf("Test Latte", null, "Sample Frappe"));
+
+        Assert.Equal(3, package.RecipeCount);
+        Assert.Equal([("page", 1), ("page", 2), ("page", 3)], package.Scans.Select(s => (s.Kind, s.Number)));
+        Assert.All(package.Scans, s =>
+        {
+            Assert.True(s.Bytes.Length > 1000);
+            Assert.Equal(new byte[] { 0xFF, 0xD8, 0xFF }, s.Bytes[..3]);                    // a JPEG by its own bytes
+            Assert.True(s.Bytes.Length <= PrepBookPackageReader.MaxImageBytes);
+        });
+
+        using var book = JsonDocument.Parse(package.Json);
+        Assert.Equal("pdf", book.RootElement.GetProperty("source").GetString());
+        var pages = book.RootElement.GetProperty("recipes").EnumerateArray().ToList();
+        Assert.Equal(["page-001", "page-002", "page-003"], pages.Select(p => p.GetProperty("id").GetString()));
+        Assert.All(pages, p =>
+        {
+            Assert.Equal("pages", p.GetProperty("category").GetString());
+            Assert.StartsWith("data:image/jpeg;base64,/9j/", p.GetProperty("thumb").GetString());
+        });
+        // A page with text is named after its first line and carries its text; a page of pictures is "Page N".
+        Assert.Equal(["Test Latte", "Page 2", "Sample Frappe"], pages.Select(p => p.GetProperty("name").GetString()));
+        Assert.Contains("stir gently", pages[0].GetProperty("text").GetString());
+        Assert.False(pages[1].TryGetProperty("text", out _));
+        Assert.Equal([1, 2, 3], pages.Select(p => p.GetProperty("page").GetInt32()));
+    }
+
+    [Fact]
+    public void The_same_pdf_gives_the_same_book_and_another_one_another_tag()
+    {
+        var first = PrepBookPdfReader.Read(Pdf("Test Latte"));
+        var again = PrepBookPdfReader.Read(Pdf("Test Latte"));
+        var other = PrepBookPdfReader.Read(Pdf("Test Mocha"));
+
+        Assert.Equal(first.ETag, again.ETag);
+        Assert.NotEqual(first.ETag, other.ETag);
+    }
+
+    [Fact]
+    public void What_is_not_a_readable_pdf_is_refused_with_a_sentence()
+    {
+        var broken = Encoding.ASCII.GetBytes("%PDF-1.7\nthis is not really a PDF");
+        var refused = Assert.Throws<WorkflowException>(() => PrepBookPdfReader.Read(broken));
+        Assert.Equal(400, refused.StatusCode);
+        Assert.Contains("could not be opened", refused.Message);
+
+        Assert.True(PrepBookPdfReader.LooksLikePdf(broken));
+        Assert.True(PrepBookPdfReader.LooksLikePdf(Pdf("Test")));
+        Assert.False(PrepBookPdfReader.LooksLikePdf("PK\u0003\u0004 a zip"u8));
+        Assert.False(PrepBookPdfReader.LooksLikePdf([]));
+    }
+
+    [Fact]
+    public void A_pages_first_line_names_it_and_its_text_is_tidied()
+    {
+        Assert.Equal("Test Latte", PrepBookPdfReader.TitleOf("12\nTest Latte\n2 shots"));
+        Assert.Null(PrepBookPdfReader.TitleOf("12\n--"));
+        Assert.EndsWith("…", PrepBookPdfReader.TitleOf(new string('a', 200)));
+        Assert.Equal("Test  Latte".Replace("  ", " ") + "\n2 shots", PrepBookPdfReader.Tidy("  Test \t Latte \r\n\r\n 2   shots \u0007"));
+        Assert.Equal(string.Empty, PrepBookPdfReader.Tidy(" \n "));
+        Assert.Equal(PrepBookPdfReader.MaxTextLength, PrepBookPdfReader.Tidy(new string('x', 9000)).Length);
+    }
+
+    private sealed class KeepingRepository : MokaCo.HRMS.Repository.Core.IPrepBookRepository
+    {
+        public MokaCo.HRMS.Model.Core.PrepBookPackage? Saved;
+        public Task<MokaCo.HRMS.Model.Core.PrepBookRow?> GetAsync(string? ifNoneMatch) => Task.FromResult<MokaCo.HRMS.Model.Core.PrepBookRow?>(null);
+        public Task<byte[]?> GetScanAsync(string kind, int number) => Task.FromResult<byte[]?>(null);
+        public Task ReplaceAsync(MokaCo.HRMS.Model.Core.PrepBookPackage package, int uploadedByUserId) { Saved = package; return Task.CompletedTask; }
+    }
+
+    [Fact]
+    public async Task The_upload_is_a_pdf_or_a_recipe_book_by_its_own_bytes()
+    {
+        var repo = new KeepingRepository();
+        var service = new PrepBookService(repo);
+
+        var fromPdf = await service.ReplaceAsync(new MemoryStream(Pdf("Test Latte", "Test Mocha")), 7);
+        Assert.Equal((2, 2), (fromPdf.RecipeCount, fromPdf.ScanCount));
+        Assert.Contains("\"source\":\"pdf\"", repo.Saved!.Json);
+
+        var fromZip = await service.ReplaceAsync(Zip(("recipes.json", Encoding.UTF8.GetBytes(TwoRecipes)), ("pages/guide-03.jpg", Jpeg), ("labels/label-01.jpg", Jpeg)), 7);
+        Assert.Equal((2, 2), (fromZip.RecipeCount, fromZip.ScanCount));
+        Assert.DoesNotContain("\"source\"", repo.Saved!.Json);
+
+        var neither = await Assert.ThrowsAsync<WorkflowException>(() => service.ReplaceAsync(new MemoryStream(Encoding.ASCII.GetBytes("hello")), 7));
+        Assert.Contains("neither a PDF nor a .zip", neither.Message);
+        var empty = await Assert.ThrowsAsync<WorkflowException>(() => service.ReplaceAsync(new MemoryStream(), 7));
+        Assert.Contains("empty", empty.Message);
     }
 }
