@@ -30,7 +30,17 @@ public interface IWhishClient
 
     /// <summary>POST /payment/whish/refund. Idempotent at Whish. Needs our egress IP registered with Whish.</summary>
     Task<WhishRefundResult> RefundAsync(string externalId, string currency, string reason, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// GET /payment/account/balance: moves nothing, and answers only to the right three keys - which makes it the
+    /// connection check (script 119: "Check connection" on the gateway pages). Never throws for a gateway problem.
+    /// </summary>
+    Task<WhishBalanceResult> GetBalanceAsync(string currency, CancellationToken cancellationToken = default);
 }
+
+/// <param name="Ok">Whish accepted the keys and answered.</param>
+/// <param name="Code">Whish's error code when it did not; null when there was no answer at all.</param>
+public sealed record WhishBalanceResult(bool Ok, decimal? Balance = null, string? Code = null, string? Problem = null);
 
 public sealed class WhishException(string message) : Exception(message);
 
@@ -228,6 +238,29 @@ public sealed class WhishClient : IWhishClient
 
         _log.LogWarning("Whish refund {ExternalId}: not refunded ({Problem}).", externalId, answer.Problem);
         return new WhishRefundResult(false, Code: answer.Code, Problem: answer.Problem);
+    }
+
+    /* ---- balance (the connection check) ------------------------------------------------------- */
+
+    public async Task<WhishBalanceResult> GetBalanceAsync(string currency, CancellationToken cancellationToken = default)
+    {
+        var answer = await SendAsync(HttpMethod.Get, "/payment/account/balance?currency=" + Uri.EscapeDataString(currency.Trim().ToUpperInvariant()),
+            null, StatusTimeout, cancellationToken);
+        if (!answer.Ok)
+        {
+            _log.LogWarning("Whish balance: not answered ({Problem}).", answer.Problem);
+            return new WhishBalanceResult(false, Code: answer.Code, Problem: answer.Problem);
+        }
+
+        decimal? balance = null;
+        if ((answer.Data as JsonObject)?["balance"] is JsonValue value)
+        {
+            if (value.TryGetValue<decimal>(out var number)) balance = number;
+            else if (value.TryGetValue<string>(out var text) && decimal.TryParse(text, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsed)) balance = parsed;
+        }
+
+        _log.LogInformation("Whish balance: answered.");
+        return new WhishBalanceResult(true, balance);
     }
 
     /* ---- the envelope ------------------------------------------------------------------------- */

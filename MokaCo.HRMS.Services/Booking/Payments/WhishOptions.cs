@@ -27,6 +27,10 @@ public sealed class WhishOptions
     public const string SecretKey = "WHISH_SECRET";
     public const string WebsiteUrlKey = "WHISH_WEBSITE_URL";
 
+    /// <summary>Whish's two addresses. Keys entered in HRMS (script 119) name a mode, never an address.</summary>
+    public const string SandboxBase = "https://partner.api.sbx.whish.money/itel-service/api";
+    public const string LiveBase = "https://api.whish.money/itel-service/api";
+
     /// <summary>The setting that offers Whish on the website (script 118). Off by default.</summary>
     public const string EnabledSetting = "BookingWhishEnabled";
 
@@ -50,6 +54,15 @@ public sealed class WhishOptions
 
     /// <summary>Why it is not configured, naming keys and never values. Null when it is, or when no Whish key is set at all.</summary>
     public string? Problem { get; init; }
+
+    /// <summary>Where the keys came from: the server file (api.env) or HRMS Settings (script 119).</summary>
+    public string Source { get; init; } = GatewayKeySources.Server;
+
+    /// <summary>True on Whish's sandbox: test money, never a real payment.</summary>
+    public bool IsSandbox => BaseUrl.Contains(".sbx.", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>"test" on the sandbox, "live" anywhere else.</summary>
+    public string Mode => IsSandbox ? GatewayModes.Test : GatewayModes.Live;
 
     public static WhishOptions Unconfigured { get; } = new();
 
@@ -106,6 +119,16 @@ public sealed class WhishOptions
         };
     }
 
+    /// <summary>The same options, named as coming from somewhere else (HRMS Settings).</summary>
+    public WhishOptions From(string source) => new()
+    {
+        BaseUrl = BaseUrl, Channel = Channel, Secret = Secret, WebsiteUrl = WebsiteUrl, SiteUrl = SiteUrl,
+        ApiPublicUrl = ApiPublicUrl, IsConfigured = IsConfigured, Problem = Problem, Source = source,
+    };
+
+    /// <summary>Not configured, and why.</summary>
+    public static WhishOptions Missing(string problem, string source = GatewayKeySources.None) => new() { Problem = problem, Source = source };
+
     /* ---- the ids and the addresses ------------------------------------------------------------ */
 
     /// <summary>True for the id of a Whish attempt on <paramref name="bookingRef"/>: "MC-K7Q2M9PW-A3". The bare reference is a card order.</summary>
@@ -152,5 +175,5 @@ public sealed class WhishOptions
 
     public override string ToString()
         => !IsConfigured ? "Whish not configured"
-         : $"Whish {BaseUrl}{(BaseUrl.Contains(".sbx.", StringComparison.OrdinalIgnoreCase) ? " (SANDBOX)" : string.Empty)}; site {SiteUrl}; api {ApiPublicUrl}";
+         : $"Whish {BaseUrl}{(IsSandbox ? " (SANDBOX)" : string.Empty)}; site {SiteUrl}; api {ApiPublicUrl}";
 }

@@ -66,7 +66,8 @@ INSERT INTO @S (No, Script, Applied, CheckedBy) VALUES
  (115, N'115_recipe_book.sql',                     IIF(OBJECT_ID('core.usp_PrepBook_Get') IS NOT NULL, 1, 0), N'core.usp_PrepBook_Get'),
  (116, N'116_roster_rotation.sql',                 IIF(OBJECT_ID('attendance.usp_RosterRotation_Get') IS NOT NULL, 1, 0), N'attendance.usp_RosterRotation_Get'),
  (117, N'117_shift_hours_by_date.sql',             IIF(OBJECT_ID('report.usp_Report_WorkedTime_PunchDaysByShift') IS NOT NULL, 1, 0), N'report.usp_Report_WorkedTime_PunchDaysByShift'),
- (118, N'118_booking_whish.sql',                   IIF(OBJECT_ID('booking.usp_Booking_SetWhishPayer') IS NOT NULL, 1, 0), N'booking.usp_Booking_SetWhishPayer');
+ (118, N'118_booking_whish.sql',                   IIF(OBJECT_ID('booking.usp_Booking_SetWhishPayer') IS NOT NULL, 1, 0), N'booking.usp_Booking_SetWhishPayer'),
+ (119, N'119_payment_gateways.sql',                IIF(OBJECT_ID('booking.usp_GatewayTest_List') IS NOT NULL, 1, 0), N'booking.usp_GatewayTest_List');
 
 INSERT INTO @S (No, Script, Applied, Admin, CheckedBy) VALUES
  (91, N'91_admin_reseed_identities.sql',          IIF(OBJECT_ID('dbo.usp_Admin_ReseedIdentities') IS NOT NULL, 1, 0), 1, N'admin tool'),

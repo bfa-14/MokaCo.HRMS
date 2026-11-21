@@ -70,6 +70,22 @@ public sealed class MpgsOptions
 
     public bool IsTestProfile => MerchantId.StartsWith(TestProfilePrefix, StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>"test" for a TEST merchant profile, "live" for any other.</summary>
+    public string Mode => IsTestProfile ? GatewayModes.Test : GatewayModes.Live;
+
+    /// <summary>Where the keys came from: the server file (api.env) or HRMS Settings (script 119).</summary>
+    public string Source { get; init; } = GatewayKeySources.Server;
+
+    /// <summary>The same options, named as coming from somewhere else (HRMS Settings).</summary>
+    public MpgsOptions From(string source) => new()
+    {
+        BaseUrl = BaseUrl, MerchantId = MerchantId, ApiPassword = ApiPassword, ApiVersion = ApiVersion, SiteUrl = SiteUrl,
+        ApiPublicUrl = ApiPublicUrl, TestBypassRequested = TestBypassRequested, IsConfigured = IsConfigured, Problem = Problem, Source = source,
+    };
+
+    /// <summary>Not configured, and why.</summary>
+    public static MpgsOptions Missing(string problem, string source = GatewayKeySources.None) => new() { IsConfigured = false, Problem = problem, Source = source };
+
     /// <summary>TEST profile AND the flag. The only place that decides it.</summary>
     public bool SendsThreeDsBypass => IsTestProfile && TestBypassRequested;
 

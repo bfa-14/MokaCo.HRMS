@@ -41,6 +41,9 @@ public static class Scripts
     /// <summary>Whish as a second way to pay the booking deposit: the attempt id, the payer's phone, the switch.</summary>
     public const string BookingWhish118 = "docs/118_booking_whish.sql";
 
+    /// <summary>The gateways' keys and mode (encrypted, entered in HRMS), the payment log, the payments page, the gateway tests.</summary>
+    public const string PaymentGateways119 = "docs/119_payment_gateways.sql";
+
     /// <summary>
     /// QA3 DEPLOY GUARD: every numbered script this build of the API calls, in apply order, each with the
     /// object it is checked by. SchemaCheck looks for them at startup; while one is missing the log names
@@ -76,5 +79,7 @@ public static class Scripts
         // The last procedure the script creates: a run that stopped half-way still reads as missing.
         new(ShiftHours117, "report.usp_Report_WorkedTime_PunchDaysByShift"),
         new(BookingWhish118, "booking.usp_Booking_SetWhishPayer"),
+        // The last procedure the script creates.
+        new(PaymentGateways119, "booking.usp_GatewayTest_List"),
     ];
 }

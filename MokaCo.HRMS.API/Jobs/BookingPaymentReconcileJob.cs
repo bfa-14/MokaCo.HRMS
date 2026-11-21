@@ -46,7 +46,8 @@ public class BookingPaymentReconcileJob : IJob
     {
         // No gateway configured (neither the card's nor Whish): there is nobody to ask. The start already logged
         // which keys are missing.
-        if (!_settle.Gateway.IsConfigured && !_settle.Whish.IsConfigured)
+        // "Configured" is asked at every run: since script 119 the keys can be saved in HRMS while the API is running.
+        if (!(await _settle.GatewayAsync()).IsConfigured && !(await _settle.WhishAsync()).IsConfigured)
             return;
 
         var due = await _deposits.ListPaymentsToReconcileAsync(_timing.ReconcileAfterMinutes);

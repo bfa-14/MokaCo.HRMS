@@ -287,16 +287,34 @@ builder.Services.AddScoped<IBookingService, BookingService>();
 // Online deposits. The gateway client is a TYPED HttpClient (pooled handlers, no socket exhaustion);
 // its own calls carry short per-request timeouts, the client-wide one is only a backstop. Logged
 // headers are redacted wholesale: the Authorization header carries the merchant password.
-builder.Services.AddSingleton(mpgsOptions);
 builder.Services.AddSingleton(depositTiming);
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddHttpClient<IMpgsClient, MpgsClient>(client => client.Timeout = TimeSpan.FromSeconds(60))
+builder.Services.AddHttpClient(PaymentGateways.CardHttpClient, client => client.Timeout = TimeSpan.FromSeconds(60))
     .RedactLoggedHeaders(_ => true);
 // Whish: the same kind of client. Its secret travels in a request header, so the headers are redacted here too.
-builder.Services.AddSingleton(whishOptions);
-builder.Services.AddHttpClient<IWhishClient, WhishClient>(client => client.Timeout = TimeSpan.FromSeconds(60))
+builder.Services.AddHttpClient(PaymentGateways.WhishHttpClient, client => client.Timeout = TimeSpan.FromSeconds(60))
     .RedactLoggedHeaders(_ => true);
-builder.Services.AddScoped<IOnlineDepositService, OnlineDepositService>();
+
+// THE GATEWAYS AS THEY ARE CONFIGURED RIGHT NOW (script 119). Their keys can also be entered in HRMS (Settings >
+// Payment gateways), for test and for live, and are then stored ENCRYPTED - with a key derived from this server's own
+// signing key, so the database never holds a readable secret. What the server file configures (mpgsOptions,
+// whishOptions above) stays the fallback: with nothing saved in HRMS everything works exactly as before.
+builder.Services.AddSingleton(new GatewayKeyProtector(jwtOptions.SecretKey));
+builder.Services.AddSingleton<GatewayStoreCache>();
+builder.Services.AddSingleton(new GatewayServerFacts(
+    builder.Configuration[MpgsOptions.SiteUrlKey]?.Trim().TrimEnd('/'), builder.Configuration[MpgsOptions.ApiPublicUrlKey]?.Trim().TrimEnd('/')));
+builder.Services.AddScoped<IPaymentGatewayRepository, PaymentGatewayRepository>();
+builder.Services.AddScoped<IPaymentGateways>(services => new PaymentGateways(
+    services.GetRequiredService<IPaymentGatewayRepository>(), services.GetRequiredService<GatewayStoreCache>(),
+    services.GetRequiredService<GatewayKeyProtector>(), mpgsOptions, whishOptions, key => builder.Configuration[key],
+    services.GetRequiredService<IHttpClientFactory>(), services.GetRequiredService<ILoggerFactory>(), services.GetRequiredService<TimeProvider>()));
+builder.Services.AddScoped<IPaymentEventLog, PaymentEventLog>();
+builder.Services.AddScoped<IOnlineDepositService>(services => new OnlineDepositService(
+    services.GetRequiredService<IOnlineDepositRepository>(), services.GetRequiredService<IBookingRepository>(),
+    services.GetRequiredService<IPaymentGateways>(), depositTiming, services.GetRequiredService<ILogger<OnlineDepositService>>(),
+    services.GetRequiredService<TimeProvider>(), services.GetRequiredService<IPaymentEventLog>()));
+builder.Services.AddScoped<IGatewayAdminService, GatewayAdminService>();
+builder.Services.AddScoped<IPaymentDeskService, PaymentDeskService>();
 
 // --- Scheduled jobs (Quartz.NET, in-memory RAMJobStore — no DB job store) ---
 builder.Services.AddQuartz(q =>
@@ -642,6 +660,7 @@ if (whishOptions.IsConfigured)
     app.Logger.LogInformation("Whish deposits: {Gateway}. Offered on the website while the setting {Setting} is on.", whishOptions, WhishOptions.EnabledSetting);
 else if (whishOptions.Problem is not null)
     app.Logger.LogError("Whish deposits are OFF. {Problem}", whishOptions.Problem);
+app.Logger.LogInformation("Payment gateways: the lines above are what the SERVER FILE configures. Keys saved in HRMS (Settings > Payment gateways) take their place, per mode.");
 
 // FIRST IN THE PIPELINE, and therefore INSIDE the developer exception page that WebApplication adds
 // by itself in Development: the handler answers before that page can, so no environment returns a

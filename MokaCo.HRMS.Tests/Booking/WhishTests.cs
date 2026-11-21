@@ -609,7 +609,7 @@ public class WhishTests
     private static (PublicBookingController Controller, Mock<IOnlineDepositService> Deposits, Mock<IBookingLivePublisher> Live) Controller(string? body = null)
     {
         var deposits = new Mock<IOnlineDepositService>();
-        deposits.SetupGet(d => d.Whish).Returns(Options);
+        deposits.Setup(d => d.WhishAsync()).ReturnsAsync(Options);
         var live = new Mock<IBookingLivePublisher>();
         var http = new DefaultHttpContext();
         if (body is not null)

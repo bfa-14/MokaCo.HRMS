@@ -45,6 +45,14 @@ public interface IOnlineDepositRepository
 
     /// <summary>The setting BookingWhishEnabled. False on a database without it.</summary>
     Task<bool> IsWhishEnabledAsync();
+
+    /* ---- the mode a payment was opened in (script 119) ---- */
+
+    /// <summary>Notes in which mode ("test" | "live") the booking's payment was just opened. Nothing on a database without script 119.</summary>
+    Task SetPaymentModeAsync(string bookingRef, string mode);
+
+    /// <summary>The mode the booking's payment was opened in; null when unknown (an older payment, or a database without script 119).</summary>
+    Task<string?> GetPaymentModeAsync(string bookingRef);
 }
 
 public class OnlineDepositRepository : IOnlineDepositRepository
@@ -149,5 +157,33 @@ public class OnlineDepositRepository : IOnlineDepositRepository
         var value = await db.QuerySingleOrDefaultAsync<string?>(
             "SELECT SettingValue FROM core.SETTING WHERE SettingKey = @Key", new { Key = "BookingWhishEnabled" });
         return value?.Trim().ToLowerInvariant() is "1" or "true";
+    }
+
+    /* ---- the mode a payment was opened in (script 119) ---- */
+
+    public async Task SetPaymentModeAsync(string bookingRef, string mode)
+    {
+        try
+        {
+            using var db = _factory.Create();
+            await db.ExecuteAsync("booking.usp_Booking_SetPaymentMode", new { Ref = bookingRef, Mode = mode }, commandType: CommandType.StoredProcedure);
+        }
+        catch (Microsoft.Data.SqlClient.SqlException ex) when (MissingScriptException.IsMissingObject(ex.Number))
+        {
+            // Without script 119 there is one mode, the server file's: nothing to note.
+        }
+    }
+
+    public async Task<string?> GetPaymentModeAsync(string bookingRef)
+    {
+        try
+        {
+            using var db = _factory.Create();
+            return await db.QuerySingleOrDefaultAsync<string?>("booking.usp_Booking_GetPaymentMode", new { Ref = bookingRef }, commandType: CommandType.StoredProcedure);
+        }
+        catch (Microsoft.Data.SqlClient.SqlException ex) when (MissingScriptException.IsMissingObject(ex.Number))
+        {
+            return null;
+        }
     }
 }

@@ -40,7 +40,7 @@ public class PaymentEndpointTests
     private static (PublicBookingController Controller, Mock<IOnlineDepositService> Deposits, Mock<IBookingLivePublisher> Live) Controller()
     {
         var deposits = new Mock<IOnlineDepositService>();
-        deposits.SetupGet(d => d.Gateway).Returns(Gateway);
+        deposits.Setup(d => d.GatewayAsync()).ReturnsAsync(Gateway);
         var live = new Mock<IBookingLivePublisher>();
         var controller = new PublicBookingController(Mock.Of<IBookingService>(), Mock.Of<IRoomService>(), live.Object, deposits.Object)
         {

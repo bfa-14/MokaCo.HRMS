@@ -40,6 +40,13 @@ public enum SettleTrigger
     /// (a new checkout follows at once, so the hold is not released).
     /// </summary>
     PayAgain,
+
+    /// <summary>
+    /// A member of staff pressed "Ask the gateway now" on the Payments page (script 119). Judged EXACTLY like
+    /// <see cref="Reconciliation"/> - a paid payment is recorded, an abandoned one released once its hold has run
+    /// out, one that cannot be told about keeps its hold - only without the staff e-mail, and logged under their name.
+    /// </summary>
+    StaffCheck,
 }
 
 public enum SettlementResult
@@ -138,11 +145,11 @@ public static class PaymentMethods
 /// </summary>
 public interface IOnlineDepositService
 {
-    /// <summary>The gateway configuration, for the redirect targets.</summary>
-    MpgsOptions Gateway { get; }
+    /// <summary>The card gateway as it is configured right now (the mode in use), for the redirect targets.</summary>
+    Task<MpgsOptions> GatewayAsync();
 
-    /// <summary>The Whish configuration: its redirect targets and the callback token.</summary>
-    WhishOptions Whish { get; }
+    /// <summary>Whish as it is configured right now (the mode in use): its redirect targets and the callback token.</summary>
+    Task<WhishOptions> WhishAsync();
 
     /// <summary>The methods a guest may pay with right now: "card" when its keys are set, "whish" when its keys are set AND its switch is on.</summary>
     Task<IReadOnlyList<string>> MethodsAsync();
@@ -157,6 +164,9 @@ public interface IOnlineDepositService
     Task<PaymentOpening> OpenAsync(string bookingRef, CancellationToken cancellationToken = default);
 
     Task<Settlement> SettleAsync(string bookingRef, SettleTrigger trigger, CancellationToken cancellationToken = default);
+
+    /// <summary>"Ask the gateway now", pressed by a member of staff (<see cref="SettleTrigger.StaffCheck"/>); logged under their name.</summary>
+    Task<Settlement> StaffCheckAsync(string bookingRef, int userId, CancellationToken cancellationToken = default);
 }
 
 public sealed class OnlineDepositService : IOnlineDepositService
@@ -168,38 +178,49 @@ public sealed class OnlineDepositService : IOnlineDepositService
 
     private readonly IOnlineDepositRepository _deposits;
     private readonly IBookingRepository _bookings;
-    private readonly IMpgsClient _gateway;
-    private readonly IWhishClient? _whish;
+    private readonly IPaymentGateways _gateways;
+    private readonly IPaymentEventLog? _events;
     private readonly OnlineDepositOptions _timing;
     private readonly TimeProvider _clock;
     private readonly ILogger<OnlineDepositService> _log;
 
-    public OnlineDepositService(IOnlineDepositRepository deposits, IBookingRepository bookings, IMpgsClient gateway,
-        MpgsOptions options, OnlineDepositOptions timing, ILogger<OnlineDepositService> log, TimeProvider? clock = null,
-        IWhishClient? whish = null, WhishOptions? whishOptions = null)
+    /// <summary>
+    /// What the API runs: the gateways as they are configured RIGHT NOW (script 119: their keys and mode can be
+    /// changed in HRMS while the API is running), asked for at every call, and the payment log.
+    /// </summary>
+    public OnlineDepositService(IOnlineDepositRepository deposits, IBookingRepository bookings, IPaymentGateways gateways,
+        OnlineDepositOptions timing, ILogger<OnlineDepositService> log, TimeProvider? clock = null, IPaymentEventLog? events = null)
     {
         _deposits = deposits;
         _bookings = bookings;
-        _gateway = gateway;
-        Gateway = options;
+        _gateways = gateways;
         _timing = timing;
         _log = log;
         _clock = clock ?? TimeProvider.System;
-        _whish = whish;
-        Whish = whish is null ? WhishOptions.Unconfigured : whishOptions ?? WhishOptions.Unconfigured;
+        _events = events;
     }
 
-    public MpgsOptions Gateway { get; }
+    /// <summary>Fixed gateways: one card client, optionally one Whish client. What the tests build it on.</summary>
+    public OnlineDepositService(IOnlineDepositRepository deposits, IBookingRepository bookings, IMpgsClient gateway,
+        MpgsOptions options, OnlineDepositOptions timing, ILogger<OnlineDepositService> log, TimeProvider? clock = null,
+        IWhishClient? whish = null, WhishOptions? whishOptions = null, IPaymentEventLog? events = null)
+        : this(deposits, bookings, new FixedPaymentGateways(options, gateway, whishOptions, whish), timing, log, clock, events)
+    {
+    }
 
-    public WhishOptions Whish { get; }
+    public Task<MpgsOptions> GatewayAsync() => _gateways.CardAsync();
+
+    public Task<WhishOptions> WhishAsync() => _gateways.WhishAsync();
 
     public async Task<IReadOnlyList<string>> MethodsAsync()
     {
         var methods = new List<string>(2);
-        if (Gateway.IsConfigured) methods.Add(PaymentMethods.Card);
-        if (Whish.IsConfigured && await _deposits.IsWhishEnabledAsync()) methods.Add(PaymentMethods.Whish);
+        if ((await _gateways.CardAsync()).IsConfigured) methods.Add(PaymentMethods.Card);
+        if ((await _gateways.WhishAsync()).IsConfigured && await _deposits.IsWhishEnabledAsync()) methods.Add(PaymentMethods.Whish);
         return methods;
     }
+
+    private Task WriteAsync(PaymentEventEntry entry) => _events is null ? Task.CompletedTask : _events.WriteAsync(entry);
 
     /* ---- opening --------------------------------------------------------------------------- */
 
@@ -217,7 +238,8 @@ public sealed class OnlineDepositService : IOnlineDepositService
     private async Task<PaymentOpening> OpenWhishAsync(string bookingRef, CancellationToken cancellationToken)
     {
         // Not configured, or switched off: like a gateway that did not open a payment, before anything is stamped.
-        if (_whish is null || !Whish.IsConfigured || !await _deposits.IsWhishEnabledAsync())
+        var whish = await _gateways.WhishAsync();
+        if (!whish.IsConfigured || !await _deposits.IsWhishEnabledAsync())
             return new PaymentOpening(PayOpenResult.GatewayError, bookingRef, Method: PaymentMethods.Whish);
 
         // Whatever was opened before - a card session or an earlier Whish attempt - is settled FIRST, through the
@@ -246,22 +268,34 @@ public sealed class OnlineDepositService : IOnlineDepositService
         if (attempt is null)
             return new PaymentOpening(PayOpenResult.UnknownBooking, bookingRef, Method: PaymentMethods.Whish);
 
+        // The mode this attempt is opened in: it is settled, and refunded, with the keys of this mode whatever
+        // mode is in use by then (script 119).
+        await _deposits.SetPaymentModeAsync(bookingRef, whish.Mode);
+
         string collectUrl;
         try
         {
             // Both callbacks and both redirects carry the reference and lead to the same two places: each only
             // makes us ASK Whish what happened, so which one fired never decides anything.
-            collectUrl = await _whish.CreateCollectAsync(
+            collectUrl = await _gateways.WhishClient(whish).CreateCollectAsync(
                 attempt.ExternalId, started.DepositDue, started.CurrencyCode, WhishInvoice(started),
-                Whish.CallbackUrl(bookingRef), Whish.CallbackUrl(bookingRef), Whish.ReturnUrl(bookingRef), Whish.ReturnUrl(bookingRef),
+                whish.CallbackUrl(bookingRef), whish.CallbackUrl(bookingRef), whish.ReturnUrl(bookingRef), whish.ReturnUrl(bookingRef),
                 cancellationToken);
         }
-        catch (WhishException)
+        catch (WhishException ex)
         {
+            await WriteAsync(new PaymentEventEntry(GatewayNames.Whish, PaymentEvents.OpenFailed, PaymentEvents.FromWebsite, BookingRef: bookingRef,
+                Mode: whish.Mode, GatewayOrderId: attempt.ExternalId, Outcome: "GatewayError", Detail: ex.Message,
+                Amount: started.DepositDue, CurrencyCode: started.CurrencyCode));
+
             // The hold and the attempt id stay: the job asks Whish later, finds no such payment (or one never
             // paid) and releases the booking; the guest may press pay again at once (the attempt settles as not paid).
             return new PaymentOpening(PayOpenResult.GatewayError, bookingRef, Method: PaymentMethods.Whish, Changed: true);
         }
+
+        await WriteAsync(new PaymentEventEntry(GatewayNames.Whish, PaymentEvents.Opened, PaymentEvents.FromWebsite, BookingRef: bookingRef,
+            Mode: whish.Mode, GatewayOrderId: attempt.ExternalId, Outcome: "Opened", Detail: $"Whish payment link created (attempt {attempt.Attempt})",
+            Amount: started.DepositDue, CurrencyCode: started.CurrencyCode));
 
         return new PaymentOpening(PayOpenResult.Opened, bookingRef, Deposit: started.DepositDue, Currency: started.CurrencyCode,
             HoldExpiresUtc: started.HoldExpiresUtc, Changed: true, Method: PaymentMethods.Whish, CollectUrl: collectUrl);
@@ -277,7 +311,8 @@ public sealed class OnlineDepositService : IOnlineDepositService
         // NO GATEWAY CONFIGURED: answered like a gateway that did not open a session, but before anything
         // is stamped. A hold here would expire a booking that no session can ever pay; left without one
         // it stays a Pending request that staff confirm.
-        if (!Gateway.IsConfigured)
+        var card = await _gateways.CardAsync();
+        if (!card.IsConfigured)
             return new PaymentOpening(PayOpenResult.GatewayError, bookingRef);
 
         // A SECOND /pay FOR THE SAME BOOKING reuses the order id, so the earlier session is SETTLED
@@ -309,20 +344,31 @@ public sealed class OnlineDepositService : IOnlineDepositService
         if (started is null)
             return new PaymentOpening(PayOpenResult.UnknownBooking, bookingRef);
 
+        // The mode this session is opened in (script 119): it is settled with the keys of this mode.
+        await _deposits.SetPaymentModeAsync(bookingRef, card.Mode);
+
         string sessionId;
         try
         {
-            sessionId = await _gateway.InitiateCheckoutAsync(
+            sessionId = await _gateways.CardClient(card).InitiateCheckoutAsync(
                 bookingRef, started.DepositDue, started.CurrencyCode, Description(started),
-                Gateway.VerifyUrl(bookingRef), Gateway.CancelledUrl(), Gateway.UnconfirmedUrl(bookingRef),
+                card.VerifyUrl(bookingRef), card.CancelledUrl(), card.UnconfirmedUrl(bookingRef),
                 cancellationToken);
         }
-        catch (MpgsException)
+        catch (MpgsException ex)
         {
+            await WriteAsync(new PaymentEventEntry(GatewayNames.Card, PaymentEvents.OpenFailed, PaymentEvents.FromWebsite, BookingRef: bookingRef,
+                Mode: card.Mode, GatewayOrderId: bookingRef, Outcome: "GatewayError", Detail: ex.Message,
+                Amount: started.DepositDue, CurrencyCode: started.CurrencyCode));
+
             // The hold and PaymentOpenedUtc stay stamped: the job asks the gateway later (it will find
             // no order) and releases it once GiveUpAfterMinutes have passed.
             return new PaymentOpening(PayOpenResult.GatewayError, bookingRef);
         }
+
+        await WriteAsync(new PaymentEventEntry(GatewayNames.Card, PaymentEvents.Opened, PaymentEvents.FromWebsite, BookingRef: bookingRef,
+            Mode: card.Mode, GatewayOrderId: bookingRef, Outcome: "Opened", Detail: "Card checkout session opened",
+            Amount: started.DepositDue, CurrencyCode: started.CurrencyCode));
 
         try
         {
@@ -346,7 +392,16 @@ public sealed class OnlineDepositService : IOnlineDepositService
 
     /* ---- settling -------------------------------------------------------------------------- */
 
-    public async Task<Settlement> SettleAsync(string bookingRef, SettleTrigger trigger, CancellationToken cancellationToken = default)
+    public Task<Settlement> SettleAsync(string bookingRef, SettleTrigger trigger, CancellationToken cancellationToken = default)
+        => SettleAsync(bookingRef, trigger, userId: null, cancellationToken);
+
+    public Task<Settlement> StaffCheckAsync(string bookingRef, int userId, CancellationToken cancellationToken = default)
+        => SettleAsync(bookingRef, SettleTrigger.StaffCheck, userId, cancellationToken);
+
+    /// <summary>The job, and a member of staff asking by hand: nobody is waiting on a gateway's page for the answer.</summary>
+    private static bool IsBackground(SettleTrigger trigger) => trigger is SettleTrigger.Reconciliation or SettleTrigger.StaffCheck;
+
+    private async Task<Settlement> SettleAsync(string bookingRef, SettleTrigger trigger, int? userId, CancellationToken cancellationToken)
     {
         var state = await _deposits.GetPaymentStateAsync(bookingRef);
         if (state is null)
@@ -375,118 +430,187 @@ public sealed class OnlineDepositService : IOnlineDepositService
         // WHICH GATEWAY: read off the booking's order id. The bare reference is a card order; reference-A<n> is a
         // Whish attempt. Each is asked in its own way and answers through its own decision table; from the
         // decision on, there is one path.
+        // WHICH KEYS (script 119): those of the mode the payment was OPENED in - a gateway switched to test since
+        // must still be able to find a live payment in flight. Unknown (an older payment) = the mode in use.
         var whishAttempt = WhishOptions.AttemptNumber(state.GatewayOrderId, bookingRef);
+        var openedIn = await _deposits.GetPaymentModeAsync(bookingRef);
         var now = _clock.GetUtcNow().UtcDateTime;
+        var source = PaymentEvents.SourceOf(trigger);
         PaymentDecision decision;
         Func<Task<(Settlement Settlement, bool Changed)>> recordPaid;
+        string gatewayName, modeName, orderId, gatewaySaid;
 
         if (whishAttempt is { } attemptNumber)
         {
-            // Its keys have gone since the attempt was opened: nobody can be asked, nothing is judged or written.
-            if (_whish is null || !Whish.IsConfigured)
-                return new Settlement(SettlementResult.Unconfirmed, bookingRef, false, state.Status, "Whish is not configured");
+            var whish = await _gateways.WhishAsync(openedIn);
+            gatewayName = GatewayNames.Whish;
+            modeName = openedIn ?? whish.Mode;
+            orderId = state.GatewayOrderId!;
 
-            var externalId = state.GatewayOrderId!;
-            var lookup = await _whish.GetStatusAsync(externalId, state.CurrencyCode, cancellationToken);
+            // Its keys have gone since the attempt was opened: nobody can be asked, nothing is judged or written.
+            if (!whish.IsConfigured)
+            {
+                await WriteAsync(new PaymentEventEntry(gatewayName, PaymentEvents.Checked, source, BookingRef: bookingRef, Mode: openedIn,
+                    GatewayOrderId: orderId, Outcome: nameof(SettlementResult.Unconfirmed), Detail: "Whish is not configured: nobody could be asked", UserId: userId));
+                return new Settlement(SettlementResult.Unconfirmed, bookingRef, false, state.Status, "Whish is not configured");
+            }
+
+            var whishClient = _gateways.WhishClient(whish);
+            var externalId = orderId;
+            var lookup = await whishClient.GetStatusAsync(externalId, state.CurrencyCode, cancellationToken);
             var linkOver = state.PaymentOpenedUtc is { } linkOpened && now >= linkOpened + WhishOptions.LinkLifetime + WhishOptions.LinkGrace;
             decision = WhishDecisionTable.Decide(lookup, linkOver);
+            gatewaySaid = Said(lookup);
             recordPaid = () => RecordWhishPaidAsync(bookingRef, externalId, lookup.PayerPhoneNumber, state.DepositDue, state.CurrencyCode);
 
             // AN EARLIER ATTEMPT PAID LATE. A new attempt replaces the id the booking is asked about, so a guest who
             // paid attempt 1 in its last second - while it still read "pending" and attempt 2 was being opened -
             // would never be found. The job asks about the attempts before the current one too; the first that
             // Whish says was paid is recorded, exactly as the current one would be.
-            if (trigger == SettleTrigger.Reconciliation && decision.Outcome != PaymentOutcome.Paid && attemptNumber > 1)
+            if (IsBackground(trigger) && decision.Outcome != PaymentOutcome.Paid && attemptNumber > 1)
             {
                 for (var earlier = attemptNumber - 1; earlier >= Math.Max(1, attemptNumber - EarlierAttemptsChecked); earlier--)
                 {
                     var earlierId = WhishOptions.AttemptId(bookingRef, earlier);
-                    var earlierLookup = await _whish.GetStatusAsync(earlierId, state.CurrencyCode, cancellationToken);
+                    var earlierLookup = await whishClient.GetStatusAsync(earlierId, state.CurrencyCode, cancellationToken);
                     if (earlierLookup is not { Kind: WhishLookupKind.Found, CollectStatus: "success" }) continue;
 
                     _log.LogWarning("Deposit {Ref}: Whish attempt {Earlier} was paid after attempt {Current} was opened; recorded.", bookingRef, earlier, attemptNumber);
-                    return (await RecordWhishPaidAsync(bookingRef, earlierId, earlierLookup.PayerPhoneNumber, state.DepositDue, state.CurrencyCode)).Settlement;
+                    var late = (await RecordWhishPaidAsync(bookingRef, earlierId, earlierLookup.PayerPhoneNumber, state.DepositDue, state.CurrencyCode)).Settlement;
+                    await WriteAsync(new PaymentEventEntry(gatewayName, PaymentEvents.Paid, source, BookingRef: bookingRef, Mode: modeName,
+                        GatewayOrderId: earlierId, Outcome: late.Reason, GatewayStatus: Said(earlierLookup),
+                        Detail: $"paid on Whish on attempt {earlier}, after attempt {attemptNumber} was opened",
+                        Amount: state.DepositDue, CurrencyCode: state.CurrencyCode, UserId: userId));
+                    return late;
                 }
             }
         }
         else
         {
+            var card = await _gateways.CardAsync(openedIn);
+            gatewayName = GatewayNames.Card;
+            modeName = openedIn ?? card.Mode;
+            orderId = bookingRef;
+
             // A session was opened while the gateway was configured, and its keys have since gone: nobody
             // can be asked, so nothing is judged or written (the hold stays as it is).
-            if (!Gateway.IsConfigured)
+            if (!card.IsConfigured)
+            {
+                await WriteAsync(new PaymentEventEntry(gatewayName, PaymentEvents.Checked, source, BookingRef: bookingRef, Mode: openedIn,
+                    GatewayOrderId: orderId, Outcome: nameof(SettlementResult.Unconfirmed), Detail: "The card gateway is not configured: nobody could be asked", UserId: userId));
                 return new Settlement(SettlementResult.Unconfirmed, bookingRef, false, state.Status, "online deposits are not configured");
+            }
 
-            var order = await _gateway.RetrieveOrderAsync(bookingRef, cancellationToken);
+            var order = await _gateways.CardClient(card).RetrieveOrderAsync(bookingRef, cancellationToken);
             decision = PaymentDecisionTable.Decide(order, state.DepositDue, state.CurrencyCode);
+            gatewaySaid = Said(order);
             recordPaid = () => RecordPaidAsync(bookingRef, order, state.CurrencyCode);
         }
 
-        // QA3 BKG-4: staff decided the booking while the guest was on the gateway's page. Money the gateway
-        // captured is recorded (usp_Booking_ConfirmOnlinePayment: 'Recorded' on a confirmed booking,
-        // 'PaidButClosed' + Refund Due on a cancelled one, staff alerted either way); anything else is
-        // only noted as checked — a decided booking has no hold to keep and nothing to release.
-        if (trigger == SettleTrigger.Reconciliation && state.Status != "Pending")
+        var settlement = await ActAsync();
+
+        // THE LOG (script 119): what was asked, what the gateway said, what was done about it.
+        var paidNow = settlement.Result is SettlementResult.Paid or SettlementResult.PaidNeedsStaff;
+        await WriteAsync(new PaymentEventEntry(gatewayName,
+            paidNow && settlement.Changed ? PaymentEvents.Paid : settlement.Result == SettlementResult.Released ? PaymentEvents.Released : PaymentEvents.Checked,
+            source, BookingRef: bookingRef, Mode: modeName, GatewayOrderId: orderId,
+            Outcome: paidNow ? settlement.Reason : settlement.Result == SettlementResult.NotApplicable ? "NoChange" : settlement.Result.ToString(),
+            GatewayStatus: gatewaySaid,
+            Detail: paidNow ? decision.Reason : settlement.Reason,
+            Amount: paidNow ? state.DepositDue : null, CurrencyCode: paidNow ? state.CurrencyCode : null, UserId: userId));
+
+        return settlement;
+
+        async Task<Settlement> ActAsync()
         {
-            _log.LogInformation("Deposit {Ref} (Reconciliation, {Status}): {Outcome}, {Reason}.", bookingRef, state.Status, decision.Outcome, decision.Reason);
+            // QA3 BKG-4: staff decided the booking while the guest was on the gateway's page. Money the gateway
+            // captured is recorded (usp_Booking_ConfirmOnlinePayment: 'Recorded' on a confirmed booking,
+            // 'PaidButClosed' + Refund Due on a cancelled one, staff alerted either way); anything else is
+            // only noted as checked — a decided booking has no hold to keep and nothing to release.
+            if (IsBackground(trigger) && state.Status != "Pending")
+            {
+                _log.LogInformation("Deposit {Ref} ({Trigger}, {Status}): {Outcome}, {Reason}.", bookingRef, trigger, state.Status, decision.Outcome, decision.Reason);
 
-            if (decision.Outcome == PaymentOutcome.Paid)
-                return (await recordPaid()).Settlement;
+                if (decision.Outcome == PaymentOutcome.Paid)
+                    return (await recordPaid()).Settlement;
 
-            await _deposits.PaymentCheckedAsync(bookingRef, keepHold: false);
-            return new Settlement(SettlementResult.NotApplicable, bookingRef, false, state.Status, "no longer pending: " + decision.Reason);
-        }
-
-        var age = state.PaymentOpenedUtc is { } opened ? now - opened : TimeSpan.MaxValue;
-        var patienceOver = age >= TimeSpan.FromMinutes(_timing.GiveUpAfterMinutes);
-        var holdOver = state.HoldExpiresUtc is not { } holdUntil || holdUntil <= now;
-
-        _log.LogInformation("Deposit {Ref} ({Trigger}): {Outcome}, {Reason}.", bookingRef, trigger, decision.Outcome, decision.Reason);
-
-        switch (decision.Outcome)
-        {
-            case PaymentOutcome.Paid:
-                return (await recordPaid()).Settlement;
-
-            // No money was taken on the order and a new checkout is about to be opened on it: nothing is
-            // written, and above all the hold is not released under the guest who is paying again.
-            case PaymentOutcome.Failed when trigger == SettleTrigger.PayAgain:
-            case PaymentOutcome.Unconfirmed when decision.NothingAttempted && trigger == SettleTrigger.PayAgain:
-                return new Settlement(SettlementResult.NotPaid, bookingRef, false, state.Status, decision.Reason);
-
-            case PaymentOutcome.Failed when trigger != SettleTrigger.Reconciliation || patienceOver || decision.Final:
-                return await ReleaseAsync(state, decision.Reason, ifNotReleased: SettlementResult.Failed, markChecked: true);
-
-            // ABANDONED: the gateway answered and nothing was ever attempted on the order, so nothing can
-            // have been charged. The guest walking away releases it at once; the job releases it once the
-            // hold has run out (the guest had the whole hold to pay).
-            case PaymentOutcome.Unconfirmed when decision.NothingAttempted
-                                                && (trigger == SettleTrigger.GuestRelease || (trigger == SettleTrigger.Reconciliation && holdOver)):
-                return await ReleaseAsync(state, "abandoned: " + decision.Reason, ifNotReleased: SettlementResult.Failed, markChecked: true);
-
-            // Abandoned, but the hold is still running: the guest may still be on the gateway's page. The
-            // hold is left as it is — NOT extended, since there is no payment in flight to protect — and
-            // the next run looks again.
-            case PaymentOutcome.Unconfirmed when decision.NothingAttempted:
                 await _deposits.PaymentCheckedAsync(bookingRef, keepHold: false);
-                return new Settlement(SettlementResult.Unconfirmed, bookingRef, false, state.Status, decision.Reason);
+                return new Settlement(SettlementResult.NotApplicable, bookingRef, false, state.Status, "no longer pending: " + decision.Reason);
+            }
+
+            var age = state.PaymentOpenedUtc is { } opened ? now - opened : TimeSpan.MaxValue;
+            var patienceOver = age >= TimeSpan.FromMinutes(_timing.GiveUpAfterMinutes);
+            var holdOver = state.HoldExpiresUtc is not { } holdUntil || holdUntil <= now;
+
+            _log.LogInformation("Deposit {Ref} ({Trigger}): {Outcome}, {Reason}.", bookingRef, trigger, decision.Outcome, decision.Reason);
+
+            switch (decision.Outcome)
+            {
+                case PaymentOutcome.Paid:
+                    return (await recordPaid()).Settlement;
+
+                // No money was taken on the order and a new checkout is about to be opened on it: nothing is
+                // written, and above all the hold is not released under the guest who is paying again.
+                case PaymentOutcome.Failed when trigger == SettleTrigger.PayAgain:
+                case PaymentOutcome.Unconfirmed when decision.NothingAttempted && trigger == SettleTrigger.PayAgain:
+                    return new Settlement(SettlementResult.NotPaid, bookingRef, false, state.Status, decision.Reason);
+
+                case PaymentOutcome.Failed when !IsBackground(trigger) || patienceOver || decision.Final:
+                    return await ReleaseAsync(state, decision.Reason, ifNotReleased: SettlementResult.Failed, markChecked: true);
+
+                // ABANDONED: the gateway answered and nothing was ever attempted on the order, so nothing can
+                // have been charged. The guest walking away releases it at once; the job releases it once the
+                // hold has run out (the guest had the whole hold to pay).
+                case PaymentOutcome.Unconfirmed when decision.NothingAttempted
+                                                    && (trigger == SettleTrigger.GuestRelease || (IsBackground(trigger) && holdOver)):
+                    return await ReleaseAsync(state, "abandoned: " + decision.Reason, ifNotReleased: SettlementResult.Failed, markChecked: true);
+
+                // Abandoned, but the hold is still running: the guest may still be on the gateway's page. The
+                // hold is left as it is — NOT extended, since there is no payment in flight to protect — and
+                // the next run looks again.
+                case PaymentOutcome.Unconfirmed when decision.NothingAttempted:
+                    await _deposits.PaymentCheckedAsync(bookingRef, keepHold: false);
+                    return new Settlement(SettlementResult.Unconfirmed, bookingRef, false, state.Status, decision.Reason);
+            }
+
+            // Cannot tell — a transaction the gateway has not settled, or no answer at all (a network error
+            // or a timeout is NEVER abandonment) — or failed, with the guest possibly still retrying on the
+            // gateway's page: the slot stays held, the booking stays Pending, the next run asks again.
+            await _deposits.PaymentCheckedAsync(bookingRef, keepHold: true);
+
+            if (trigger == SettleTrigger.Reconciliation && patienceOver && decision.Outcome == PaymentOutcome.Unconfirmed)
+            {
+                var queued = await _deposits.QueuePaymentAlertAsync(state.BookingId, AlertUnconfirmed,
+                    $"Gateway check after {(int)age.TotalMinutes} minutes: {decision.Reason}.");
+                if (queued)
+                {
+                    _log.LogWarning("Deposit {Ref}: still unconfirmed after {Minutes} minutes ({Reason}); staff alerted.",
+                        bookingRef, (int)age.TotalMinutes, decision.Reason);
+                    await WriteAsync(new PaymentEventEntry(gatewayName, PaymentEvents.Alerted, source, BookingRef: bookingRef, Mode: modeName,
+                        GatewayOrderId: orderId, Outcome: "StaffEmailed",
+                        Detail: $"Still not confirmed after {(int)age.TotalMinutes} minutes: staff were e-mailed"));
+                }
+            }
+
+            return new Settlement(SettlementResult.Unconfirmed, bookingRef, false, state.Status, decision.Reason);
         }
-
-        // Cannot tell — a transaction the gateway has not settled, or no answer at all (a network error
-        // or a timeout is NEVER abandonment) — or failed, with the guest possibly still retrying on the
-        // gateway's page: the slot stays held, the booking stays Pending, the next run asks again.
-        await _deposits.PaymentCheckedAsync(bookingRef, keepHold: true);
-
-        if (trigger == SettleTrigger.Reconciliation && patienceOver && decision.Outcome == PaymentOutcome.Unconfirmed)
-        {
-            var queued = await _deposits.QueuePaymentAlertAsync(state.BookingId, AlertUnconfirmed,
-                $"Gateway check after {(int)age.TotalMinutes} minutes: {decision.Reason}.");
-            if (queued)
-                _log.LogWarning("Deposit {Ref}: still unconfirmed after {Minutes} minutes ({Reason}); staff alerted.",
-                    bookingRef, (int)age.TotalMinutes, decision.Reason);
-        }
-
-        return new Settlement(SettlementResult.Unconfirmed, bookingRef, false, state.Status, decision.Reason);
     }
+
+    /// <summary>What the card gateway said, in its own words, for the log.</summary>
+    public static string Said(MpgsOrderLookup order) => order.Kind switch
+    {
+        MpgsLookupKind.Found => $"{order.Result ?? "-"} / {order.Status ?? "-"}",
+        MpgsLookupKind.NotFound => "order not found",
+        _ => "no answer (" + (order.Problem ?? "?") + ")",
+    };
+
+    /// <summary>What Whish said, in its own words, for the log.</summary>
+    public static string Said(WhishCollectLookup lookup) => lookup.Kind switch
+    {
+        WhishLookupKind.Found => lookup.CollectStatus ?? "-",
+        WhishLookupKind.NotFound => "no such payment",
+        _ => "no answer (" + (lookup.Problem ?? "?") + ")",
+    };
 
     private async Task<(Settlement Settlement, bool Changed)> RecordPaidAsync(string bookingRef, MpgsOrderLookup order, string currency)
     {

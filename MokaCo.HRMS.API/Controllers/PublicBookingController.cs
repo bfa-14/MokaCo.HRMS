@@ -77,14 +77,35 @@ public partial class PublicBookingController : ControllerBase
 
     private readonly ILogger<PublicBookingController>? _log;
 
+    /// <summary>
+    /// Gateway tests opened from HRMS (script 119). Their trip back uses the SAME public addresses as a booking's -
+    /// that is what makes a test prove the addresses work - under a reference no booking can have (GT-XXXXXXXX).
+    /// </summary>
+    private readonly IGatewayAdminService? _gatewayTests;
+
     public PublicBookingController(IBookingService bookings, IRoomService rooms, IBookingLivePublisher? live = null,
-        IOnlineDepositService? deposits = null, ILogger<PublicBookingController>? log = null)
+        IOnlineDepositService? deposits = null, ILogger<PublicBookingController>? log = null, IGatewayAdminService? gatewayTests = null)
     {
         _bookings = bookings;
         _rooms = rooms;
         _live = live;
         _deposits = deposits;
         _log = log;
+        _gatewayTests = gatewayTests;
+    }
+
+    /// <summary>
+    /// A GATEWAY TEST'S RETURN: the test is checked and the tester's browser goes back to the HRMS page it was opened
+    /// from. No page to go back to (the test was not opened from a browser): a line of text.
+    /// </summary>
+    private async Task<IActionResult> TestReturnAsync(string testRef)
+    {
+        if (_gatewayTests is null) return NotFound();
+
+        var back = await _gatewayTests.TestReturnAsync(testRef);
+        return back is not null
+            ? Redirect(back)
+            : Content("The test payment was recorded. Go back to HRMS: Settings > Gateway test.", "text/plain");
     }
 
     private IOnlineDepositService Deposits
@@ -496,10 +517,13 @@ public partial class PublicBookingController : ControllerBase
     [EnableRateLimiting(ReadRateLimitPolicy)]
     public async Task<IActionResult> Verify([FromQuery(Name = "ref")] string? reference)
     {
-        var gateway = Deposits.Gateway;
         Response.Headers.CacheControl = "no-store";
 
         var bookingRef = (reference ?? string.Empty).Trim().ToUpperInvariant();
+        if (GatewayTestRefs.IsTestRef(bookingRef))
+            return await TestReturnAsync(bookingRef);
+
+        var gateway = await Deposits.GatewayAsync();
         if (!ReferenceShape().IsMatch(bookingRef))
             return Redirect(gateway.FailedUrl());
 
@@ -543,7 +567,12 @@ public partial class PublicBookingController : ControllerBase
         Response.Headers.CacheControl = "no-store";
 
         var bookingRef = (reference ?? string.Empty).Trim().ToUpperInvariant();
-        if (!ReferenceShape().IsMatch(bookingRef) || !Deposits.Whish.IsCallbackToken(bookingRef, token))
+
+        // A gateway test opened from HRMS: only noted (it proves Whish's server reaches this address).
+        if (GatewayTestRefs.IsTestRef(bookingRef))
+            return _gatewayTests is not null && await _gatewayTests.TestCallbackAsync(bookingRef, token) ? Ok() : NotFound();
+
+        if (!ReferenceShape().IsMatch(bookingRef) || !(await Deposits.WhishAsync()).IsCallbackToken(bookingRef, token))
             return NotFound();
 
         try
@@ -575,12 +604,16 @@ public partial class PublicBookingController : ControllerBase
     [EnableRateLimiting(ReadRateLimitPolicy)]
     public async Task<IActionResult> WhishReturn([FromQuery(Name = "ref")] string? reference)
     {
-        var whish = Deposits.Whish;
         Response.Headers.CacheControl = "no-store";
+
+        var bookingRef = (reference ?? string.Empty).Trim().ToUpperInvariant();
+        if (GatewayTestRefs.IsTestRef(bookingRef))
+            return await TestReturnAsync(bookingRef);
+
+        var whish = await Deposits.WhishAsync();
         if (!whish.IsConfigured)
             return NotFound();
 
-        var bookingRef = (reference ?? string.Empty).Trim().ToUpperInvariant();
         if (!ReferenceShape().IsMatch(bookingRef))
             return Redirect(whish.FailedUrl());
 
