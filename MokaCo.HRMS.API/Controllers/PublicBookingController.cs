@@ -572,7 +572,8 @@ public partial class PublicBookingController : ControllerBase
         if (GatewayTestRefs.IsTestRef(bookingRef))
             return _gatewayTests is not null && await _gatewayTests.TestCallbackAsync(bookingRef, token) ? Ok() : NotFound();
 
-        if (!ReferenceShape().IsMatch(bookingRef) || !(await Deposits.WhishAsync()).IsCallbackToken(bookingRef, token))
+        // The token is the one made when the attempt was opened: checked against the keys of THAT mode.
+        if (!ReferenceShape().IsMatch(bookingRef) || !(await Deposits.WhishForAsync(bookingRef)).IsCallbackToken(bookingRef, token))
             return NotFound();
 
         try
@@ -610,7 +611,8 @@ public partial class PublicBookingController : ControllerBase
         if (GatewayTestRefs.IsTestRef(bookingRef))
             return await TestReturnAsync(bookingRef);
 
-        var whish = await Deposits.WhishAsync();
+        // A reference of the wrong shape names no booking: the mode in use says where the website is.
+        var whish = ReferenceShape().IsMatch(bookingRef) ? await Deposits.WhishForAsync(bookingRef) : await Deposits.WhishAsync();
         if (!whish.IsConfigured)
             return NotFound();
 

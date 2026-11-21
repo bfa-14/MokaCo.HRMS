@@ -135,7 +135,7 @@ public class PaymentGatewaysController : ControllerBase
         // Where the tester's browser comes back to: the HRMS page this request was made from, by the browser's own
         // Origin header (a page cannot forge it) - never an address out of the request body.
         var origin = Request.Headers.Origin.ToString();
-        var result = await _gateways.OpenTestAsync(name, which, request.Amount, request.Currency ?? "USD", origin, User.UserId(), cancellationToken);
+        var result = await _gateways.OpenTestAsync(name, which, request.Amount, request.Currency ?? "USD", origin, User.UserId(), cancellationToken, Request.Host.Host);
         return result.Test is null
             ? BadRequest(new { error = result.Message })
             : Ok(new { ok = result.Ok, message = result.Message, test = Shape(result.Test) });

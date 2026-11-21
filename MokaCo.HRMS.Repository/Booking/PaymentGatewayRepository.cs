@@ -124,20 +124,20 @@ public class PaymentGatewayRepository : IPaymentGatewayRepository
     /* ---- the payments page ----------------------------------------------------------------- */
 
     public Task<IReadOnlyList<PaymentRow>> ListPaymentsAsync(DateTime fromUtc, DateTime toUtc, string? gateway, string? state, string? search, int giveUpMinutes)
-        => MissingScriptException.GuardAsync(Script, "booking.usp_Payment_List", async () =>
+        => MissingScriptException.GuardAsync(Script, "booking.usp_OnlinePayment_List", async () =>
         {
             using var db = _factory.Create();
-            var rows = await db.QueryAsync<PaymentRow>("booking.usp_Payment_List",
+            var rows = await db.QueryAsync<PaymentRow>("booking.usp_OnlinePayment_List",
                 new { FromUtc = fromUtc, ToUtc = toUtc, Gateway = gateway, State = state, Search = Cut(search, 60), GiveUpMinutes = giveUpMinutes },
                 commandType: CommandType.StoredProcedure);
             return (IReadOnlyList<PaymentRow>)rows.ToList();
         });
 
     public Task<PaymentDetail?> GetPaymentAsync(int bookingId, int giveUpMinutes)
-        => MissingScriptException.GuardAsync(Script, "booking.usp_Payment_Get", async () =>
+        => MissingScriptException.GuardAsync(Script, "booking.usp_OnlinePayment_Get", async () =>
         {
             using var db = _factory.Create();
-            using var sets = await db.QueryMultipleAsync("booking.usp_Payment_Get",
+            using var sets = await db.QueryMultipleAsync("booking.usp_OnlinePayment_Get",
                 new { BookingId = bookingId, GiveUpMinutes = giveUpMinutes }, commandType: CommandType.StoredProcedure);
             var payment = await sets.ReadSingleOrDefaultAsync<PaymentRow>();
             var events = (await sets.ReadAsync<PaymentEventRow>()).ToList();

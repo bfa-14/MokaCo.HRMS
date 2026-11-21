@@ -116,7 +116,10 @@ public interface IGatewayAdminService
 
     Task<IReadOnlyList<GatewayTestRow>> ListTestsAsync();
     Task<GatewayTestDetail?> GetTestAsync(string testRef);
-    Task<GatewayActionResult> OpenTestAsync(string gateway, string mode, decimal amount, string currency, string? webOrigin, int userId, CancellationToken cancellationToken = default);
+    /// <param name="webOrigin">The request's Origin header.</param>
+    /// <param name="requestHost">The host the request was sent to: the tester is only ever sent back there.</param>
+    Task<GatewayActionResult> OpenTestAsync(string gateway, string mode, decimal amount, string currency, string? webOrigin, int userId,
+        CancellationToken cancellationToken = default, string? requestHost = null);
     Task<GatewayActionResult> CheckTestAsync(string testRef, int? userId, string source, CancellationToken cancellationToken = default);
     Task<GatewayActionResult> RefundTestAsync(string testRef, int userId, CancellationToken cancellationToken = default);
     Task<GatewayActionResult> LookupAsync(string gateway, string mode, string reference, string currency, CancellationToken cancellationToken = default);
@@ -262,6 +265,21 @@ public sealed partial class GatewayAdminService : IGatewayAdminService
             if (!Uri.TryCreate(fields[GatewayKeyFields.BaseUrl], UriKind.Absolute, out var address) || address.Scheme != Uri.UriSchemeHttps)
                 return new GatewayActionResult(false, "The gateway address must start with https://, for example https://test-bobsal.gateway.mastercard.com.");
 
+            // THE PASSWORD IS SENT TO THIS ADDRESS WITH EVERY CALL, so the address may only be the bank's gateway:
+            // a Mastercard gateway host, the bare host, nothing after it. (Anything else would be a way to have a
+            // saved password delivered somewhere.)
+            if (!IsCardGatewayHost(address))
+                return new GatewayActionResult(false, "The gateway address must be the bank's Mastercard gateway, for example https://test-bobsal.gateway.mastercard.com (the host only, nothing after it).");
+            fields[GatewayKeyFields.BaseUrl] = address.GetLeftPart(UriPartial.Authority);
+
+            // And a saved password never follows a NEW address or merchant by itself: it is typed again.
+            var typedPassword = (input.ApiPassword ?? string.Empty).Trim().Length > 0;
+            var moved = saved is not null
+                        && (!string.Equals(saved.GetValueOrDefault(GatewayKeyFields.BaseUrl), fields[GatewayKeyFields.BaseUrl], StringComparison.OrdinalIgnoreCase)
+                            || !string.Equals(saved.GetValueOrDefault(GatewayKeyFields.MerchantId), fields[GatewayKeyFields.MerchantId], StringComparison.OrdinalIgnoreCase));
+            if (moved && !typedPassword)
+                return new GatewayActionResult(false, "The gateway address or the merchant ID changed: type the API password again with them.");
+
             if (!int.TryParse(fields[GatewayKeyFields.ApiVersion], NumberStyles.None, CultureInfo.InvariantCulture, out var number) || number <= 0)
                 return new GatewayActionResult(false, "The API version must be a whole number such as 73.");
 
@@ -283,8 +301,25 @@ public sealed partial class GatewayAdminService : IGatewayAdminService
         return new GatewayActionResult(true, $"The {mode} keys are saved. Press Check connection to make sure the gateway accepts them.");
     }
 
+    /// <summary>The bank's gateway: a host of mastercard.com whose name ends in "gateway" (bobsal.gateway, test-bobsal.gateway, ap-gateway, ...), default port, no path.</summary>
+    public static bool IsCardGatewayHost(Uri address)
+    {
+        var host = address.Host.ToLowerInvariant();
+        const string suffix = "gateway.mastercard.com";
+        var named = host == suffix || host.EndsWith("." + suffix, StringComparison.Ordinal) || host.EndsWith("-" + suffix, StringComparison.Ordinal);
+        return named && address.IsDefaultPort && address.AbsolutePath is "/" or "" && string.IsNullOrEmpty(address.Query)
+               && string.IsNullOrEmpty(address.Fragment) && string.IsNullOrEmpty(address.UserInfo);
+    }
+
     public async Task<GatewayActionResult> DeleteKeysAsync(string gateway, string mode, int userId)
     {
+        // Payments opened with these keys and not settled yet can only be asked about - and released or recorded -
+        // with these keys: they stay until those payments are settled.
+        var inFlight = (await _repository.ListPaymentsAsync(DateTime.UtcNow.AddYears(-5), DateTime.UtcNow.AddDays(1), gateway, null, null, 30))
+            .Count(p => p.Mode == mode && p.PayState is "Open" or "Unconfirmed");
+        if (inFlight > 0)
+            return new GatewayActionResult(false, $"{inFlight} payment(s) opened with these keys are still waiting to be settled. Remove the keys once they are settled (Bookings > Payments).");
+
         await _repository.DeleteKeysAsync(gateway, mode, userId);
         _gateways.Refresh();
         _log.LogInformation("Gateway {Gateway}: the {Mode} keys were removed by user {UserId}.", gateway, mode, userId);
@@ -340,11 +375,15 @@ public sealed partial class GatewayAdminService : IGatewayAdminService
                 result = new GatewayActionResult(false, options.Problem ?? $"No {mode} keys are saved for Bank of Beirut.");
             else
             {
-                // An order that cannot exist: "no such order" is the bank accepting the keys and answering.
+                // An order that cannot exist: the bank's own "cannot find order" is it accepting the keys and answering.
+                // A bare 404 is NOT that: it is what a wrong address or API version answers too.
                 var probe = await _gateways.CardClient(options).RetrieveOrderAsync("HRMS-CHECK-" + GatewayTestRefs.New()[3..], cancellationToken);
-                result = probe.Kind switch
+                result = probe switch
                 {
-                    MpgsLookupKind.NotFound or MpgsLookupKind.Found => new GatewayActionResult(true, $"The bank answered and accepted the keys (merchant {options.MerchantId})."),
+                    { Kind: MpgsLookupKind.Found } or { Kind: MpgsLookupKind.NotFound, Problem: MpgsOrderLookup.OrderNotFound }
+                        => new GatewayActionResult(true, $"The bank answered and accepted the keys (merchant {options.MerchantId})."),
+                    { Kind: MpgsLookupKind.NotFound }
+                        => new GatewayActionResult(false, "The bank's address answered \"not found\" (HTTP 404). The gateway address or the API version is probably wrong; the keys were not checked."),
                     _ => new GatewayActionResult(false, CardProblem(probe.Problem)),
                 };
             }
@@ -399,7 +438,7 @@ public sealed partial class GatewayAdminService : IGatewayAdminService
     public Task<GatewayTestDetail?> GetTestAsync(string testRef) => _repository.GetTestAsync(testRef);
 
     public async Task<GatewayActionResult> OpenTestAsync(string gateway, string mode, decimal amount, string currency, string? webOrigin, int userId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, string? requestHost = null)
     {
         currency = (currency ?? string.Empty).Trim().ToUpperInvariant();
         if (currency is not ("USD" or "LBP"))
@@ -410,7 +449,7 @@ public sealed partial class GatewayAdminService : IGatewayAdminService
             return new GatewayActionResult(false, string.Create(CultureInfo.InvariantCulture, $"A test payment is between 0 and {currency} {max:0.##}."));
 
         var testRef = GatewayTestRefs.New();
-        var returnUrl = ReturnUrlFor(webOrigin, testRef);
+        var returnUrl = ReturnUrlFor(webOrigin, testRef, requestHost);
         var description = $"MOKA&CO HRMS gateway test {testRef}";
 
         if (gateway == GatewayNames.Whish)
@@ -467,12 +506,25 @@ public sealed partial class GatewayAdminService : IGatewayAdminService
         }
     }
 
-    /// <summary>The HRMS page the tester's browser is sent back to: only on the origin the request itself came from.</summary>
-    public static string? ReturnUrlFor(string? webOrigin, string testRef)
+    /// <summary>How long a test's return address leads back to HRMS. Afterwards the public address answers with a line of text.</summary>
+    public static readonly TimeSpan ReturnWindow = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// The HRMS page the tester's browser is sent back to: the origin the request came from, and only when that is
+    /// the very host the request was sent to (HRMS and its API share one address; a development server on this
+    /// machine is the other case). Never an address somebody merely names, and never one carrying a user name.
+    /// </summary>
+    public static string? ReturnUrlFor(string? webOrigin, string testRef, string? requestHost = null)
     {
         if (!Uri.TryCreate((webOrigin ?? string.Empty).Trim(), UriKind.Absolute, out var origin)) return null;
         if (origin.Scheme != Uri.UriSchemeHttps && origin.Scheme != Uri.UriSchemeHttp) return null;
-        return $"{origin.GetLeftPart(UriPartial.Authority)}{WebTestPagePath}?test={Uri.EscapeDataString(testRef)}";
+        if (!string.IsNullOrEmpty(origin.UserInfo)) return null;
+
+        var sameHost = requestHost is not null
+                       && string.Equals(origin.Host, requestHost.Split(':')[0].Trim(), StringComparison.OrdinalIgnoreCase);
+        if (!sameHost && !origin.IsLoopback) return null;
+
+        return $"{origin.Scheme}://{origin.Authority}{WebTestPagePath}?test={Uri.EscapeDataString(testRef)}";
     }
 
     public async Task<GatewayActionResult> CheckTestAsync(string testRef, int? userId, string source, CancellationToken cancellationToken = default)
@@ -593,7 +645,7 @@ public sealed partial class GatewayAdminService : IGatewayAdminService
 
             currency = (currency ?? string.Empty).Trim().ToUpperInvariant() is "LBP" ? "LBP" : "USD";
             // A booking's Whish payments are numbered: the bare reference is asked about as its first attempt.
-            var externalId = reference.StartsWith("MC-", StringComparison.Ordinal) && !reference.Contains("-A", StringComparison.Ordinal) ? reference + "-A1" : reference;
+            var externalId = BookingRefShape().IsMatch(reference) ? WhishOptions.AttemptId(reference, 1) : reference;
             var lookup = await _gateways.WhishClient(options).GetStatusAsync(externalId, currency, cancellationToken);
             var facts = new List<GatewayFact> { new("Asked about", externalId), new("Whish says", OnlineDepositService.Said(lookup)) };
             if (lookup.PayerPhoneNumber is { } phone) facts.Add(new GatewayFact("Paid from", phone));
@@ -642,6 +694,9 @@ public sealed partial class GatewayAdminService : IGatewayAdminService
     [GeneratedRegex("^[A-Z0-9][A-Z0-9-]{2,39}$")]
     private static partial Regex LookupShape();
 
+    [GeneratedRegex("^MC-[A-Z0-9]{8}$")]
+    private static partial Regex BookingRefShape();
+
     /* ---- a test's trip back through the public addresses -------------------------------------- */
 
     public async Task<bool> TestCallbackAsync(string testRef, string? token)
@@ -673,6 +728,8 @@ public sealed partial class GatewayAdminService : IGatewayAdminService
             _log.LogWarning("Gateway test {Ref}: the check on return failed ({Kind}); the page checks again.", testRef, ex.GetType().Name);
         }
 
-        return found.Test.ReturnUrl;
+        // The address leads back to HRMS for a day: an old test's public address is not a standing redirect.
+        var fresh = _clock.GetUtcNow().UtcDateTime - DateTime.SpecifyKind(found.Test.CreatedAtUtc, DateTimeKind.Utc) <= ReturnWindow;
+        return fresh ? found.Test.ReturnUrl : null;
     }
 }

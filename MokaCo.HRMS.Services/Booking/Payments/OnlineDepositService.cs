@@ -151,6 +151,12 @@ public interface IOnlineDepositService
     /// <summary>Whish as it is configured right now (the mode in use): its redirect targets and the callback token.</summary>
     Task<WhishOptions> WhishAsync();
 
+    /// <summary>
+    /// Whish with the keys of the mode THIS BOOKING's payment was opened in (the mode in use when that is not known):
+    /// what a callback's token is checked against and where a returning guest is sent, whatever mode is in use by now.
+    /// </summary>
+    Task<WhishOptions> WhishForAsync(string bookingRef);
+
     /// <summary>The methods a guest may pay with right now: "card" when its keys are set, "whish" when its keys are set AND its switch is on.</summary>
     Task<IReadOnlyList<string>> MethodsAsync();
 
@@ -212,6 +218,20 @@ public sealed class OnlineDepositService : IOnlineDepositService
 
     public Task<WhishOptions> WhishAsync() => _gateways.WhishAsync();
 
+    public async Task<WhishOptions> WhishForAsync(string bookingRef)
+    {
+        var opened = await _gateways.WhishAsync(await _deposits.GetPaymentModeAsync(bookingRef));
+        // Its keys are gone: the mode in use still knows where the website is.
+        return opened.IsConfigured ? opened : await _gateways.WhishAsync();
+    }
+
+    /// <summary>
+    /// ONE BOOKING, ONE MODE. A booking whose payment was already opened keeps the mode of that first opening for
+    /// every later session or attempt: two sessions of one booking in two modes would be two orders of the same id at
+    /// two merchants, and only one of them could ever be asked about. A new booking takes the mode in use.
+    /// </summary>
+    private async Task<string?> ModeToOpenInAsync(string bookingRef) => GatewayModes.Parse(await _deposits.GetPaymentModeAsync(bookingRef));
+
     public async Task<IReadOnlyList<string>> MethodsAsync()
     {
         var methods = new List<string>(2);
@@ -238,7 +258,8 @@ public sealed class OnlineDepositService : IOnlineDepositService
     private async Task<PaymentOpening> OpenWhishAsync(string bookingRef, CancellationToken cancellationToken)
     {
         // Not configured, or switched off: like a gateway that did not open a payment, before anything is stamped.
-        var whish = await _gateways.WhishAsync();
+        var whish = await _gateways.WhishAsync(await ModeToOpenInAsync(bookingRef));
+        if (!whish.IsConfigured) whish = await _gateways.WhishAsync();
         if (!whish.IsConfigured || !await _deposits.IsWhishEnabledAsync())
             return new PaymentOpening(PayOpenResult.GatewayError, bookingRef, Method: PaymentMethods.Whish);
 
@@ -311,7 +332,8 @@ public sealed class OnlineDepositService : IOnlineDepositService
         // NO GATEWAY CONFIGURED: answered like a gateway that did not open a session, but before anything
         // is stamped. A hold here would expire a booking that no session can ever pay; left without one
         // it stays a Pending request that staff confirm.
-        var card = await _gateways.CardAsync();
+        var card = await _gateways.CardAsync(await ModeToOpenInAsync(bookingRef));
+        if (!card.IsConfigured) card = await _gateways.CardAsync();
         if (!card.IsConfigured)
             return new PaymentOpening(PayOpenResult.GatewayError, bookingRef);
 
@@ -452,6 +474,7 @@ public sealed class OnlineDepositService : IOnlineDepositService
             {
                 await WriteAsync(new PaymentEventEntry(gatewayName, PaymentEvents.Checked, source, BookingRef: bookingRef, Mode: openedIn,
                     GatewayOrderId: orderId, Outcome: nameof(SettlementResult.Unconfirmed), Detail: "Whish is not configured: nobody could be asked", UserId: userId));
+                await AlertNobodyToAskAsync(state, trigger, now, gatewayName, modeName, orderId, "Whish's keys are not available");
                 return new Settlement(SettlementResult.Unconfirmed, bookingRef, false, state.Status, "Whish is not configured");
             }
 
@@ -498,6 +521,7 @@ public sealed class OnlineDepositService : IOnlineDepositService
             {
                 await WriteAsync(new PaymentEventEntry(gatewayName, PaymentEvents.Checked, source, BookingRef: bookingRef, Mode: openedIn,
                     GatewayOrderId: orderId, Outcome: nameof(SettlementResult.Unconfirmed), Detail: "The card gateway is not configured: nobody could be asked", UserId: userId));
+                await AlertNobodyToAskAsync(state, trigger, now, gatewayName, modeName, orderId, "the card gateway's keys are not available");
                 return new Settlement(SettlementResult.Unconfirmed, bookingRef, false, state.Status, "online deposits are not configured");
             }
 
@@ -594,6 +618,27 @@ public sealed class OnlineDepositService : IOnlineDepositService
 
             return new Settlement(SettlementResult.Unconfirmed, bookingRef, false, state.Status, decision.Reason);
         }
+    }
+
+    /// <summary>
+    /// A payment was opened, its gateway's keys are gone (removed, or unreadable after the server's signing key
+    /// changed) and the job has waited long enough: staff get the one e-mail an unconfirmed payment gets - otherwise
+    /// the booking would wait for ever with nobody told. Nothing else is written; the hold stays as it is.
+    /// </summary>
+    private async Task AlertNobodyToAskAsync(PaymentState state, SettleTrigger trigger, DateTime now, string gateway, string? mode, string orderId, string why)
+    {
+        if (trigger != SettleTrigger.Reconciliation || state.Status != "Pending" || state.PaymentOpenedUtc is not { } opened) return;
+
+        var age = now - opened;
+        if (age < TimeSpan.FromMinutes(_timing.GiveUpAfterMinutes)) return;
+
+        var queued = await _deposits.QueuePaymentAlertAsync(state.BookingId, AlertUnconfirmed,
+            $"The gateway could not be asked after {(int)age.TotalMinutes} minutes: {why}.");
+        if (!queued) return;
+
+        _log.LogWarning("Deposit {Ref}: {Why}; nobody could be asked for {Minutes} minutes, staff alerted.", state.BookingRef, why, (int)age.TotalMinutes);
+        await WriteAsync(new PaymentEventEntry(gateway, PaymentEvents.Alerted, PaymentEvents.FromJob, BookingRef: state.BookingRef, Mode: mode,
+            GatewayOrderId: orderId, Outcome: "StaffEmailed", Detail: $"The gateway could not be asked ({why}): staff were e-mailed"));
     }
 
     /// <summary>What the card gateway said, in its own words, for the log.</summary>

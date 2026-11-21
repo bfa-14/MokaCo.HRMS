@@ -44,12 +44,10 @@ public class BookingPaymentReconcileJob : IJob
 
     public async Task Execute(IJobExecutionContext context)
     {
-        // No gateway configured (neither the card's nor Whish): there is nobody to ask. The start already logged
-        // which keys are missing.
-        // "Configured" is asked at every run: since script 119 the keys can be saved in HRMS while the API is running.
-        if (!(await _settle.GatewayAsync()).IsConfigured && !(await _settle.WhishAsync()).IsConfigured)
-            return;
-
+        // NOT skipped when the mode in use has no keys (script 119): a payment is settled with the keys of the mode
+        // it was OPENED in, which may well be saved while the mode in use is another. With no payment opened the
+        // list below is empty and the run costs one query; a payment whose keys are really gone is said so in its
+        // log and, past the patience, in an e-mail to staff.
         var due = await _deposits.ListPaymentsToReconcileAsync(_timing.ReconcileAfterMinutes);
 
         // Silent on the ordinary outcome, like the hold-expiry sweep: most runs have nothing to do.

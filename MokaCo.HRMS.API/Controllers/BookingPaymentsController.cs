@@ -207,8 +207,9 @@ public class BookingPaymentsController : ControllerBase
                 received = g.Sum(p => p.PaidAmount ?? 0),
                 card = g.Where(p => p.Gateway == GatewayNames.Card).Sum(p => p.PaidAmount ?? 0),
                 whish = g.Where(p => p.Gateway == GatewayNames.Whish).Sum(p => p.PaidAmount ?? 0),
-                refunded = g.Sum(p => p.RefundedAmount),
-                refundDue = g.Where(p => p.PayState == "RefundDue").Sum(p => Math.Max(0, p.RefundAmount - p.RefundedAmount)),
+                // Of the money received online: a refund of cash taken at the desk is not this page's.
+                refunded = g.Sum(p => Math.Min(p.RefundedAmount, p.PaidAmount ?? 0)),
+                refundDue = g.Where(p => p.PayState == "RefundDue").Sum(p => Math.Min(Math.Max(0, p.RefundAmount - p.RefundedAmount), p.PaidAmount ?? 0)),
                 payments = g.Count(),
             }),
         };

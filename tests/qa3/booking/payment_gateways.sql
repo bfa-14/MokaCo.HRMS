@@ -97,7 +97,7 @@ BEGIN TRY
     SELECT @OtherRef = BookingRef, @Other = BookingId FROM @made;
 
     -- nobody tried to pay either of them: neither is on the page
-    IF EXISTS (SELECT 1 FROM booking.fn_PaymentRows(30) WHERE BookingId IN (@Bid, @Other))
+    IF EXISTS (SELECT 1 FROM booking.fn_OnlinePaymentRows(30) WHERE BookingId IN (@Bid, @Other))
         SET @fail = CONCAT(@fail, ' P3: a booking no payment was opened for is on the payments page;');
 
     -- opened on Whish, in live mode
@@ -108,13 +108,13 @@ BEGIN TRY
     IF (SELECT PaymentMode FROM booking.BOOKING WHERE BookingId = @Other) IS NOT NULL
         SET @fail = CONCAT(@fail, ' P3: a mode was noted on a booking no payment was opened for;');
 
-    INSERT INTO @rows SELECT BookingId, BookingRef, Gateway, PayState, Mode, PaidAmount, RefundedAmount, GatewayOrderId FROM booking.fn_PaymentRows(30) WHERE BookingId = @Bid;
+    INSERT INTO @rows SELECT BookingId, BookingRef, Gateway, PayState, Mode, PaidAmount, RefundedAmount, GatewayOrderId FROM booking.fn_OnlinePaymentRows(30) WHERE BookingId = @Bid;
     IF NOT EXISTS (SELECT 1 FROM @rows WHERE Gateway = 'whish' AND PayState = 'Open' AND Mode = 'live' AND PaidAmount IS NULL AND GatewayOrderId = CONCAT(@Ref, '-A1'))
         SET @fail = CONCAT(@fail, ' P3: an opened Whish attempt does not read Open / whish / live;');
     -- opened 45 minutes ago and still not settled: past the patience (30 minutes) it reads Unconfirmed
     UPDATE booking.BOOKING SET PaymentOpenedUtc = DATEADD(MINUTE, -45, SYSUTCDATETIME()) WHERE BookingId = @Bid;
-    IF NOT EXISTS (SELECT 1 FROM booking.fn_PaymentRows(30) WHERE BookingId = @Bid AND PayState = 'Unconfirmed')
-       OR NOT EXISTS (SELECT 1 FROM booking.fn_PaymentRows(60) WHERE BookingId = @Bid AND PayState = 'Open')
+    IF NOT EXISTS (SELECT 1 FROM booking.fn_OnlinePaymentRows(30) WHERE BookingId = @Bid AND PayState = 'Unconfirmed')
+       OR NOT EXISTS (SELECT 1 FROM booking.fn_OnlinePaymentRows(60) WHERE BookingId = @Bid AND PayState = 'Open')
         SET @fail = CONCAT(@fail, ' P3: a payment opened longer ago than the patience does not read Unconfirmed (or one within it not Open);');
 
     -- paid
@@ -124,32 +124,32 @@ BEGIN TRY
          @GatewayOrderId = @Ext, @TransactionId = '96170000319', @MethodName = N'Whish';
     EXEC booking.usp_PaymentEvent_Add @Gateway = 'whish', @EventType = 'Paid', @Source = 'Return', @BookingRef = @Ref, @Mode = 'live', @GatewayOrderId = @Ext, @Outcome = 'Confirmed', @Amount = @Deposit, @CurrencyCode = 'USD';
     DELETE FROM @rows;
-    INSERT INTO @rows SELECT BookingId, BookingRef, Gateway, PayState, Mode, PaidAmount, RefundedAmount, GatewayOrderId FROM booking.fn_PaymentRows(30) WHERE BookingId = @Bid;
+    INSERT INTO @rows SELECT BookingId, BookingRef, Gateway, PayState, Mode, PaidAmount, RefundedAmount, GatewayOrderId FROM booking.fn_OnlinePaymentRows(30) WHERE BookingId = @Bid;
     IF NOT EXISTS (SELECT 1 FROM @rows WHERE Gateway = 'whish' AND PayState = 'Paid' AND Mode = 'live' AND PaidAmount = @Deposit)
         SET @fail = CONCAT(@fail, ' P3: a paid deposit does not read Paid with its amount;');
 
     -- the list: in the period, by gateway, by state, by search - and a search looks at every date
     DECLARE @list TABLE (BookingId INT);
-    INSERT INTO @list SELECT BookingId FROM booking.fn_PaymentRows(30) p WHERE p.ActivityUtc >= @From AND p.ActivityUtc < @To AND p.Gateway = 'whish' AND p.PayState = 'Paid';
+    INSERT INTO @list SELECT BookingId FROM booking.fn_OnlinePaymentRows(30) p WHERE p.ActivityUtc >= @From AND p.ActivityUtc < @To AND p.Gateway = 'whish' AND p.PayState = 'Paid';
     IF NOT EXISTS (SELECT 1 FROM @list WHERE BookingId = @Bid) SET @fail = CONCAT(@fail, ' P3: the paid booking is not in its own period;');
     CREATE TABLE #pl (BookingId INT, BookingRef VARCHAR(12), GuestName NVARCHAR(120), GuestPhone VARCHAR(30), RoomName NVARCHAR(80), BookDate DATE, StartMin INT, EndMin INT,
         BookingStatus VARCHAR(12), DepositDue DECIMAL(10,2), TotalAmount DECIMAL(10,2), CurrencyCode CHAR(3), PaymentOpenedUtc DATETIME2, PaymentCheckedUtc DATETIME2,
         HoldExpiresUtc DATETIME2, Attempts INT, PayerPhone VARCHAR(30), RefundAmount DECIMAL(10,2), RefundStatus VARCHAR(10), RefundedUtc DATETIME2, PaymentId INT,
         PaidAmount DECIMAL(10,2), PaidUtc DATETIME2, TransactionId VARCHAR(60), GatewayOrderId VARCHAR(40), ActivityUtc DATETIME2, Gateway VARCHAR(10), PayState VARCHAR(12),
         RefundedAmount DECIMAL(10,2), Mode VARCHAR(4), GatewayRefunded BIT, LastEventType VARCHAR(20), LastOutcome VARCHAR(20), LastDetail NVARCHAR(400), LastEventUtc DATETIME2);
-    INSERT INTO #pl EXEC booking.usp_Payment_List @FromUtc = @Long, @ToUtc = @LongTo;
+    INSERT INTO #pl EXEC booking.usp_OnlinePayment_List @FromUtc = @Long, @ToUtc = @LongTo;
     IF EXISTS (SELECT 1 FROM #pl WHERE BookingId = @Bid) SET @fail = CONCAT(@fail, ' P3: the booking is listed in a period it was not paid in;');
     DELETE FROM #pl;
-    INSERT INTO #pl EXEC booking.usp_Payment_List @FromUtc = @Long, @ToUtc = @LongTo, @Search = @Ref;
+    INSERT INTO #pl EXEC booking.usp_OnlinePayment_List @FromUtc = @Long, @ToUtc = @LongTo, @Search = @Ref;
     IF NOT EXISTS (SELECT 1 FROM #pl WHERE BookingId = @Bid AND LastEventType = 'Paid' AND LastOutcome = 'Confirmed')
         SET @fail = CONCAT(@fail, ' P3: a search by reference did not find the booking outside the period, with its last step;');
     DELETE FROM #pl;
-    INSERT INTO #pl EXEC booking.usp_Payment_List @FromUtc = @From, @ToUtc = @To, @Gateway = 'card';
+    INSERT INTO #pl EXEC booking.usp_OnlinePayment_List @FromUtc = @From, @ToUtc = @To, @Gateway = 'card';
     IF EXISTS (SELECT 1 FROM #pl WHERE BookingId = @Bid) SET @fail = CONCAT(@fail, ' P3: a Whish payment is listed under the card;');
 
     -- cancelled by staff: everything paid is owed back
     UPDATE booking.BOOKING SET [Status] = 'Cancelled', CancelledBy = 'Staff', CancelReason = N'qa3', RefundAmount = @Deposit, RefundStatus = 'Due' WHERE BookingId = @Bid;
-    IF NOT EXISTS (SELECT 1 FROM booking.fn_PaymentRows(30) WHERE BookingId = @Bid AND PayState = 'RefundDue')
+    IF NOT EXISTS (SELECT 1 FROM booking.fn_OnlinePaymentRows(30) WHERE BookingId = @Bid AND PayState = 'RefundDue')
         SET @fail = CONCAT(@fail, ' P3: a paid then cancelled booking does not read RefundDue;');
 
     -- refunded, through the procedure every refund goes through
@@ -158,7 +158,7 @@ BEGIN TRY
     DECLARE @rf TABLE (PaymentId INT, RefundedTotal DECIMAL(10,2), RefundDue DECIMAL(10,2), RefundStatus VARCHAR(10));
     INSERT INTO @rf EXEC booking.usp_Refund_Add @BookingId = @Bid, @Amount = @Deposit, @PaymentMethodId = @Whish, @Reference = @Why;
     EXEC booking.usp_PaymentEvent_Add @Gateway = 'whish', @EventType = 'Refunded', @Source = 'Staff', @BookingRef = @Ref, @Mode = 'live', @GatewayOrderId = @Ext, @Outcome = 'Refunded', @Amount = @Deposit;
-    IF NOT EXISTS (SELECT 1 FROM booking.fn_PaymentRows(30) WHERE BookingId = @Bid AND PayState = 'Refunded' AND RefundedAmount = @Deposit AND GatewayRefunded = 1)
+    IF NOT EXISTS (SELECT 1 FROM booking.fn_OnlinePaymentRows(30) WHERE BookingId = @Bid AND PayState = 'Refunded' AND RefundedAmount = @Deposit AND GatewayRefunded = 1)
         SET @fail = CONCAT(@fail, ' P3: a refunded payment does not read Refunded with what was given back;');
 
     -- one payment: its row, its log (two steps), its money lines (the payment and the refund)
@@ -189,7 +189,7 @@ BEGIN TRY
     INSERT INTO @t EXEC booking.usp_GatewayTest_Update @TestRef = 'GT-QA3TEST2', @Status = 'Paid', @Checked = 1;
     IF NOT EXISTS (SELECT 1 FROM @t WHERE [Status] = 'Refunded' AND RefundedAtUtc IS NOT NULL)
         SET @fail = CONCAT(@fail, ' P4: a refunded test did not stay refunded;');
-    IF EXISTS (SELECT 1 FROM booking.fn_PaymentRows(30) WHERE BookingRef LIKE 'GT-%' OR GatewayOrderId LIKE 'GT-%')
+    IF EXISTS (SELECT 1 FROM booking.fn_OnlinePaymentRows(30) WHERE BookingRef LIKE 'GT-%' OR GatewayOrderId LIKE 'GT-%')
         SET @fail = CONCAT(@fail, ' P4: a gateway test is on the payments page;');
 
     /* ---- P5: the permissions ---- */

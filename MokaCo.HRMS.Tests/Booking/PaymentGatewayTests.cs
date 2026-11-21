@@ -120,8 +120,10 @@ public class PaymentGatewayTests
         public Task<IReadOnlyList<GatewayHistoryRow>> GetHistoryAsync(int top) => Task.FromResult<IReadOnlyList<GatewayHistoryRow>>([]);
         public Task AddEventAsync(PaymentEventEntry entry) { Events.Add(entry); return Task.CompletedTask; }
 
+        public List<PaymentRow> Payments { get; } = [];
+
         public Task<IReadOnlyList<PaymentRow>> ListPaymentsAsync(DateTime fromUtc, DateTime toUtc, string? gateway, string? state, string? search, int giveUpMinutes)
-            => Task.FromResult<IReadOnlyList<PaymentRow>>([]);
+            => Task.FromResult<IReadOnlyList<PaymentRow>>(Payments.Where(p => gateway is null || p.Gateway == gateway).ToList());
         public Task<PaymentDetail?> GetPaymentAsync(int bookingId, int giveUpMinutes) => Task.FromResult<PaymentDetail?>(null);
 
         public Task<GatewayTestRow?> AddTestAsync(string testRef, string gateway, string mode, decimal amount, string currency, string? returnUrl, int? userId)
@@ -369,7 +371,7 @@ public class PaymentGatewayTests
         Assert.False(incomplete.Ok);
         Assert.Contains("all three", incomplete.Message);
 
-        GatewayKeysInput Card(string merchant, string address = "https://gateway.example.test") => new()
+        GatewayKeysInput Card(string merchant, string address = "https://bobsal.gateway.mastercard.com") => new()
         {
             BaseUrl = address, MerchantId = merchant, ApiPassword = "a-password",
         };
@@ -377,7 +379,12 @@ public class PaymentGatewayTests
         // The bank names its test profiles TEST...: live keys cannot land in the test box, nor the reverse.
         Assert.Contains("LIVE profile", (await rig.Service.SaveKeysAsync(GatewayNames.Card, GatewayModes.Test, Card("MOKANDCO"), 7)).Message);
         Assert.Contains("TEST profile", (await rig.Service.SaveKeysAsync(GatewayNames.Card, GatewayModes.Live, Card("TESTMOKANDCO"), 7)).Message);
-        Assert.Contains("https://", (await rig.Service.SaveKeysAsync(GatewayNames.Card, GatewayModes.Live, Card("MOKANDCO", "http://gateway.example.test"), 7)).Message);
+        Assert.Contains("https://", (await rig.Service.SaveKeysAsync(GatewayNames.Card, GatewayModes.Live, Card("MOKANDCO", "http://bobsal.gateway.mastercard.com"), 7)).Message);
+
+        // The password travels to this address with every call: only the bank's gateway, and only its bare host.
+        foreach (var elsewhere in new[] { "https://attacker.example.test", "https://gateway.mastercard.com.attacker.example.test", "https://bobsal.gateway.mastercard.com/checkout",
+                     "https://bobsal.gateway.mastercard.com:8443", "https://user@bobsal.gateway.mastercard.com" })
+            Assert.Contains("Mastercard gateway", (await rig.Service.SaveKeysAsync(GatewayNames.Card, GatewayModes.Live, Card("MOKANDCO", elsewhere), 7)).Message);
 
         Assert.Empty(rig.Store.Keys);
 
@@ -386,6 +393,81 @@ public class PaymentGatewayTests
         var live = await rig.Real.CardAsync(GatewayModes.Live);
         Assert.Equal((true, GatewayModes.Live, 73), (live.IsConfigured, live.Mode, live.ApiVersion));
         Assert.False(live.SendsThreeDsBypass);
+    }
+
+    [Fact]
+    public async Task A_saved_password_never_follows_a_new_address_or_merchant_by_itself()
+    {
+        var rig = new AdminRig();
+        var first = new GatewayKeysInput { BaseUrl = "https://bobsal.gateway.mastercard.com", MerchantId = "MOKANDCO", ApiPassword = "the-saved-password" };
+        Assert.True((await rig.Service.SaveKeysAsync(GatewayNames.Card, GatewayModes.Live, first, 7)).Ok);
+
+        // Only the address is sent, everything else left blank: the saved password would go with it. Refused.
+        var moved = await rig.Service.SaveKeysAsync(GatewayNames.Card, GatewayModes.Live, new GatewayKeysInput { BaseUrl = "https://ap-gateway.mastercard.com" }, 7);
+        Assert.False(moved.Ok);
+        Assert.Contains("type the API password again", moved.Message);
+        var merchant = await rig.Service.SaveKeysAsync(GatewayNames.Card, GatewayModes.Live, new GatewayKeysInput { MerchantId = "OTHERMERCHANT" }, 7);
+        Assert.Contains("type the API password again", merchant.Message);
+        Assert.Equal("https://bobsal.gateway.mastercard.com", (await rig.Real.CardAsync(GatewayModes.Live)).BaseUrl);
+
+        // With the password typed again, or with nothing but the version changed: saved.
+        Assert.True((await rig.Service.SaveKeysAsync(GatewayNames.Card, GatewayModes.Live,
+            new GatewayKeysInput { BaseUrl = "https://ap-gateway.mastercard.com", ApiPassword = "typed-again" }, 7)).Ok);
+        Assert.True((await rig.Service.SaveKeysAsync(GatewayNames.Card, GatewayModes.Live, new GatewayKeysInput { ApiVersion = "81" }, 7)).Ok);
+        var now = await rig.Real.CardAsync(GatewayModes.Live);
+        Assert.Equal(("https://ap-gateway.mastercard.com", "typed-again", 81), (now.BaseUrl, now.ApiPassword, now.ApiVersion));
+    }
+
+    [Fact]
+    public async Task Keys_stay_while_a_payment_opened_with_them_is_still_waiting()
+    {
+        var rig = new AdminRig();
+        await rig.SaveWhish(GatewayModes.Live, WhishLiveKeys);
+        rig.Store.Payments.Add(new PaymentRow { BookingRef = Ref, Gateway = GatewayNames.Whish, Mode = GatewayModes.Live, PayState = "Open" });
+
+        var refused = await rig.Service.DeleteKeysAsync(GatewayNames.Whish, GatewayModes.Live, 7);
+        Assert.False(refused.Ok);
+        Assert.Contains("still waiting to be settled", refused.Message);
+        Assert.True(rig.Store.Keys.ContainsKey((GatewayNames.Whish, GatewayModes.Live)));
+
+        // Settled (or never of this mode): the keys can go.
+        rig.Store.Payments[0].PayState = "Paid";
+        Assert.True((await rig.Service.DeleteKeysAsync(GatewayNames.Whish, GatewayModes.Live, 7)).Ok);
+    }
+
+    [Fact]
+    public async Task The_banks_own_no_such_order_proves_the_keys_a_bare_404_proves_nothing()
+    {
+        var rig = new AdminRig(ServerCard);
+
+        rig.Card.Setup(c => c.RetrieveOrderAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync(MpgsOrderLookup.NotFound());
+        Assert.True((await rig.Service.CheckConnectionAsync(GatewayNames.Card, GatewayModes.Test, 7)).Ok);
+
+        // A wrong address or API version answers 404 too: never "the bank accepted the keys".
+        rig.Card.Setup(c => c.RetrieveOrderAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync(MpgsOrderLookup.NotFound(byStatusOnly: true));
+        var wrong = await rig.Service.CheckConnectionAsync(GatewayNames.Card, GatewayModes.Test, 7);
+        Assert.False(wrong.Ok);
+        Assert.Contains("address or the API version", wrong.Message);
+
+        rig.Card.Setup(c => c.RetrieveOrderAsync(It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync(MpgsOrderLookup.Error("HTTP 401"));
+        Assert.Contains("refused the keys", (await rig.Service.CheckConnectionAsync(GatewayNames.Card, GatewayModes.Test, 7)).Message);
+    }
+
+    [Fact]
+    public async Task A_booking_reference_is_looked_up_on_whish_as_its_first_attempt_whatever_letters_it_holds()
+    {
+        var rig = new AdminRig();
+        await rig.SaveWhish(GatewayModes.Test, WhishTestKeys);
+        var asked = new List<string>();
+        rig.Whish.Setup(w => w.GetStatusAsync(It.IsAny<string>(), "USD", It.IsAny<CancellationToken>()))
+            .Callback((string id, string _, CancellationToken _) => asked.Add(id))
+            .ReturnsAsync(new WhishCollectLookup(WhishLookupKind.Found, "success"));
+
+        await rig.Service.LookupAsync(GatewayNames.Whish, GatewayModes.Test, "mc-a7q2m9pw", "USD");      // a reference that itself holds "-A"
+        await rig.Service.LookupAsync(GatewayNames.Whish, GatewayModes.Test, "MC-A7Q2M9PW-A3", "USD");
+        await rig.Service.LookupAsync(GatewayNames.Whish, GatewayModes.Test, "GT-AAAA2222", "USD");
+
+        Assert.Equal(["MC-A7Q2M9PW-A1", "MC-A7Q2M9PW-A3", "GT-AAAA2222"], asked);
     }
 
     [Fact]
@@ -461,13 +543,29 @@ public class PaymentGatewayTests
 
     [Theory]
     [InlineData("https://hrms.example.test", "https://hrms.example.test/bookings/gateway-test?test=GT-AAAA2222")]
-    [InlineData("http://localhost:5173", "http://localhost:5173/bookings/gateway-test?test=GT-AAAA2222")]
-    [InlineData("https://hrms.example.test/some/path?x=1", "https://hrms.example.test/bookings/gateway-test?test=GT-AAAA2222")]
+    [InlineData("https://HRMS.example.test/some/path?x=1", "https://hrms.example.test/bookings/gateway-test?test=GT-AAAA2222")]
+    [InlineData("http://localhost:5173", "http://localhost:5173/bookings/gateway-test?test=GT-AAAA2222")]      // a development server on this machine
+    [InlineData("https://elsewhere.example.test", null)]            // an origin somebody merely names: not where the request was sent
+    [InlineData("https://hrms.example.test@elsewhere.example.test", null)]
+    [InlineData("https://user@hrms.example.test", null)]
     [InlineData("javascript:alert(1)", null)]
     [InlineData("", null)]
     [InlineData(null, null)]
-    public void The_tester_is_sent_back_to_the_hrms_page_on_the_origin_the_request_came_from(string? origin, string? expected)
-        => Assert.Equal(expected, GatewayAdminService.ReturnUrlFor(origin, "GT-AAAA2222"));
+    public void The_tester_is_sent_back_only_to_the_hrms_address_the_request_itself_was_sent_to(string? origin, string? expected)
+        => Assert.Equal(expected, GatewayAdminService.ReturnUrlFor(origin, "GT-AAAA2222", "hrms.example.test:443"));
+
+    [Fact]
+    public async Task An_old_tests_public_address_no_longer_leads_anywhere()
+    {
+        var rig = new AdminRig();
+        rig.Store.Tests["GT-AAAA2222"] = new GatewayTestRow
+        {
+            TestRef = "GT-AAAA2222", Gateway = GatewayNames.Card, Mode = GatewayModes.Test, Amount = 1, CurrencyCode = "USD", Status = "Paid",
+            ReturnUrl = "https://hrms.example.test/bookings/gateway-test?test=GT-AAAA2222", CreatedAtUtc = Now.AddDays(-2),
+        };
+        // Its mode has no keys in this rig: the check on return says so and the answer is still "no address".
+        Assert.Null(await rig.Service.TestReturnAsync("GT-AAAA2222"));
+    }
 
     [Fact]
     public async Task A_whish_test_payment_is_opened_with_the_keys_of_the_mode_named_and_followed_to_paid_and_refunded()
@@ -485,7 +583,7 @@ public class PaymentGatewayTests
             .ReturnsAsync("https://pay.example.test/pay/abc");
 
         // The website's payments are NOT in live mode here (nothing was chosen): the test names its own mode.
-        var opened = await rig.Service.OpenTestAsync(GatewayNames.Whish, GatewayModes.Live, 2m, "usd", "https://hrms.example.test", 7);
+        var opened = await rig.Service.OpenTestAsync(GatewayNames.Whish, GatewayModes.Live, 2m, "usd", "https://hrms.example.test", 7, requestHost: "hrms.example.test");
         Assert.True(opened.Ok);
         var test = opened.Test!;
         Assert.True(GatewayTestRefs.IsTestRef(test.TestRef));
@@ -547,7 +645,7 @@ public class PaymentGatewayTests
             })
             .ReturnsAsync("SESSION0001");
 
-        var opened = await rig.Service.OpenTestAsync(GatewayNames.Card, GatewayModes.Test, 1.5m, "USD", "https://hrms.example.test", 7);
+        var opened = await rig.Service.OpenTestAsync(GatewayNames.Card, GatewayModes.Test, 1.5m, "USD", "https://hrms.example.test", 7, requestHost: "hrms.example.test");
         var test = opened.Test!;
         Assert.Equal(test.TestRef, order);
         Assert.Equal($"https://api.example.test/api/public/booking/verify?ref={test.TestRef}", returnUrl);
@@ -765,7 +863,7 @@ public class PaymentGatewayTests
 
     /* ---- when a Whish payment may be refunded from HRMS -------------------------------------------- */
 
-    private static PaymentDetail Paid(string gateway = GatewayNames.Whish, string status = "Cancelled", bool gatewayRefunded = false, params PaymentLineRow[] extra)
+    private static PaymentDetail Paid(string gateway = GatewayNames.Whish, string status = "Cancelled", bool gatewayRefunded = false, decimal owed = 30m, params PaymentLineRow[] extra)
     {
         var orderId = gateway == GatewayNames.Whish ? $"{Ref}-A1" : Ref;
         var lines = new List<PaymentLineRow> { new() { PaymentId = 1, Amount = 30m, MethodName = "Whish", GatewayOrderId = orderId } };
@@ -774,6 +872,7 @@ public class PaymentGatewayTests
         {
             BookingId = 42, BookingRef = Ref, BookingStatus = status, Gateway = gateway, PayState = "RefundDue", CurrencyCode = "USD",
             PaymentId = 1, PaidAmount = 30m, GatewayOrderId = orderId, GatewayRefunded = gatewayRefunded,
+            RefundAmount = owed, RefundedAmount = -lines.Where(l => l.IsRefund).Sum(l => l.Amount),
         }, [], lines);
     }
 
@@ -790,6 +889,13 @@ public class PaymentGatewayTests
         // Part of it was given back by hand: Whish can only give back the whole payment.
         Assert.Contains("already refunded by hand", PaymentDeskService.RefundRefusal(Paid(extra:
             new PaymentLineRow { PaymentId = 2, Amount = -10m, IsRefund = true, Reference = "cash" })));
+
+        // ONLY WHAT IS OWED. A guest who cancelled keeps no claim on the deposit: nothing is owed, nothing goes back.
+        Assert.Contains("Nothing is owed back", PaymentDeskService.RefundRefusal(Paid(owed: 0m)));
+        // Less is owed than the payment, and Whish cannot return a part.
+        var part = PaymentDeskService.RefundRefusal(Paid(owed: 10m));
+        Assert.Contains("Only USD 10.00 is owed back", part);
+        Assert.Contains("USD 30.00", part);
 
         // The bank's refunds stay in its portal.
         Assert.Contains("bank's merchant portal", PaymentDeskService.RefundRefusal(Paid(GatewayNames.Card)));
@@ -851,5 +957,219 @@ public class PaymentGatewayTests
         Assert.False(result.Changed);
         Assert.Contains("not registered with Whish", result.Message);
         Assert.Equal(PaymentEvents.RefundFailed, Assert.Single(log.Events).EventType);
+    }
+
+    /* ---- found by the review of this change ------------------------------------------------------ */
+
+    [Fact]
+    public async Task One_booking_one_mode_a_second_session_is_opened_in_the_mode_of_the_first()
+    {
+        var rig = new SettleRig();
+        rig.Gateways.InUse = GatewayModes.Test;                         // the gateway was switched to test since
+        rig.State(Ref, openedMinutesAgo: 3, openedIn: GatewayModes.Live);   // this booking's first session was live
+        // The earlier session: nothing was attempted on it.
+        rig.Card.Setup(c => c.RetrieveOrderAsync(Ref, It.IsAny<CancellationToken>())).ReturnsAsync(MpgsOrderLookup.NotFound());
+        rig.Deposits.Setup(d => d.StartPaymentAsync(Ref)).ReturnsAsync(new PaymentStarted
+        {
+            BookingId = 42, BookingRef = Ref, DepositDue = 30m, CurrencyCode = "USD", TotalAmount = 100m, BookDate = Now.Date, Hours = 2, RoomName = "Room",
+        });
+        rig.Card.Setup(c => c.InitiateCheckoutAsync(Ref, 30m, "USD", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("SESSION0002");
+
+        var opening = await rig.Service.OpenAsync(Ref);
+
+        // Two sessions in two modes would be the same order id at two merchants, and only one could ever be asked.
+        Assert.Equal(PayOpenResult.Opened, opening.Result);
+        Assert.All(rig.Gateways.CardModes, mode => Assert.Equal(GatewayModes.Live, mode));
+        rig.Deposits.Verify(d => d.SetPaymentModeAsync(Ref, GatewayModes.Live), Times.Once);
+        rig.Deposits.Verify(d => d.SetPaymentModeAsync(Ref, GatewayModes.Test), Times.Never);
+    }
+
+    /// <summary>Gateways whose keys are gone: every question is answered "not configured".</summary>
+    private sealed class NoKeys : IPaymentGateways
+    {
+        public Task<MpgsOptions> CardAsync() => CardAsync(null);
+        public Task<WhishOptions> WhishAsync() => WhishAsync(null);
+        public Task<MpgsOptions> CardAsync(string? mode) => Task.FromResult(MpgsOptions.Missing("the keys were removed"));
+        public Task<WhishOptions> WhishAsync(string? mode) => Task.FromResult(WhishOptions.Missing("the keys were removed"));
+        public IMpgsClient CardClient(MpgsOptions options) => throw new InvalidOperationException("nobody to ask");
+        public IWhishClient WhishClient(WhishOptions options) => throw new InvalidOperationException("nobody to ask");
+        public Task<GatewayStatus> StatusAsync(string gateway) => throw new NotSupportedException();
+        public void Refresh() { }
+    }
+
+    [Theory]
+    [InlineData(45, true)]         // past the patience: staff are told, once
+    [InlineData(12, false)]        // still within it: the job simply looks again
+    public async Task A_payment_whose_keys_are_gone_is_not_left_waiting_for_ever_without_anybody_told(int openedMinutesAgo, bool alerted)
+    {
+        var deposits = new Mock<IOnlineDepositRepository>();
+        deposits.Setup(d => d.GetPaymentStateAsync(Ref)).ReturnsAsync(new PaymentState
+        {
+            BookingId = 42, BookingRef = Ref, Status = "Pending", Source = "Website", DepositDue = 30m, CurrencyCode = "USD",
+            PaymentOpenedUtc = Now.AddMinutes(-openedMinutesAgo), HoldExpiresUtc = Now.AddMinutes(5), GatewayOrderId = WhishOptions.AttemptId(Ref, 1),
+        });
+        deposits.Setup(d => d.GetPaymentModeAsync(Ref)).ReturnsAsync(GatewayModes.Live);
+        deposits.Setup(d => d.QueuePaymentAlertAsync(42, OnlineDepositService.AlertUnconfirmed, It.IsAny<string?>())).ReturnsAsync(true);
+        var bookings = new Mock<IBookingRepository>(MockBehavior.Strict);          // strict: nothing is released
+        var log = new Store();
+        var service = new OnlineDepositService(deposits.Object, bookings.Object, new NoKeys(),
+            new OnlineDepositOptions { ReconcileAfterMinutes = 10, GiveUpAfterMinutes = 30 }, NullLogger<OnlineDepositService>.Instance,
+            new FixedClock(Now), new PaymentEventLog(log, NullLogger<PaymentEventLog>.Instance));
+
+        var settled = await service.SettleAsync(Ref, SettleTrigger.Reconciliation);
+
+        Assert.Equal(SettlementResult.Unconfirmed, settled.Result);
+        deposits.Verify(d => d.QueuePaymentAlertAsync(42, OnlineDepositService.AlertUnconfirmed, It.IsAny<string?>()), alerted ? Times.Once() : Times.Never());
+        Assert.Equal(alerted ? [PaymentEvents.Checked, PaymentEvents.Alerted] : new[] { PaymentEvents.Checked }, log.Events.Select(e => e.EventType));
+
+        // The guest's own return trip never e-mails anybody.
+        deposits.Invocations.Clear();
+        await service.SettleAsync(Ref, SettleTrigger.GatewayReturn);
+        deposits.Verify(d => d.QueuePaymentAlertAsync(It.IsAny<int>(), It.IsAny<string>(), It.IsAny<string?>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task A_callbacks_token_and_a_returning_guest_are_judged_with_the_keys_of_the_mode_the_booking_was_opened_in()
+    {
+        var rig = new SettleRig();
+        rig.Gateways.InUse = GatewayModes.Test;
+        rig.Deposits.Setup(d => d.GetPaymentModeAsync(Ref)).ReturnsAsync(GatewayModes.Live);
+
+        var forBooking = await rig.Service.WhishForAsync(Ref);
+
+        Assert.Equal((GatewayModes.Live, WhishOptions.LiveBase), (forBooking.Mode, forBooking.BaseUrl));
+        Assert.Equal(GatewayModes.Test, (await rig.Service.WhishAsync()).Mode);
+    }
+
+    private static PaymentDeskService Desk(Mock<IPaymentGatewayRepository> store, IWhishClient whish, IBookingService bookings, IRoomService? rooms = null)
+        => new(store.Object, new RecordingGateways(Mock.Of<IMpgsClient>(), whish), Mock.Of<IOnlineDepositService>(), bookings,
+            new PaymentEventLog(store.Object, NullLogger<PaymentEventLog>.Instance), new OnlineDepositOptions(), NullLogger<PaymentDeskService>.Instance, rooms);
+
+    [Fact]
+    public async Task No_answer_from_whish_is_never_reported_as_not_refunded()
+    {
+        var store = new Mock<IPaymentGatewayRepository>();
+        var events = new List<PaymentEventEntry>();
+        store.Setup(r => r.GetPaymentAsync(43, It.IsAny<int>())).ReturnsAsync(Paid());
+        store.Setup(r => r.AddEventAsync(It.IsAny<PaymentEventEntry>())).Callback((PaymentEventEntry e) => events.Add(e)).Returns(Task.CompletedTask);
+        var whish = new Mock<IWhishClient>(MockBehavior.Strict);
+        whish.Setup(w => w.RefundAsync($"{Ref}-A1", "USD", It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new WhishRefundResult(false, Problem: "timed out", Unknown: true));
+
+        var result = await Desk(store, whish.Object, new Mock<IBookingService>(MockBehavior.Strict).Object).RefundAsync(43, null, 9);
+
+        Assert.False(result!.Ok);
+        Assert.Contains("NOT known whether the refund went through", result.Message);
+        Assert.DoesNotContain("Nothing was changed", result.Message);
+        Assert.Equal("Unknown", Assert.Single(events).Outcome);
+    }
+
+    [Fact]
+    public async Task A_second_press_finds_the_refund_made_and_does_nothing()
+    {
+        var store = new Mock<IPaymentGatewayRepository>();
+        // After the first refund the booking carries its refund line: that is what a second press reads.
+        var refunded = Paid(extra: new PaymentLineRow { PaymentId = 2, Amount = -30m, IsRefund = true, Reference = PaymentDeskService.RefundReference($"{Ref}-A1") });
+        store.SetupSequence(r => r.GetPaymentAsync(44, It.IsAny<int>())).ReturnsAsync(Paid()).ReturnsAsync(refunded).ReturnsAsync(refunded).ReturnsAsync(refunded);
+        store.Setup(r => r.AddEventAsync(It.IsAny<PaymentEventEntry>())).Returns(Task.CompletedTask);
+        var whish = new Mock<IWhishClient>(MockBehavior.Strict);
+        whish.Setup(w => w.RefundAsync($"{Ref}-A1", "USD", It.IsAny<string>(), It.IsAny<CancellationToken>())).ReturnsAsync(new WhishRefundResult(true));
+        var bookings = new Mock<IBookingService>();
+        bookings.Setup(b => b.AddRefundAsync(44, It.IsAny<BookingRefundRequest>(), 9))
+            .ReturnsAsync(new RefundOutcome { Added = new RefundAdded { PaymentId = 2 }, Method = new PaymentMethod { PaymentMethodId = 3, Name = "Whish" } });
+        var desk = Desk(store, whish.Object, bookings.Object);
+
+        // Two presses at once: one at a time, and the second reads the booking after the first.
+        var both = await Task.WhenAll(desk.RefundAsync(44, null, 9), desk.RefundAsync(44, null, 9));
+
+        Assert.Single(both, r => r!.Ok);
+        Assert.Contains(both, r => !r!.Ok && r.Message.Contains("already refunded"));
+        whish.Verify(w => w.RefundAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+        bookings.Verify(b => b.AddRefundAsync(44, It.IsAny<BookingRefundRequest>(), 9), Times.Once);
+    }
+
+    [Fact]
+    public async Task What_could_stop_the_refund_reaching_the_books_is_checked_before_any_money_moves()
+    {
+        var store = new Mock<IPaymentGatewayRepository>();
+        store.Setup(r => r.GetPaymentAsync(45, It.IsAny<int>())).ReturnsAsync(Paid());
+        var whish = new Mock<IWhishClient>(MockBehavior.Strict);                  // strict: Whish is never asked
+        var rooms = new Mock<IRoomService>();
+        rooms.Setup(r => r.GetActivePaymentMethodsAsync()).ReturnsAsync([new PaymentMethod { PaymentMethodId = 1, Name = "Cash", IsActive = true }]);
+
+        var result = await Desk(store, whish.Object, new Mock<IBookingService>(MockBehavior.Strict).Object, rooms.Object).RefundAsync(45, null, 9);
+
+        Assert.False(result!.Ok);
+        Assert.Contains("payment method \"Whish\" is switched off", result.Message);
+    }
+
+    [Fact]
+    public async Task A_refund_asked_for_is_carried_through_even_when_the_browser_goes_away()
+    {
+        var store = new Mock<IPaymentGatewayRepository>();
+        store.Setup(r => r.GetPaymentAsync(46, It.IsAny<int>())).ReturnsAsync(Paid());
+        store.Setup(r => r.AddEventAsync(It.IsAny<PaymentEventEntry>())).Returns(Task.CompletedTask);
+        var whish = new Mock<IWhishClient>(MockBehavior.Strict);
+        CancellationToken seen = default;
+        whish.Setup(w => w.RefundAsync($"{Ref}-A1", "USD", It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Callback((string _, string _, string _, CancellationToken token) => seen = token).ReturnsAsync(new WhishRefundResult(true));
+        var bookings = new Mock<IBookingService>();
+        bookings.Setup(b => b.AddRefundAsync(46, It.IsAny<BookingRefundRequest>(), 9))
+            .ReturnsAsync(new RefundOutcome { Added = new RefundAdded { PaymentId = 2 }, Method = new PaymentMethod { PaymentMethodId = 3, Name = "Whish" } });
+
+        using var request = new CancellationTokenSource();
+        var result = await Desk(store, whish.Object, bookings.Object).RefundAsync(46, null, 9, request.Token);
+
+        // Whish is not asked under the request's own token: between its "refunded" and the books nothing may stop.
+        Assert.True(result!.Ok);
+        Assert.False(seen.CanBeCanceled);
+    }
+
+    /// <summary>A database that answers a read only when told to: a read that is still on its way while a save happens.</summary>
+    private sealed class SlowStore : IPaymentGatewayRepository
+    {
+        public TaskCompletionSource<GatewayStore> Pending { get; private set; } = new();
+        public GatewayStore Next { get; set; } = GatewayStore.Empty;
+        public bool Slow { get; set; }
+
+        public Task<GatewayStore> GetGatewaysAsync() => Slow ? Pending.Task : Task.FromResult(Next);
+        public Task SaveKeysAsync(string gateway, string mode, byte[] keysCipher, int? userId) => Task.CompletedTask;
+        public Task DeleteKeysAsync(string gateway, string mode, int? userId) => Task.CompletedTask;
+        public Task SetModeAsync(string gateway, string? mode, int? userId) => Task.CompletedTask;
+        public Task<IReadOnlyList<GatewayHistoryRow>> GetHistoryAsync(int top) => Task.FromResult<IReadOnlyList<GatewayHistoryRow>>([]);
+        public Task AddEventAsync(PaymentEventEntry entry) => Task.CompletedTask;
+        public Task<IReadOnlyList<PaymentRow>> ListPaymentsAsync(DateTime fromUtc, DateTime toUtc, string? gateway, string? state, string? search, int giveUpMinutes) => Task.FromResult<IReadOnlyList<PaymentRow>>([]);
+        public Task<PaymentDetail?> GetPaymentAsync(int bookingId, int giveUpMinutes) => Task.FromResult<PaymentDetail?>(null);
+        public Task<GatewayTestRow?> AddTestAsync(string testRef, string gateway, string mode, decimal amount, string currency, string? returnUrl, int? userId) => Task.FromResult<GatewayTestRow?>(null);
+        public Task<GatewayTestRow?> UpdateTestAsync(string testRef, GatewayTestChange change) => Task.FromResult<GatewayTestRow?>(null);
+        public Task<GatewayTestDetail?> GetTestAsync(string testRef) => Task.FromResult<GatewayTestDetail?>(null);
+        public Task<IReadOnlyList<GatewayTestRow>> ListTestsAsync(int top) => Task.FromResult<IReadOnlyList<GatewayTestRow>>([]);
+    }
+
+    [Fact]
+    public async Task A_read_that_began_before_a_save_never_puts_the_old_settings_back()
+    {
+        var store = new SlowStore { Slow = true };
+        var gateways = new PaymentGateways(store, new GatewayStoreCache(), Protector, MpgsOptions.Missing("none"), WhishOptions.Unconfigured, Origins,
+            new NoHttp(), NullLoggerFactory.Instance, new FixedClock(Now));
+
+        // A payment asks for the settings; the database is slow to answer.
+        var early = gateways.WhishAsync();
+
+        // Meanwhile an admin switches Whish to live and saves: what was read before is forgotten.
+        var live = new GatewayStore(
+            [new GatewayModeRow { Gateway = GatewayNames.Whish, ActiveMode = GatewayModes.Live }],
+            [new GatewayKeysRow { Gateway = GatewayNames.Whish, Mode = GatewayModes.Live, KeysCipher = Protector.Protect(GatewayNames.Whish, GatewayModes.Live, WhishLiveKeys), ModifiedAtUtc = Now }]);
+        gateways.Refresh();
+
+        // The slow read comes back with the settings from BEFORE the save.
+        store.Pending.SetResult(GatewayStore.Empty);
+        Assert.False((await early).IsConfigured);
+
+        // The next question must be answered from the database as it is now, not from that old answer.
+        store.Slow = false;
+        store.Next = live;
+        Assert.Equal(GatewayModes.Live, (await gateways.WhishAsync()).Mode);
     }
 }

@@ -64,8 +64,14 @@ public sealed record MpgsOrderLookup(
     int? TransactionCount = null,
     decimal? TotalAuthorizedAmount = null)
 {
+    /// <summary>The bank's own answer: it looked and has no such order.</summary>
+    public const string OrderNotFound = "order not found";
+
+    /// <summary>A bare HTTP 404: what some versions answer for an unknown order - and what a wrong address answers too.</summary>
+    public const string NotFoundByStatus = "HTTP 404";
+
     public static MpgsOrderLookup Error(string problem) => new(MpgsLookupKind.Error, Problem: problem);
-    public static MpgsOrderLookup NotFound() => new(MpgsLookupKind.NotFound, Problem: "order not found");
+    public static MpgsOrderLookup NotFound(bool byStatusOnly = false) => new(MpgsLookupKind.NotFound, Problem: byStatusOnly ? NotFoundByStatus : OrderNotFound);
 }
 
 /// <summary>
@@ -224,7 +230,7 @@ public sealed class MpgsClient : IMpgsClient
                     : (Parse(json), false);
 
             if (IsOrderNotFound(response.StatusCode, json))
-                return (MpgsOrderLookup.NotFound(), false);
+                return (MpgsOrderLookup.NotFound(byStatusOnly: response.StatusCode == HttpStatusCode.NotFound), false);
 
             var code = (int)response.StatusCode;
             var transient = code >= 500 || response.StatusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests;

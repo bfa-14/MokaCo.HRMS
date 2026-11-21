@@ -610,6 +610,7 @@ public class WhishTests
     {
         var deposits = new Mock<IOnlineDepositService>();
         deposits.Setup(d => d.WhishAsync()).ReturnsAsync(Options);
+        deposits.Setup(d => d.WhishForAsync(It.IsAny<string>())).ReturnsAsync(Options);
         var live = new Mock<IBookingLivePublisher>();
         var http = new DefaultHttpContext();
         if (body is not null)

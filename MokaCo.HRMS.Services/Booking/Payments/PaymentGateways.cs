@@ -204,6 +204,13 @@ public sealed class GatewayStoreCache
     private readonly object _gate = new();
     private GatewayStore? _store;
     private DateTime _readAtUtc;
+    private long _generation;
+
+    /// <summary>Changes at every <see cref="Clear"/>: a read that began before a save knows its answer is already old.</summary>
+    public long Generation
+    {
+        get { lock (_gate) return _generation; }
+    }
 
     public GatewayStore? Get(DateTime nowUtc)
     {
@@ -216,14 +223,24 @@ public sealed class GatewayStoreCache
         get { lock (_gate) return _store; }
     }
 
-    public void Set(GatewayStore store, DateTime nowUtc)
+    /// <param name="generation">The <see cref="Generation"/> read BEFORE the database was asked: an answer from before a save is not kept.</param>
+    public void Set(GatewayStore store, DateTime nowUtc, long generation)
     {
-        lock (_gate) { _store = store; _readAtUtc = nowUtc; }
+        lock (_gate)
+        {
+            if (generation != _generation) return;
+            _store = store;
+            _readAtUtc = nowUtc;
+        }
     }
 
     public void Clear()
     {
-        lock (_gate) _readAtUtc = DateTime.MinValue;
+        lock (_gate)
+        {
+            _generation++;
+            _readAtUtc = DateTime.MinValue;
+        }
     }
 }
 
@@ -394,20 +411,23 @@ public sealed class PaymentGateways : IPaymentGateways
         var now = _clock.GetUtcNow().UtcDateTime;
         if (_cache.Get(now) is { } fresh) return fresh;
 
+        var generation = _cache.Generation;
         try
         {
             var store = await _repository.GetGatewaysAsync();
-            _cache.Set(store, now);
+            _cache.Set(store, now, generation);
             return store;
         }
         catch (MissingScriptException)
         {
-            _cache.Set(GatewayStore.Empty, now);
+            _cache.Set(GatewayStore.Empty, now, generation);
             return GatewayStore.Empty;
         }
-        catch (SqlException ex)
+        catch (Exception ex) when (ex is SqlException or InvalidOperationException or TimeoutException)
         {
-            _log.LogWarning("The gateways' settings could not be read (SQL error {Number}); using what was read last.", ex.Number);
+            // The database could not be asked just now (an error, no free connection, a timeout): a guest on the way
+            // back from a gateway's page still gets an answer, from what was read last.
+            _log.LogWarning("The gateways' settings could not be read ({Kind}); using what was read last.", ex.GetType().Name);
             return _cache.Last ?? GatewayStore.Empty;
         }
     }

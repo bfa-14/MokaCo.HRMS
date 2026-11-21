@@ -67,7 +67,8 @@ public sealed record WhishCollectLookup(WhishLookupKind Kind, string? CollectSta
 /// <param name="Refunded">The payment is refunded (now, or already).</param>
 /// <param name="AlreadyDone">Whish replayed an earlier refund of it (retrieved = true).</param>
 /// <param name="Code">Whish's error code when it was not refunded; "auth.error" = our IP is not registered.</param>
-public sealed record WhishRefundResult(bool Refunded, bool AlreadyDone = false, string? Code = null, string? Problem = null);
+/// <param name="Unknown">No answer, or Whish's "pending": it is NOT known whether the refund went through. Asking again is safe (Whish never refunds a payment twice).</param>
+public sealed record WhishRefundResult(bool Refunded, bool AlreadyDone = false, string? Code = null, string? Problem = null, bool Unknown = false);
 
 /// <summary>
 /// Typed HttpClient over Whish Pay v2.0.0. Every request carries the three headers Whish issued (channel, secret,
@@ -237,7 +238,7 @@ public sealed class WhishClient : IWhishClient
         }
 
         _log.LogWarning("Whish refund {ExternalId}: not refunded ({Problem}).", externalId, answer.Problem);
-        return new WhishRefundResult(false, Code: answer.Code, Problem: answer.Problem);
+        return new WhishRefundResult(false, Code: answer.Code, Problem: answer.Problem, Unknown: answer.Transient);
     }
 
     /* ---- balance (the connection check) ------------------------------------------------------- */

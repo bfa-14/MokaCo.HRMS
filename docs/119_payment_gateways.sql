@@ -24,9 +24,9 @@
                                  the job asks about every five minutes does not fill the table.
 
    3. THE PAYMENTS PAGE (Bookings > Payments)
-        booking.fn_PaymentRows       every booking an online payment was opened or recorded for, with its state
-        booking.usp_Payment_List     the page's list
-        booking.usp_Payment_Get      one payment: the row, its log, the booking's money lines
+        booking.fn_OnlinePaymentRows       every booking an online payment was opened or recorded for, with its state
+        booking.usp_OnlinePayment_List     the page's list
+        booking.usp_OnlinePayment_Get      one payment: the row, its log, the booking's money lines
 
    4. THE GATEWAY TESTS (Settings > Gateway test)
         booking.GATEWAY_TEST     a test payment opened from HRMS (reference GT-XXXXXXXX): never a booking, never
@@ -53,6 +53,39 @@ IF OBJECT_ID('booking.usp_Booking_SetWhishPayer') IS NULL OR COL_LENGTH('booking
    OR OBJECT_ID('security.PERMISSION') IS NULL OR OBJECT_ID('security.ROLE_PERMISSION') IS NULL
 BEGIN
     RAISERROR('119_payment_gateways.sql: script 118 (Whish deposits) is not in this database. Apply the earlier numbered scripts first. Nothing was applied.', 16, 1);
+    SET NOEXEC ON;
+END
+GO
+
+/* PRODUCTION HOLDS OBJECTS THE REPOSITORY NEVER HAD. Nothing below may replace one of them: an object that already
+   carries one of this script's names must be this script's own - a table with this script's columns, a procedure or
+   function whose text says "script 119". Anything else stops the script here, naming it, with nothing applied. */
+DECLARE @foreign NVARCHAR(MAX) = NULL;
+DECLARE @own TABLE (Name NVARCHAR(128) NOT NULL, OwnColumn NVARCHAR(128) NULL);      -- OwnColumn: a table, known by a column of ours
+INSERT INTO @own (Name, OwnColumn) VALUES
+    (N'booking.GATEWAY', N'ActiveMode'), (N'booking.GATEWAY_CONFIG', N'KeysCipher'),
+    (N'booking.PAYMENT_EVENT', N'Repeats'), (N'booking.GATEWAY_TEST', N'TestRef'),
+    (N'booking.usp_PaymentEvent_Add', NULL), (N'booking.usp_Gateway_Get', NULL), (N'booking.usp_Gateway_SaveKeys', NULL),
+    (N'booking.usp_Gateway_DeleteKeys', NULL), (N'booking.usp_Gateway_SetMode', NULL), (N'booking.usp_Gateway_History', NULL),
+    (N'booking.usp_Booking_SetPaymentMode', NULL), (N'booking.usp_Booking_GetPaymentMode', NULL),
+    (N'booking.fn_OnlinePaymentRows', NULL), (N'booking.usp_OnlinePayment_List', NULL), (N'booking.usp_OnlinePayment_Get', NULL),
+    (N'booking.usp_GatewayTest_Add', NULL), (N'booking.usp_GatewayTest_Update', NULL), (N'booking.usp_GatewayTest_Get', NULL),
+    (N'booking.usp_GatewayTest_List', NULL);
+
+-- A database this script already ran on (its own test table is there) holds its procedures, signed or - from its
+-- first build - not: only on a FIRST run can a procedure of one of these names be somebody else's.
+DECLARE @ranBefore BIT = CASE WHEN COL_LENGTH('booking.GATEWAY_TEST', 'TestRef') IS NOT NULL THEN 1 ELSE 0 END;
+
+SELECT @foreign = STRING_AGG(o.Name, N', ')
+FROM @own o
+WHERE OBJECT_ID(o.Name) IS NOT NULL
+  AND (   (o.OwnColumn IS NOT NULL AND COL_LENGTH(o.Name, o.OwnColumn) IS NULL)
+       OR (o.OwnColumn IS NULL AND @ranBefore = 0
+           AND ISNULL(OBJECT_DEFINITION(OBJECT_ID(o.Name)), N'') NOT LIKE N'%script 119%'));
+
+IF NULLIF(@foreign, N'') IS NOT NULL
+BEGIN
+    RAISERROR('119_payment_gateways.sql: this database already has object(s) with a name this script uses, which it did not create: %s. Nothing was applied; the script must be renamed around them first.', 16, 1, @foreign);
     SET NOEXEC ON;
 END
 GO
@@ -213,7 +246,7 @@ CREATE OR ALTER PROCEDURE booking.usp_PaymentEvent_Add
     @Amount         DECIMAL(10,2) = NULL,
     @CurrencyCode   CHAR(3)       = NULL,
     @UserId         INT           = NULL
-AS BEGIN
+AS BEGIN /* script 119 */
     SET NOCOUNT ON;
     SET @BookingRef = NULLIF(LTRIM(RTRIM(@BookingRef)), '');
     SET @TestRef = NULLIF(LTRIM(RTRIM(@TestRef)), '');
@@ -249,7 +282,7 @@ GO
 
 /* ---------------------------------------------------------------- 4. the gateways: mode and keys */
 CREATE OR ALTER PROCEDURE booking.usp_Gateway_Get
-AS BEGIN
+AS BEGIN /* script 119 */
     SET NOCOUNT ON;
     SELECT v.Gateway, g.ActiveMode, g.ModifiedAtUtc, u.Username AS ModifiedBy
     FROM (VALUES ('card'), ('whish')) v (Gateway)
@@ -266,7 +299,7 @@ GO
 
 CREATE OR ALTER PROCEDURE booking.usp_Gateway_SaveKeys
     @Gateway VARCHAR(10), @Mode VARCHAR(4), @KeysCipher VARBINARY(4000), @UserId INT = NULL
-AS BEGIN
+AS BEGIN /* script 119 */
     SET NOCOUNT ON; SET XACT_ABORT ON;
     IF @Gateway NOT IN ('card', 'whish') OR @Mode NOT IN ('test', 'live') OR @KeysCipher IS NULL OR DATALENGTH(@KeysCipher) < 30
     BEGIN RAISERROR('The gateway, the mode and the keys are required.', 16, 1); RETURN; END
@@ -285,7 +318,7 @@ GO
 
 CREATE OR ALTER PROCEDURE booking.usp_Gateway_DeleteKeys
     @Gateway VARCHAR(10), @Mode VARCHAR(4), @UserId INT = NULL
-AS BEGIN
+AS BEGIN /* script 119 */
     SET NOCOUNT ON; SET XACT_ABORT ON;
     BEGIN TRAN;
     DELETE FROM booking.GATEWAY_CONFIG WHERE Gateway = @Gateway AND Mode = @Mode;
@@ -298,7 +331,7 @@ GO
 /* @Mode NULL = back to what the server file says. */
 CREATE OR ALTER PROCEDURE booking.usp_Gateway_SetMode
     @Gateway VARCHAR(10), @Mode VARCHAR(4) = NULL, @UserId INT = NULL
-AS BEGIN
+AS BEGIN /* script 119 */
     SET NOCOUNT ON; SET XACT_ABORT ON;
     SET @Mode = NULLIF(LTRIM(RTRIM(@Mode)), '');
     IF @Gateway NOT IN ('card', 'whish') OR (@Mode IS NOT NULL AND @Mode NOT IN ('test', 'live'))
@@ -325,7 +358,7 @@ GO
 /* The last changes to the gateways' settings and the connection checks, newest first (the settings page's history). */
 CREATE OR ALTER PROCEDURE booking.usp_Gateway_History
     @Top INT = 20
-AS BEGIN
+AS BEGIN /* script 119 */
     SET NOCOUNT ON;
     SELECT TOP (CASE WHEN @Top BETWEEN 1 AND 200 THEN @Top ELSE 20 END)
            e.PaymentEventId, e.Gateway, e.Mode, e.EventType, e.Outcome, e.Detail, e.CreatedAtUtc, u.Username AS UserName
@@ -340,7 +373,7 @@ GO
    settlement code before it asks a gateway. NULL (a payment older than this script) = the mode in use now. */
 CREATE OR ALTER PROCEDURE booking.usp_Booking_SetPaymentMode
     @Ref VARCHAR(12), @Mode VARCHAR(4)
-AS BEGIN
+AS BEGIN /* script 119 */
     SET NOCOUNT ON;
     IF @Mode NOT IN ('test', 'live') RETURN;
     UPDATE booking.BOOKING SET PaymentMode = @Mode WHERE BookingRef = @Ref AND PaymentOpenedUtc IS NOT NULL;
@@ -349,7 +382,7 @@ GO
 
 CREATE OR ALTER PROCEDURE booking.usp_Booking_GetPaymentMode
     @Ref VARCHAR(12)
-AS BEGIN
+AS BEGIN /* script 119 */
     SET NOCOUNT ON;
     SELECT PaymentMode FROM booking.BOOKING WHERE BookingRef = @Ref;
 END;
@@ -366,9 +399,9 @@ GO
      NotPaid      opened and never paid (released, or decided by staff without it)
    The gateway is read off the order id, as the settlement code reads it: reference-A<n> is Whish, the bare
    reference a card order. */
-CREATE OR ALTER FUNCTION booking.fn_PaymentRows (@GiveUpMinutes INT)
+CREATE OR ALTER FUNCTION booking.fn_OnlinePaymentRows (@GiveUpMinutes INT)
 RETURNS TABLE
-AS RETURN
+AS RETURN /* script 119 */
     SELECT b.BookingId, b.BookingRef, b.GuestName, b.GuestPhone, r.[Name] AS RoomName, b.BookDate, b.StartMin, b.EndMin,
            b.[Status] AS BookingStatus, b.DepositDue, b.TotalAmount, b.CurrencyCode,
            b.PaymentOpenedUtc, b.PaymentCheckedUtc, b.HoldExpiresUtc, b.WhishAttempt AS Attempts, b.WhishPayerPhone AS PayerPhone,
@@ -405,21 +438,21 @@ AS RETURN
     WHERE b.PaymentOpenedUtc IS NOT NULL OR p.PaymentId IS NOT NULL;
 GO
 
-CREATE OR ALTER PROCEDURE booking.usp_Payment_List
+CREATE OR ALTER PROCEDURE booking.usp_OnlinePayment_List
     @FromUtc       DATETIME2,
     @ToUtc         DATETIME2,
     @Gateway       VARCHAR(10)  = NULL,
     @State         VARCHAR(12)  = NULL,
     @Search        NVARCHAR(60) = NULL,
     @GiveUpMinutes INT          = 30
-AS BEGIN
+AS BEGIN /* script 119 */
     SET NOCOUNT ON;
     SET @Gateway = NULLIF(LTRIM(RTRIM(@Gateway)), '');
     SET @State = NULLIF(LTRIM(RTRIM(@State)), '');
     DECLARE @Like NVARCHAR(70) = N'%' + REPLACE(REPLACE(REPLACE(NULLIF(LTRIM(RTRIM(@Search)), N''), N'[', N'[[]'), N'%', N'[%]'), N'_', N'[_]') + N'%';
 
     SELECT p.*
-    FROM booking.fn_PaymentRows(@GiveUpMinutes) p
+    FROM booking.fn_OnlinePaymentRows(@GiveUpMinutes) p
     WHERE (@Like IS NOT NULL OR (p.ActivityUtc >= @FromUtc AND p.ActivityUtc < @ToUtc))      -- a search looks at every date
       AND (@Gateway IS NULL OR p.Gateway = @Gateway)
       AND (@State IS NULL OR p.PayState = @State)
@@ -430,12 +463,12 @@ END;
 GO
 
 /* One payment: its row, its log (newest last), every money line of the booking. */
-CREATE OR ALTER PROCEDURE booking.usp_Payment_Get
+CREATE OR ALTER PROCEDURE booking.usp_OnlinePayment_Get
     @BookingId     INT,
     @GiveUpMinutes INT = 30
-AS BEGIN
+AS BEGIN /* script 119 */
     SET NOCOUNT ON;
-    SELECT p.* FROM booking.fn_PaymentRows(@GiveUpMinutes) p WHERE p.BookingId = @BookingId;
+    SELECT p.* FROM booking.fn_OnlinePaymentRows(@GiveUpMinutes) p WHERE p.BookingId = @BookingId;
 
     SELECT e.PaymentEventId, e.Gateway, e.Mode, e.GatewayOrderId, e.EventType, e.Source, e.Outcome, e.GatewayStatus, e.Detail,
            e.Amount, e.CurrencyCode, e.Repeats, e.CreatedAtUtc, e.LastAtUtc, u.Username AS UserName
@@ -459,7 +492,7 @@ GO
 CREATE OR ALTER PROCEDURE booking.usp_GatewayTest_Add
     @TestRef VARCHAR(12), @Gateway VARCHAR(10), @Mode VARCHAR(4), @Amount DECIMAL(10,2), @CurrencyCode CHAR(3),
     @ReturnUrl NVARCHAR(300) = NULL, @UserId INT = NULL
-AS BEGIN
+AS BEGIN /* script 119 */
     SET NOCOUNT ON;
     IF @TestRef NOT LIKE 'GT-________' OR @Amount IS NULL OR @Amount <= 0
     BEGIN RAISERROR('A test needs a reference and an amount greater than zero.', 16, 1); RETURN; END
@@ -479,7 +512,7 @@ CREATE OR ALTER PROCEDURE booking.usp_GatewayTest_Update
     @Status VARCHAR(12) = NULL, @GatewayStatus NVARCHAR(80) = NULL, @Detail NVARCHAR(400) = NULL, @PayUrl NVARCHAR(600) = NULL,
     @PayerPhone VARCHAR(30) = NULL, @TransactionId VARCHAR(60) = NULL,
     @Checked BIT = 0, @Callback BIT = 0, @Returned BIT = 0, @Refunded BIT = 0
-AS BEGIN
+AS BEGIN /* script 119 */
     SET NOCOUNT ON;
     DECLARE @Now DATETIME2 = SYSUTCDATETIME();
     UPDATE booking.GATEWAY_TEST
@@ -506,7 +539,7 @@ GO
 
 CREATE OR ALTER PROCEDURE booking.usp_GatewayTest_Get
     @TestRef VARCHAR(12)
-AS BEGIN
+AS BEGIN /* script 119 */
     SET NOCOUNT ON;
     SELECT t.*, u.Username AS CreatedBy
     FROM booking.GATEWAY_TEST t LEFT JOIN security.[USER] u ON u.UserId = t.CreatedByUserId
@@ -523,7 +556,7 @@ GO
 /* The MARKER of this script (the last procedure it creates). */
 CREATE OR ALTER PROCEDURE booking.usp_GatewayTest_List
     @Top INT = 30
-AS BEGIN
+AS BEGIN /* script 119 */
     SET NOCOUNT ON;
     SELECT TOP (CASE WHEN @Top BETWEEN 1 AND 200 THEN @Top ELSE 30 END) t.*, u.Username AS CreatedBy
     FROM booking.GATEWAY_TEST t LEFT JOIN security.[USER] u ON u.UserId = t.CreatedByUserId

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
@@ -21,7 +22,9 @@ public sealed record PaymentDeskResult(bool Ok, string Message, bool Changed = f
 ///                        tell about keeps its hold). Asking twice changes nothing twice.
 ///   REFUND ON WHISH      the whole Whish payment goes back to the payer, and the refund is put on the booking's
 ///                        books by the procedure staff refunds already use. Only on a cancelled booking (that is
-///                        where a refund is recorded), only once, and only while nothing of it was refunded by hand.
+///                        where a refund is recorded), only once, only when the booking's rules say AT LEAST that
+///                        much is owed back (Whish cannot return a part), and only while nothing of it was refunded
+///                        by hand. One at a time per booking; an aborted request never leaves it half done.
 ///                        A card payment is refunded in the bank's portal and recorded on the booking, as before.
 /// </summary>
 public interface IPaymentDeskService
@@ -41,6 +44,9 @@ public sealed class PaymentDeskService : IPaymentDeskService
 {
     public static readonly string[] States = ["Paid", "RefundDue", "Refunded", "NeedsStaff", "Open", "Unconfirmed", "NotPaid"];
 
+    /// <summary>One refund at a time per booking, in this API (it runs as one process): a double press waits, then finds the refund made.</summary>
+    private static readonly ConcurrentDictionary<int, SemaphoreSlim> RefundLocks = new();
+
     private readonly IPaymentGatewayRepository _repository;
     private readonly IPaymentGateways _gateways;
     private readonly IOnlineDepositService _deposits;
@@ -48,9 +54,10 @@ public sealed class PaymentDeskService : IPaymentDeskService
     private readonly IPaymentEventLog _events;
     private readonly OnlineDepositOptions _timing;
     private readonly ILogger<PaymentDeskService> _log;
+    private readonly IRoomService? _rooms;
 
     public PaymentDeskService(IPaymentGatewayRepository repository, IPaymentGateways gateways, IOnlineDepositService deposits,
-        IBookingService bookings, IPaymentEventLog events, OnlineDepositOptions timing, ILogger<PaymentDeskService> log)
+        IBookingService bookings, IPaymentEventLog events, OnlineDepositOptions timing, ILogger<PaymentDeskService> log, IRoomService? rooms = null)
     {
         _repository = repository;
         _gateways = gateways;
@@ -59,6 +66,7 @@ public sealed class PaymentDeskService : IPaymentDeskService
         _events = events;
         _timing = timing;
         _log = log;
+        _rooms = rooms;
     }
 
     public Task<IReadOnlyList<PaymentRow>> ListAsync(DateTime from, DateTime to, string? gateway, string? state, string? search)
@@ -141,12 +149,33 @@ public sealed class PaymentDeskService : IPaymentDeskService
 
     public async Task<PaymentDeskResult?> RefundAsync(int bookingId, string? reason, int userId, CancellationToken cancellationToken = default)
     {
+        // ONE AT A TIME PER BOOKING. A second press waits here and then reads a payment that is already refunded.
+        var gate = RefundLocks.GetOrAdd(bookingId, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            // FROM HERE THE REQUEST'S OWN CANCELLATION IS NOT FOLLOWED: a browser that goes away between Whish giving
+            // the money back and the refund reaching the books must not leave the one without the other.
+            return await RefundLockedAsync(bookingId, reason, userId);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private async Task<PaymentDeskResult?> RefundLockedAsync(int bookingId, string? reason, int userId)
+    {
         var detail = await GetAsync(bookingId);
         if (detail is null) return null;
 
         var payment = detail.Payment;
         if (RefundRefusal(detail) is { } refusal)
             return new PaymentDeskResult(false, refusal, Payment: detail);
+
+        // Everything that could stop the refund reaching the books is checked BEFORE any money moves.
+        if (_rooms is not null && !(await _rooms.GetActivePaymentMethodsAsync()).Any(m => string.Equals(m.Name, PaymentMethods.WhishLineName, StringComparison.OrdinalIgnoreCase)))
+            return new PaymentDeskResult(false, "The payment method \"Whish\" is switched off or missing, so the refund could not be recorded. Switch it on, then refund.", Payment: detail);
 
         var externalId = payment.GatewayOrderId!;
         var amount = payment.PaidAmount!.Value;
@@ -155,21 +184,22 @@ public sealed class PaymentDeskService : IPaymentDeskService
             return new PaymentDeskResult(false, options.Problem ?? "Whish is not configured, so it cannot refund.", Payment: detail);
 
         var why = string.IsNullOrWhiteSpace(reason) ? $"Booking {payment.BookingRef} cancelled" : reason.Trim();
-        var refund = await _gateways.WhishClient(options).RefundAsync(externalId, payment.CurrencyCode, why, cancellationToken);
+        var refund = await _gateways.WhishClient(options).RefundAsync(externalId, payment.CurrencyCode, why, CancellationToken.None);
         if (!refund.Refunded)
         {
-            var problem = GatewayAdminService.WhishProblem(refund.Code, refund.Problem);
+            // No answer is not a refusal: the money may have gone back. Said as what it is, and asking again is safe.
+            var problem = refund.Unknown
+                ? "Whish did not answer, so it is NOT known whether the refund went through. Press Refund again in a minute: Whish never refunds the same payment twice, and the refund is recorded here once Whish confirms it."
+                : "Whish did not refund it. " + GatewayAdminService.WhishProblem(refund.Code, refund.Problem) + " Nothing was changed.";
             await _events.WriteAsync(new PaymentEventEntry(GatewayNames.Whish, PaymentEvents.RefundFailed, PaymentEvents.FromStaff, BookingRef: payment.BookingRef,
-                Mode: payment.Mode, GatewayOrderId: externalId, Outcome: "Failed", GatewayStatus: refund.Code, Detail: problem,
+                Mode: payment.Mode, GatewayOrderId: externalId, Outcome: refund.Unknown ? "Unknown" : "Failed", GatewayStatus: refund.Code, Detail: problem,
                 Amount: amount, CurrencyCode: payment.CurrencyCode, UserId: userId));
-            return new PaymentDeskResult(false, "Whish did not refund it. " + problem + " Nothing was changed.", Payment: await GetAsync(bookingId));
+            return new PaymentDeskResult(false, problem, Payment: await GetAsync(bookingId));
         }
 
-        // The money is back with the payer. Now the books: the same procedure a refund recorded by hand goes through.
-        await _events.WriteAsync(new PaymentEventEntry(GatewayNames.Whish, PaymentEvents.Refunded, PaymentEvents.FromStaff, BookingRef: payment.BookingRef,
-            Mode: payment.Mode, GatewayOrderId: externalId, Outcome: refund.AlreadyDone ? "AlreadyRefunded" : "Refunded",
-            Detail: "Refunded on Whish: " + why, Amount: amount, CurrencyCode: payment.CurrencyCode, UserId: userId));
-
+        // The money is back with the payer. The books come first, then the log line that says "refunded": a refund
+        // that could not be recorded stays visibly unfinished, and pressing Refund again records it (Whish answers
+        // a second request for the same payment as the refund it already made).
         string? notRecorded = null;
         try
         {
@@ -189,10 +219,16 @@ public sealed class PaymentDeskService : IPaymentDeskService
         if (notRecorded is not null)
         {
             _log.LogError("Refund {Ref}: Whish refunded {ExternalId} but the refund line was not written ({Why}).", payment.BookingRef, externalId, notRecorded);
-            return new PaymentDeskResult(false,
-                string.Create(CultureInfo.InvariantCulture, $"Whish gave the money back ({payment.CurrencyCode} {amount:0.00}), but HRMS could not record it: {notRecorded} Record this refund by hand on the booking."),
-                Changed: true, Payment: await GetAsync(bookingId));
+            var unrecorded = string.Create(CultureInfo.InvariantCulture,
+                $"Whish gave the money back ({payment.CurrencyCode} {amount:0.00}), but HRMS could not record it: {notRecorded} Record this refund by hand on the booking.");
+            await _events.WriteAsync(new PaymentEventEntry(GatewayNames.Whish, PaymentEvents.RefundFailed, PaymentEvents.FromStaff, BookingRef: payment.BookingRef,
+                Mode: payment.Mode, GatewayOrderId: externalId, Outcome: "NotRecorded", Detail: unrecorded, Amount: amount, CurrencyCode: payment.CurrencyCode, UserId: userId));
+            return new PaymentDeskResult(false, unrecorded, Changed: true, Payment: await GetAsync(bookingId));
         }
+
+        await _events.WriteAsync(new PaymentEventEntry(GatewayNames.Whish, PaymentEvents.Refunded, PaymentEvents.FromStaff, BookingRef: payment.BookingRef,
+            Mode: payment.Mode, GatewayOrderId: externalId, Outcome: refund.AlreadyDone ? "AlreadyRefunded" : "Refunded",
+            Detail: "Refunded on Whish: " + why, Amount: amount, CurrencyCode: payment.CurrencyCode, UserId: userId));
 
         return new PaymentDeskResult(true,
             string.Create(CultureInfo.InvariantCulture, $"Refunded. Whish gave {payment.CurrencyCode} {amount:0.00} back to the payer, and the refund is recorded on the booking."),
@@ -217,6 +253,14 @@ public sealed class PaymentDeskService : IPaymentDeskService
         // Whish gives back the whole payment, never a part of it.
         if (detail.Lines.Sum(l => l.Amount) < paid)
             return "Part of this booking's money was already refunded by hand. Whish can only give back the whole payment, so refund the rest by hand.";
+        // And only what the booking's own rules say is owed back (a guest who cancels keeps no claim on the deposit
+        // unless the settings say so): the button never gives back more than is due.
+        var owed = Math.Max(0, payment.RefundAmount - payment.RefundedAmount);
+        if (owed <= 0)
+            return "Nothing is owed back on this booking under its cancellation rules, so there is nothing to refund here.";
+        if (owed < paid)
+            return string.Create(CultureInfo.InvariantCulture,
+                $"Only {payment.CurrencyCode} {owed:0.00} is owed back on this booking, and Whish can only give back the whole payment ({payment.CurrencyCode} {paid:0.00}). Refund the amount owed by hand.");
         return null;
     }
 }
