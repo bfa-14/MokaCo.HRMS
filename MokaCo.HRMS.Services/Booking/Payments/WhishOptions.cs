@@ -6,7 +6,8 @@ namespace MokaCo.HRMS.Services.Booking.Payments;
 /// <summary>
 /// WHISH PAY (doc v2.0.0), the second way to pay a booking deposit. Its three credentials and base URL come from
 /// the environment - /etc/mokaco/api.env in production, the gitignored appsettings.Local.json in development -
-/// NEVER from a tracked file, the database or a chat:
+/// or, since script 119, from HRMS itself (Settings > Payment gateways), where they are stored ENCRYPTED per mode
+/// and take the place of the environment's (<see cref="PaymentGateways"/>). NEVER from a tracked file or a chat:
 ///
 ///   WHISH_BASE          https://api.whish.money/itel-service/api (live)
 ///                       https://partner.api.sbx.whish.money/itel-service/api (sandbox)

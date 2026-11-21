@@ -135,7 +135,7 @@ public sealed partial class GatewayAdminService : IGatewayAdminService
     public const decimal MaxTestAmountLbp = 2_000_000m;
 
     public const int DefaultCardApiVersion = 73;
-    public const string WebTestPagePath = "/settings/gateway-test";
+    public const string WebTestPagePath = "/bookings/gateway-test";
 
     private readonly IPaymentGateways _gateways;
     private readonly IPaymentGatewayRepository _repository;
@@ -364,6 +364,9 @@ public sealed partial class GatewayAdminService : IGatewayAdminService
         if (code is not null)
         {
             var lower = code.ToLowerInvariant();
+            // Whish's own table: auth.error = "the call came from a server IP that Whish has not registered" (refunds).
+            if (lower == "auth.error")
+                return $"Whish refused this server's address: it is not registered with Whish yet (refunds are accepted only from registered addresses). Ask Whish to register the server's public IP address, then try again. [{code}]";
             if (lower.Contains("auth") || lower.Contains("secret") || lower.Contains("channel") || lower.Contains("website") || lower.Contains("unauthor"))
                 return $"Whish refused the keys. Check the channel, the secret and the website URL: they must be exactly what Whish issued, for this mode. [{code}]";
             if (lower.Contains("ip"))
@@ -494,7 +497,6 @@ public sealed partial class GatewayAdminService : IGatewayAdminService
             said = OnlineDepositService.Said(lookup);
             phone = lookup.PayerPhoneNumber;
             facts.Add(new GatewayFact("Whish says", said));
-            if (phone is not null) facts.Add(new GatewayFact("Paid from", phone));
 
             (status, message) = lookup switch
             {

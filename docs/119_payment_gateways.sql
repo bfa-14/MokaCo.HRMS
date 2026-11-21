@@ -313,7 +313,8 @@ AS BEGIN
 
     IF ISNULL(@Was, '') <> ISNULL(@Mode, '')
     BEGIN
-        DECLARE @Detail NVARCHAR(400) = CONCAT(N'from ', ISNULL(@Was, 'the server file'), N' to ', ISNULL(@Mode, 'the server file'));
+        -- COALESCE, not ISNULL: ISNULL would cut 'the server file' to the four characters of a mode.
+        DECLARE @Detail NVARCHAR(400) = CONCAT(N'from ', COALESCE(@Was, 'the server file'), N' to ', COALESCE(@Mode, 'the server file'));
         EXEC booking.usp_PaymentEvent_Add @Gateway = @Gateway, @EventType = 'ModeChanged', @Source = 'Staff', @Mode = @Mode,
                                           @Detail = @Detail, @UserId = @UserId;
     END
