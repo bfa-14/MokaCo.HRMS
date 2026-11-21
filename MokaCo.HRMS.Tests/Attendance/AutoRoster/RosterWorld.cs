@@ -245,11 +245,14 @@ public sealed class RosterWorld
         Mode = mode,
     };
 
+    /// <summary>The branch's stored fixed rotation (script 116): the Rotation method plans by it, and in both methods its leads are the shift leaders.</summary>
+    public RosterRotationDto? Rotation { get; set; }
+
     public Run Plan(DateOnly month, string mode = "FillEmpty", Action<AutoRosterRequest>? configure = null, int branch = Branch)
     {
         var request = Request(month, mode, branch);
         configure?.Invoke(request);
-        var input = AutoRosterInputFactory.Create(Context(month, branch), request);
+        var input = AutoRosterInputFactory.Create(Context(month, branch), request, Rotation);
         return new Run(request, input, RosterPlanner.Plan(input));
     }
 

@@ -40,6 +40,8 @@ public static class RosterPlanValidator
     public const string WeeklyRestHours = "WEEKLY_REST_HOURS";
     public const string PatternRestWorked = "PATTERN_REST_WORKED";
     public const string LongRun = "LONG_RUN";
+    public const string RotationNotSet = "ROTATION_NOT_SET";
+    public const string LeadsSameShift = "LEADS_SAME_SHIFT";
 
     /// <summary>Every issue of a decided grid, sorted (errors first, then by date, employee, code).</summary>
     public static List<AutoRosterIssue> Validate(PlannerInput input, RosterGrid grid, IReadOnlyDictionary<int, ResolvedRhythm> rhythms)
@@ -48,6 +50,13 @@ public static class RosterPlanValidator
         if (input.MonthLocked)
             issues.Add(Issue(Error, MonthLocked, null, null,
                 "A roster approval is waiting for this month — it is read-only until the request is decided."));
+
+        foreach (var missing in input.RotationMissing)
+        {
+            var name = grid.Staff.FirstOrDefault(s => s.EmployeeId == missing)?.FullName ?? $"Employee {missing}";
+            issues.Add(Issue(Warning, RotationNotSet, missing, null,
+                $"{name} is not on the rotation list, so the rotation did not plan their days. Add them to the list, or roster them by hand."));
+        }
 
         CheckCells(input, grid, issues);
         foreach (var employee in grid.Staff)
@@ -59,6 +68,7 @@ public static class RosterPlanValidator
             CheckShiftTiming(input, grid, employee.EmployeeId, issues);
         }
         CheckStaffing(input, grid, issues);
+        CheckLeads(input, grid, issues);
         return Sort(issues);
     }
 
@@ -243,7 +253,11 @@ public static class RosterPlanValidator
         if (length > cap)
         {
             var planned = inWindow.Any(c => c.IsWritten && c.State == CellState.Work);
-            issues.Add(Issue(planned ? Error : Warning, ConsecutiveCap, e, ClampToMonth(input, from.AddDays(cap)),
+            // The fixed rotation places days off by its own rule, which can leave a long run where a one-day week is
+            // followed by a late two-day week: that is the rule the owner chose, so it is shown, not refused - the
+            // manager moves a day off in the grid if the run is too long.
+            var severity = planned && input.Rotation is null ? Error : Warning;
+            issues.Add(Issue(severity, ConsecutiveCap, e, ClampToMonth(input, from.AddDays(cap)),
                 $"{length} working days in a row ({RosterPlanner.Day(from)} – {RosterPlanner.Day(to)}); the limit is {cap}."));
         }
         else
@@ -417,6 +431,32 @@ public static class RosterPlanValidator
                     issue.ShiftId = rule.ShiftId;
                     issues.Add(issue);
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Two shift leaders on the same shift while another shift the day must cover has none: the planner never
+    /// does that, so it is a day somebody decided by hand (or a saved day). A warning - the manager may mean it.
+    /// </summary>
+    private static void CheckLeads(PlannerInput input, RosterGrid grid, List<AutoRosterIssue> issues)
+    {
+        if (input.MonthLocked || input.ShiftLeads.Count < 2)
+            return;
+
+        foreach (var date in RosterCalendar.Days(input.MonthStart, input.MonthEnd))
+        {
+            if (date < input.Today)
+                continue;
+            var leads = grid.CellsOn(date)
+                .Where(c => input.ShiftLeads.Contains(c.EmployeeId) && c.InBranch && c.CountsAsWorkForRun && c.ShiftId is not null)
+                .ToList();
+            foreach (var group in leads.GroupBy(c => c.ShiftId!.Value).Where(g => g.Count() >= 2).OrderBy(g => g.Key))
+            {
+                var name = input.Shifts.TryGetValue(group.Key, out var s) ? s.Name : $"shift {group.Key}";
+                var issue = Issue(Warning, LeadsSameShift, null, date, $"{group.Count()} shift leaders are on {name}; each shift should keep one.");
+                issue.ShiftId = group.Key;
+                issues.Add(issue);
             }
         }
     }

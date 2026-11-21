@@ -171,4 +171,46 @@ public class AutoRosterRepository : IAutoRosterRepository
     private sealed record RhythmRow(int EmployeeId, DateOnly? AnchorWeekStart, int? AnchorWorkDays, bool OnRotation);
 
     private static DateTime AsDate(DateOnly date) => date.ToDateTime(TimeOnly.MinValue);
+
+    public Task<RosterRotationDto> GetRotationAsync(int branchId, int? callerUserId)
+        => MissingScriptException.GuardAsync(Scripts.RosterRotation116, "attendance.usp_RosterRotation_Get", async () =>
+        {
+            using var db = _factory.Create();
+            using var multi = await db.QueryMultipleAsync(
+                "attendance.usp_RosterRotation_Get",
+                new { BranchId = branchId, CallerUserId = callerUserId },
+                commandType: CommandType.StoredProcedure);
+            var branch = await multi.ReadSingleOrDefaultAsync<RosterRotationRow>();
+            var members = (await multi.ReadAsync<RosterRotationMemberRow>()).ToList();
+            return new RosterRotationDto
+            {
+                BranchId = branchId,
+                StartDate = branch is null ? null : DateOnly.FromDateTime(branch.StartDate),
+                MorningShiftId = branch?.MorningShiftId,
+                EveningShiftId = branch?.EveningShiftId,
+                Members = members.Select(m => new RosterRotationMemberDto
+                {
+                    EmployeeId = m.EmployeeId, Group = m.RotationGroup, SingleRestDay = m.SingleRestDay, PairRestDay = m.PairRestDay,
+                    LeadSlot = m.LeadSlot, SortOrder = m.SortOrder,
+                }).ToList(),
+            };
+        });
+
+    public Task SaveRotationAsync(RosterRotationDto rotation, int? callerUserId)
+        => MissingScriptException.GuardAsync(Scripts.RosterRotation116, "attendance.usp_RosterRotation_Save", async () =>
+        {
+            using var db = _factory.Create();
+            await db.ExecuteAsync(
+                "attendance.usp_RosterRotation_Save",
+                new
+                {
+                    rotation.BranchId,
+                    StartDate = rotation.StartDate?.ToDateTime(TimeOnly.MinValue),
+                    rotation.MorningShiftId,
+                    rotation.EveningShiftId,
+                    MembersJson = JsonSerializer.Serialize(rotation.Members, JsonOptions),
+                    CallerUserId = callerUserId,
+                },
+                commandType: CommandType.StoredProcedure);
+        });
 }

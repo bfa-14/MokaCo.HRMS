@@ -105,6 +105,18 @@ public class ShiftCreateRequest
 public class ShiftUpdateRequest : ShiftCreateRequest
 {
     public bool IsActive { get; set; }
+
+    /// <summary>
+    /// Script 117: the first day the hours in this request apply. Empty = today when the hours differ from the present
+    /// ones (a shift nobody has worked yet is simply corrected). The days before keep the hours they were judged against.
+    /// </summary>
+    public DateOnly? EffectiveFrom { get; set; }
+
+    /// <summary>The last day they apply: the hours that were in force come back the day after. Empty = until the next change.</summary>
+    public DateOnly? EffectiveTo { get; set; }
+
+    /// <summary>Why the hours change (kept in the shift's history).</summary>
+    public string? Note { get; set; }
 }
 
 /* ---- Roster ---- */

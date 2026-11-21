@@ -1,6 +1,6 @@
 /* Script 114: the Worked time report measures a "not on roster" day (approved month, no roster row, no attendance day)
    from its punches EXACTLY as the processor measures a day with no shift. Each day below is measured by
-   report.usp_Report_WorkedTime_PunchDays, then the month is taken off approval and attendance.usp_Attendance_ComputeDay
+   report.usp_Report_WorkedTime_PunchDaysByShift (script 117), then the month is taken off approval and attendance.usp_Attendance_ComputeDay
    builds the same day as a no-shift attendance day: worked minutes and the missing-punch flag must match.
    Both direction modes, a double press, a break, an odd number of punches, a single punch; a dismissed day is left out.
    Runs on a dev database with docs/113 and docs/114 applied, inside a transaction that is rolled back.
@@ -12,8 +12,8 @@ DECLARE @fails INT = 0, @mode VARCHAR(20), @msg NVARCHAR(400);
 DECLARE @Dep INT = (SELECT TOP 1 DepartmentId FROM hr.DEPARTMENT ORDER BY DepartmentId);
 DECLARE @Pos INT = (SELECT TOP 1 PositionId FROM hr.[POSITION] ORDER BY PositionId);
 DECLARE @M DATE = '2026-09-01';
-DECLARE @got TABLE (Mode VARCHAR(20), EmployeeId INT, WorkDate DATE, BranchId INT, FirstIn DATETIME2, LastOut DATETIME2, PunchCount INT, WorkedMinutes INT, MissingPunch BIT);
-DECLARE @one TABLE (EmployeeId INT, WorkDate DATE, BranchId INT, FirstIn DATETIME2, LastOut DATETIME2, PunchCount INT, WorkedMinutes INT, MissingPunch BIT);
+DECLARE @got TABLE (Mode VARCHAR(20), EmployeeId INT, WorkDate DATE, BranchId INT, FirstIn DATETIME2, LastOut DATETIME2, PunchCount INT, WorkedMinutes INT, MissingPunch BIT, StandardMinutes INT, RelatedShiftId INT);
+DECLARE @one TABLE (EmployeeId INT, WorkDate DATE, BranchId INT, FirstIn DATETIME2, LastOut DATETIME2, PunchCount INT, WorkedMinutes INT, MissingPunch BIT, StandardMinutes INT, RelatedShiftId INT);
 
 INSERT INTO hr.BRANCH (Name, IsActive) VALUES (N'QA3 Punch Days', 1); DECLARE @B INT = SCOPE_IDENTITY();
 INSERT INTO hr.EMPLOYEE (BranchId, DepartmentId, PositionId, FullName, HireDate)
@@ -40,6 +40,12 @@ FROM (VALUES (@E1, CAST('2026-09-08 08:00:00' AS DATETIME2), 0), (@E1, '2026-09-
 INSERT INTO attendance.UNROSTERED_DAY_DECISION (EmployeeId, WorkDate, Decision, Note, PunchCount, FirstPunch, LastPunch, DecidedByUserId)
 VALUES (@E2, '2026-09-09', 'Dismissed', N'QA3: came in to collect a payslip', 2, '2026-09-09 08:00', '2026-09-09 16:00', NULL);
 
+/* script 117: a day is measured against the shift its first in fits - this test's own, so the figures do not depend
+   on the database's shifts (a 30-minute break: a gap up to it is the break, a longer one is taken off whole) */
+UPDATE attendance.SHIFT SET IsActive = 0;
+INSERT INTO attendance.SHIFT (Name, StartTime, EndTime, GraceMinutes, CrossesMidnight, BreakMinutes) VALUES (N'QA3 PD 08-16', '08:00', '16:00', NULL, 0, 30);
+DECLARE @Fit INT = SCOPE_IDENTITY();
+
 IF NOT EXISTS (SELECT 1 FROM core.SETTING WHERE SettingKey = 'PunchDebounceMinutes')
     INSERT INTO core.SETTING (SettingKey, SettingValue, DataType) VALUES ('PunchDebounceMinutes', '1', 'int');
 ELSE UPDATE core.SETTING SET SettingValue = '1' WHERE SettingKey = 'PunchDebounceMinutes';
@@ -52,7 +58,7 @@ WHILE @@FETCH_STATUS = 0
 BEGIN
     UPDATE core.SETTING SET SettingValue = @mode WHERE SettingKey = 'PunchDirectionMode';
     DELETE FROM @one;
-    INSERT INTO @one EXEC report.usp_Report_WorkedTime_PunchDays @From = '2026-09-01', @To = '2026-09-30', @EmployeeId = NULL;
+    INSERT INTO @one EXEC report.usp_Report_WorkedTime_PunchDaysByShift @From = '2026-09-01', @To = '2026-09-30', @EmployeeId = NULL;
     INSERT INTO @got SELECT @mode, * FROM @one WHERE EmployeeId IN (@E1, @E2);
     FETCH NEXT FROM modes INTO @mode;
 END
@@ -69,6 +75,10 @@ IF EXISTS (SELECT 1 FROM @got WHERE EmployeeId = @E2 AND WorkDate = '2026-09-09'
 BEGIN SET @fails += 1; PRINT 'FAIL 1d: a dismissed day is not measured'; END
 IF (SELECT COUNT(*) FROM @got WHERE Mode = 'Device') <> 4
 BEGIN SET @fails += 1; PRINT 'FAIL 1e: four days measured in Device mode too'; END
+IF EXISTS (SELECT 1 FROM @got WHERE ISNULL(StandardMinutes, 0) <> 450 OR ISNULL(RelatedShiftId, 0) <> @Fit)
+BEGIN SET @fails += 1; PRINT 'FAIL 1f: every day is measured against the shift it fits (7 h 30 after its break)'; END
+IF NOT EXISTS (SELECT 1 FROM @got WHERE Mode = 'Device' AND EmployeeId = @E2 AND WorkDate = '2026-09-08' AND WorkedMinutes = 450)
+BEGIN SET @fails += 1; PRINT 'FAIL 1g: a day without a gap has the shift''s break taken off once (07:30-15:30 is 450 minutes)'; END
 
 /* 2. the processor, given the same days without an approved roster, agrees in both modes */
 UPDATE attendance.ROSTER_MONTH SET [Status] = 'PendingApproval' WHERE BranchId = @B AND MonthDate = @M;

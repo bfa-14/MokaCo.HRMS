@@ -73,6 +73,62 @@ public class WorkedTimeReportTests
         Assert.Equal(4, report.Days.Count);
     }
 
+    /* ---- script 117: the length of a day is the person's shift's, not one figure for everybody ---- */
+
+    [Fact]
+    public void The_target_follows_each_persons_own_shift_length()
+    {
+        // Lina works a 7-hour shift, Rami an 8 h 30 one, Maya has no measured day yet: the default day (480).
+        var input = Input(Nov1, Nov1.AddDays(13), Nov1.AddDays(14));
+        input.EmployeeDays =
+        [
+            .. Employed(1, "Lina Saab", Nov1, Nov1.AddDays(13)),
+            .. Employed(2, "Rami Khoury", Nov1, Nov1.AddDays(13)),
+            .. Employed(3, "Maya Haddad", Nov1, Nov1.AddDays(13)),
+        ];
+        AttendanceRecord On(int id, string name, int dayOffset, int worked, int standard)
+        {
+            var r = Day(id, name, Nov1.AddDays(dayOffset), worked);
+            r.StandardMinutes = standard;
+            return r;
+        }
+        input.Records =
+        [
+            On(1, "Lina Saab", 0, 420, 420), On(1, "Lina Saab", 1, 420, 420), On(1, "Lina Saab", 2, 400, 510),   // one day on the long shift: the usual one wins
+            On(2, "Rami Khoury", 0, 510, 510), On(2, "Rami Khoury", 1, 500, 510),
+        ];
+
+        var report = WorkedTimeReportService.Build(input);
+
+        var lina = report.Rows.Single(r => r.EmployeeId == 1);
+        var rami = report.Rows.Single(r => r.EmployeeId == 2);
+        var maya = report.Rows.Single(r => r.EmployeeId == 3);
+        Assert.Equal((420, 510, 480), (lina.StandardDayMinutes, rami.StandardDayMinutes, maya.StandardDayMinutes));
+        Assert.Equal(14 * 364, lina.ExpectedMinutes);    // 26 x 420 / 30 = 364 a calendar day of November
+        Assert.Equal(14 * 442, rami.ExpectedMinutes);    // 26 x 510 / 30 = 442
+        Assert.Equal(14 * 416, maya.ExpectedMinutes);    // 26 x 480 / 30 = 416
+    }
+
+    [Fact]
+    public void A_day_not_on_the_roster_is_extra_beyond_the_shift_its_punch_fits()
+    {
+        var input = Input(Nov1, Nov1.AddDays(6), Nov1.AddDays(7));
+        input.EmployeeDays = Employed(1, "Lina Saab", Nov1, Nov1.AddDays(6));
+        input.PunchDays =
+        [
+            new WorkedTimePunchDay { EmployeeId = 1, WorkDate = Nov1, BranchId = 7, FirstIn = Nov1.AddHours(14), LastOut = Nov1.AddHours(22), PunchCount = 2, WorkedMinutes = 480, StandardMinutes = 420 },
+            // A database without script 117 sends no length: the person's own day, here the one above.
+            new WorkedTimePunchDay { EmployeeId = 1, WorkDate = Nov1.AddDays(1), BranchId = 7, FirstIn = Nov1.AddDays(1).AddHours(14), LastOut = Nov1.AddDays(1).AddHours(21.5), PunchCount = 2, WorkedMinutes = 450 },
+        ];
+
+        var report = WorkedTimeReportService.Build(input);
+
+        var row = Assert.Single(report.Rows);
+        Assert.Equal(2, row.DaysWorked);
+        Assert.Equal(60 + 30, row.OvertimeMinutes);      // 480 - 420, then 450 - 420
+        Assert.Equal(420, row.StandardDayMinutes);
+    }
+
     [Fact]
     public void Holidays_and_leave_expect_nothing_and_half_a_day_of_leave_half()
     {

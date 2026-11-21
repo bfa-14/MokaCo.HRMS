@@ -138,6 +138,25 @@ public sealed class PlannerInput
     public required DateOnly Today { get; init; }
 
     public RosterMode Mode { get; init; } = RosterMode.FillEmpty;
+
+    /// <summary>
+    /// The method. Null = the fair planner (weekend fairness, staffing, shift cover). Set = THE FIXED ROTATION
+    /// (<see cref="RotationRule"/>, script 116): rest days and shifts follow the branch's rotation list instead.
+    /// Facts, leave, holidays, the validator and the save are the same either way.
+    /// </summary>
+    public RotationSetup? Rotation { get; init; }
+
+    /// <summary>Fixed rotation only: people on rotation who have no line on the rotation list. They are shown as they
+    /// stand and not planned (the rule has nothing to go by), and the preview says so.</summary>
+    public IReadOnlyList<int> RotationMissing { get; init; } = [];
+
+    /// <summary>
+    /// The branch's SHIFT LEADERS: the people its rotation list names Lead 1 and Lead 2 (script 116), whichever method
+    /// plans. Two leaders are never planned onto the same shift on a day - each shift keeps one - and a day somebody
+    /// else decided that puts them together is reported (LEADS_SAME_SHIFT).
+    /// </summary>
+    public IReadOnlySet<int> ShiftLeads { get; init; } = FrozenSet<int>.Empty;
+
     public PlannerSettings Settings { get; init; } = PlannerSettings.Default;
 
     /// <summary>A roster approval is waiting for this branch-month: the whole month is refused (MONTH_LOCKED).</summary>
@@ -183,9 +202,13 @@ public sealed class PlannerInput
     /// each with a minimum of one. So a branch that works mornings and evenings has both covered every
     /// day without anyone setting it up; the drawer shows what was found and the manager can change it.
     /// </summary>
-    public IReadOnlyList<StaffingRule> ShiftCover => _shiftCover ??= ShiftCoverDetected
-        ? ShiftCoverDetector.Detect(this)
-        : Staffing.Where(r => r.ShiftId is not null).ToList();
+    public IReadOnlyList<StaffingRule> ShiftCover => _shiftCover ??= Rotation is { } rotation
+        // The fixed rotation runs two shifts and no other: those are the ones a day must have somebody on. What the
+        // branch ran before (a shift found in its history) is not this method's business.
+        ? [new StaffingRule(null, rotation.MorningShiftId, 1, null), new StaffingRule(null, rotation.EveningShiftId, 1, null)]
+        : ShiftCoverDetected
+            ? ShiftCoverDetector.Detect(this)
+            : Staffing.Where(r => r.ShiftId is not null).ToList();
 
     private IReadOnlyList<StaffingRule>? _shiftCover;
 

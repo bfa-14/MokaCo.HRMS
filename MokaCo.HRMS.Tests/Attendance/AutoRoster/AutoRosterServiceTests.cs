@@ -35,6 +35,9 @@ public class AutoRosterServiceTests
             World = world;
             // Re-read on every call, as the procedure would: a commit sees the rows as they are NOW.
             Repo.Setup(r => r.GetContextAsync(RosterWorld.Branch, Dec, null, Caller)).ReturnsAsync(() => world.Context(Dec));
+            // The branch's fixed rotation as stored (script 116): nothing set unless the test's world has one.
+            Repo.Setup(r => r.GetRotationAsync(RosterWorld.Branch, Caller))
+                .ReturnsAsync(() => world.Rotation ?? new RosterRotationDto { BranchId = RosterWorld.Branch });
             Repo.Setup(r => r.CommitAsync(RosterWorld.Branch, Dec, It.IsAny<string>(), It.IsAny<IEnumerable<AutoRosterCommitCell>>(),
                     It.IsAny<IEnumerable<AutoRosterCommitRhythm>>(), It.IsAny<string?>(), It.IsAny<int>(), Caller))
                 .Callback<int, DateOnly, string, IEnumerable<AutoRosterCommitCell>, IEnumerable<AutoRosterCommitRhythm>, string?, int, int?>(
@@ -119,6 +122,8 @@ public class AutoRosterServiceTests
             direct.Cells.Select(c => (c.EmployeeId, c.WorkDate, c.State, c.ShiftId, c.Change)),
             preview.Cells.Select(c => (c.EmployeeId, c.WorkDate, c.State, c.ShiftId, c.Change)));
         h.Repo.Verify(r => r.GetContextAsync(RosterWorld.Branch, Dec, null, Caller), Times.Once);
+        // The stored rotation is read by both methods: its Lead 1 and Lead 2 are the branch's shift leaders.
+        h.Repo.Verify(r => r.GetRotationAsync(RosterWorld.Branch, Caller), Times.Once);
         h.Repo.VerifyNoOtherCalls();
     }
 
@@ -235,6 +240,47 @@ public class AutoRosterServiceTests
     }
 
     /* ---- setup and the small calls ---- */
+
+    [Fact]
+    public async Task The_fixed_rotation_is_planned_from_what_is_stored_and_refused_until_it_is_set_up()
+    {
+        var h = With(3);
+        var ex = await Assert.ThrowsAsync<WorkflowException>(() => h.PreviewAsync(r => r.Method = "Rotation"));
+        Assert.Equal(400, ex.StatusCode);
+        Assert.Contains("Set up the rotation first", ex.Message);
+
+        h.World.Rotation = new RosterRotationDto
+        {
+            BranchId = RosterWorld.Branch, StartDate = new DateOnly(2026, 11, 30), MorningShiftId = RosterWorld.Morning, EveningShiftId = RosterWorld.Evening,
+            Members = Enumerable.Range(1, 3).Select(e => new RosterRotationMemberDto { EmployeeId = e, Group = e % 2, SingleRestDay = e, PairRestDay = e + 2, SortOrder = e }).ToList(),
+        };
+        var (_, preview, _) = await h.PreviewAsync(r => r.Method = "Rotation");
+        Assert.Contains(preview.Cells, c => c.ReasonCode == "REST_ROTATION");
+        Assert.All(preview.Cells.Where(c => c.State == "work" && c.Change == "insert"),
+            c => Assert.Contains(c.ShiftId, new int?[] { RosterWorld.Morning, RosterWorld.Evening }));
+
+        var setup = await h.Service.GetSetupAsync(RosterWorld.Branch, "2026-12", Caller);
+        Assert.Equal(new DateOnly(2026, 11, 30), setup.Rotation.StartDate);
+        Assert.Equal(3, setup.Rotation.Members.Count);
+    }
+
+    [Fact]
+    public async Task Saving_the_rotation_numbers_the_list_in_the_order_sent()
+    {
+        var h = With(3);
+        RosterRotationDto? saved = null;
+        h.Repo.Setup(r => r.SaveRotationAsync(It.IsAny<RosterRotationDto>(), Caller)).Callback<RosterRotationDto, int?>((d, _) => saved = d).Returns(Task.CompletedTask);
+
+        await h.Service.SaveRotationAsync(new RosterRotationDto
+        {
+            BranchId = RosterWorld.Branch, StartDate = new DateOnly(2026, 11, 30), MorningShiftId = RosterWorld.Morning, EveningShiftId = RosterWorld.Evening,
+            Members = [new() { EmployeeId = 3, SortOrder = 9 }, new() { EmployeeId = 1, SortOrder = 9 }, new() { EmployeeId = 2 }],
+        }, Caller);
+
+        Assert.Equal([(3, 1), (1, 2), (2, 3)], saved!.Members.Select(m => (m.EmployeeId, m.SortOrder)));
+        var ex = await Assert.ThrowsAsync<WorkflowException>(() => h.Service.SaveRotationAsync(new RosterRotationDto(), Caller));
+        Assert.Equal("Choose a branch.", ex.Message);
+    }
 
     [Fact]
     public async Task Setup_reads_the_context_of_the_month_asked_for()

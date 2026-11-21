@@ -63,7 +63,9 @@ INSERT INTO @S (No, Script, Applied, CheckedBy) VALUES
  (112, N'112_my_branch_shifts_permission.sql',     IIF(EXISTS (SELECT 1 FROM security.PERMISSION WHERE Code = 'SHIFTS_VIEW_BRANCH'), 1, 0), N'permission SHIFTS_VIEW_BRANCH'),
  (113, N'113_worked_time_report.sql',              IIF(OBJECT_ID('report.usp_Report_WorkedTime_Days') IS NOT NULL, 1, 0), N'report.usp_Report_WorkedTime_Days'),
  (114, N'114_worked_time_punch_days.sql',          IIF(OBJECT_ID('report.usp_Report_WorkedTime_PunchDays') IS NOT NULL, 1, 0), N'report.usp_Report_WorkedTime_PunchDays'),
- (115, N'115_recipe_book.sql',                     IIF(OBJECT_ID('core.usp_PrepBook_Get') IS NOT NULL, 1, 0), N'core.usp_PrepBook_Get');
+ (115, N'115_recipe_book.sql',                     IIF(OBJECT_ID('core.usp_PrepBook_Get') IS NOT NULL, 1, 0), N'core.usp_PrepBook_Get'),
+ (116, N'116_roster_rotation.sql',                 IIF(OBJECT_ID('attendance.usp_RosterRotation_Get') IS NOT NULL, 1, 0), N'attendance.usp_RosterRotation_Get'),
+ (117, N'117_shift_hours_by_date.sql',             IIF(OBJECT_ID('report.usp_Report_WorkedTime_PunchDaysByShift') IS NOT NULL, 1, 0), N'report.usp_Report_WorkedTime_PunchDaysByShift');
 
 INSERT INTO @S (No, Script, Applied, Admin, CheckedBy) VALUES
  (91, N'91_admin_reseed_identities.sql',          IIF(OBJECT_ID('dbo.usp_Admin_ReseedIdentities') IS NOT NULL, 1, 0), 1, N'admin tool'),

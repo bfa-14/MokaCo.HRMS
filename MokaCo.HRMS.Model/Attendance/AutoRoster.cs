@@ -54,6 +54,13 @@ public class AutoRosterRequest
     /// sent, so a hand edit is never undone by the button that was meant to fill in the rest.
     /// </summary>
     public List<DraftCellDto> DraftCells { get; set; } = new();
+
+    /// <summary>
+    /// How the free days are decided. "Fair" (the default, also for null): the 6/5 rhythm with fair weekends, staffing
+    /// and shift cover. "Rotation": the branch's FIXED ROTATION (script 116) - days off and morning/evening follow the
+    /// rotation list. Facts, leave, holidays, the checks and the save are the same either way.
+    /// </summary>
+    public string? Method { get; set; }
 }
 
 /// <summary>Cover for one public holiday: how many people work it (0 = the branch is closed).</summary>
@@ -364,6 +371,9 @@ public class AutoRosterSetup
     /// <summary>The parameters of the branch's last saved run, as the drawer's defaults. Null before the first run.</summary>
     public AutoRosterRequest? LastParams { get; set; }
 
+    /// <summary>The branch's fixed rotation as stored (start date, the two shifts, the list); the members may be empty.</summary>
+    public RosterRotationDto Rotation { get; set; } = new();
+
     public string? MonthStatus { get; set; }
 
     /// <summary>A roster approval waiting on this month: the whole month is read-only until it is decided.</summary>
@@ -653,4 +663,60 @@ public class AutoRosterLastRunRow
     public string Mode { get; set; } = string.Empty;
     public string? ParamsJson { get; set; }
     public DateTime CreatedAt { get; set; }
+}
+
+/// <summary>
+/// A branch's FIXED ROTATION (script 116, attendance.ROSTER_ROTATION + ROSTER_ROTATION_MEMBER): the auto-roster's
+/// second method. Nothing is set until <see cref="StartDate"/> and the two shifts are.
+/// </summary>
+public class RosterRotationDto
+{
+    public int BranchId { get; set; }
+
+    /// <summary>Where week 0 of the rotation starts: a Monday.</summary>
+    public DateOnly? StartDate { get; set; }
+    public int? MorningShiftId { get; set; }
+    public int? EveningShiftId { get; set; }
+    public List<RosterRotationMemberDto> Members { get; set; } = new();
+}
+
+/// <summary>One person's line of the rotation list. Weekdays are 0 = Monday … 6 = Sunday.</summary>
+public class RosterRotationMemberDto
+{
+    public int EmployeeId { get; set; }
+
+    /// <summary>0 or 1 ("A" / "B"): group 0 has its two-days-off week on the even weeks, group 1 on the odd ones.</summary>
+    public int Group { get; set; }
+
+    /// <summary>The day off of a one-day-off week (before the rotation moves it).</summary>
+    public int SingleRestDay { get; set; }
+
+    /// <summary>The first of the two days off of a two-days-off week (before the rotation moves them).</summary>
+    public int PairRestDay { get; set; }
+
+    /// <summary>"L1", "L2" or null: the two leads alternate morning and evening week by week, opposite each other.</summary>
+    public string? LeadSlot { get; set; }
+
+    /// <summary>The place in the list: the shifts are balanced down the list, leads first.</summary>
+    public int SortOrder { get; set; }
+}
+
+/// <summary>attendance.usp_RosterRotation_Get, result 1.</summary>
+public class RosterRotationRow
+{
+    public int BranchId { get; set; }
+    public DateTime StartDate { get; set; }
+    public int MorningShiftId { get; set; }
+    public int EveningShiftId { get; set; }
+}
+
+/// <summary>attendance.usp_RosterRotation_Get, result 2.</summary>
+public class RosterRotationMemberRow
+{
+    public int EmployeeId { get; set; }
+    public int RotationGroup { get; set; }
+    public int SingleRestDay { get; set; }
+    public int PairRestDay { get; set; }
+    public string? LeadSlot { get; set; }
+    public int SortOrder { get; set; }
 }

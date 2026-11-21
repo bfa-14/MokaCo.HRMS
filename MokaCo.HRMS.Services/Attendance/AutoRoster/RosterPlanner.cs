@@ -64,6 +64,9 @@ public static class RosterPlanner
     public const string ReasonHolidayOff = "HOLIDAY_OFF";
     public const string ReasonShiftCover = "WORK_SHIFT_COVER";
 
+    /// <summary>A shift leader moved off the shift the other leader is on (each shift keeps one).</summary>
+    public const string ReasonLeadApart = "WORK_LEAD_APART";
+
     private const int Saturday = 5;
     private const int Sunday = 6;
 
@@ -76,8 +79,16 @@ public static class RosterPlanner
         var rhythms = ResolveRhythms(input, grid);
         var run = new Run(input, grid, rhythms);
         run.PlanHolidays();
-        run.PlanWeeks();
-        run.AssignShifts();
+        if (input.Rotation is null)
+        {
+            run.PlanWeeks();
+            run.AssignShifts();
+        }
+        else
+        {
+            // The fixed rotation: the rule decides the free days and their shifts (no fairness, no shift cover).
+            RotationRule.Apply(input, grid);
+        }
 
         var issues = RosterPlanValidator.Validate(input, grid, rhythms);
         return new RosterPlan
@@ -282,6 +293,10 @@ public static class RosterPlanner
     /// </summary>
     public static IReadOnlyDictionary<int, ResolvedRhythm> ResolveRhythms(PlannerInput input, RosterGrid grid)
     {
+        // The fixed rotation carries its own 6/5: the start date's week and each person's group.
+        if (input.Rotation is not null)
+            return RotationRule.ResolveRhythms(input);
+
         var result = new SortedDictionary<int, ResolvedRhythm>();
         var weeks = grid.WeekStarts;
         var firstWeek = weeks.Count > 0 ? weeks[0] : RosterCalendar.WeekStart(input.WindowFrom);
@@ -1333,6 +1348,8 @@ public static class RosterPlanner
                     Move(mover, to, count);
             }
 
+            SeparateLeads(date, movable, rules.Select(r => r.ShiftId!.Value).ToList(), count);
+
             foreach (var c in movable)
             {
                 if (c.ShiftId == start[c.EmployeeId] || c.ReasonCode is not (null or ReasonShiftCover))
@@ -1340,6 +1357,57 @@ public static class RosterPlanner
                 var name = c.ShiftId is { } id && _in.Shifts.TryGetValue(id, out var info) ? info.Name : null;
                 c.ReasonCode = ReasonShiftCover;
                 c.ReasonArgs = RosterPlanner.Args(("shift", name ?? string.Empty));
+            }
+        }
+
+        /// <summary>
+        /// TWO SHIFT LEADERS NEVER SHARE A SHIFT (<see cref="PlannerInput.ShiftLeads"/>). After the cover, while a
+        /// shift to cover holds two leaders and another holds none, one of them - one whose day this run decides -
+        /// changes places with somebody on the shift without a leader, so both shifts keep their numbers; with nobody
+        /// to change places with, the leader simply moves. The pair that makes no new turnaround is taken first.
+        /// A day where both leaders were placed by somebody else is left alone and reported (LEADS_SAME_SHIFT).
+        /// </summary>
+        private void SeparateLeads(DateOnly date, List<GridCell> movable, List<int> shifts, Dictionary<int, int> count)
+        {
+            if (_in.ShiftLeads.Count < 2 || shifts.Count < 2)
+                return;
+
+            List<GridCell> LeadsOn(int shift) => _grid.CellsOn(date)
+                .Where(c => _in.ShiftLeads.Contains(c.EmployeeId) && c.InBranch && c.CountsAsWorkForRun && c.ShiftId == shift)
+                .ToList();
+
+            for (var guard = 0; guard < shifts.Count; guard++)
+            {
+                var crowded = shifts.Select(sh => (Shift: sh, Leads: LeadsOn(sh))).FirstOrDefault(x => x.Leads.Count >= 2);
+                if (crowded.Leads is null)
+                    return;
+                var free = shifts.Where(sh => LeadsOn(sh).Count == 0).ToList();
+                if (free.Count == 0)
+                    return;
+
+                (GridCell Lead, GridCell? Other, int To, double Cost)? best = null;
+                foreach (var lead in crowded.Leads.Where(movable.Contains).OrderBy(c => c.EmployeeId))
+                    foreach (var to in free)
+                    {
+                        var (leadCost, _) = MoveCost(lead, to, date);
+                        var partners = movable
+                            .Where(c => c.ShiftId == to && !_in.ShiftLeads.Contains(c.EmployeeId))
+                            .Select(c => (Cell: (GridCell?)c, Cost: MoveCost(c, crowded.Shift, date).Cost))
+                            .OrderBy(x => x.Cost).ThenBy(x => x.Cell!.EmployeeId)
+                            .ToList();
+                        var partner = partners.Count > 0 ? partners[0] : (Cell: null, Cost: 0d);
+                        var cost = leadCost + partner.Cost;
+                        if (best is null || cost < best.Value.Cost - 1e-9)
+                            best = (lead, partner.Cell, to, cost);
+                    }
+                if (best is not { } pick)
+                    return;
+
+                Move(pick.Lead, pick.To, count);
+                pick.Lead.ReasonCode = ReasonLeadApart;
+                pick.Lead.ReasonArgs = null;
+                if (pick.Other is { } other)
+                    Move(other, crowded.Shift, count);
             }
         }
 

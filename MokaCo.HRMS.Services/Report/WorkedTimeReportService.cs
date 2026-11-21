@@ -130,6 +130,15 @@ public class WorkedTimeReportService : IWorkedTimeReportService
         var rows = new Dictionary<int, WorkedTimeRow>();
         var expected = new Dictionary<int, decimal>();
 
+        // THE LENGTH OF A PERSON'S DAY is their shift's (script 117), not one figure for everybody: the standard their
+        // days of the period were measured against - the most frequent one, the longer on a tie - and the default day
+        // (a shift's length too) for somebody with no measured day yet.
+        var dayLengths = records.Where(r => r.StandardMinutes > 0).Select(r => (r.EmployeeId, r.StandardMinutes))
+            .Concat(input.PunchDays.Where(p => p.StandardMinutes > 0).Select(p => (p.EmployeeId, p.StandardMinutes)))
+            .GroupBy(x => x.EmployeeId)
+            .ToDictionary(g => g.Key, g => g.GroupBy(x => x.StandardMinutes).OrderByDescending(m => m.Count()).ThenByDescending(m => m.Key).First().Key);
+        int DayLengthOf(int employeeId) => dayLengths.GetValueOrDefault(employeeId, input.Standard.StandardDayMinutes);
+
         // EXPECTED: the standard month spread over its calendar days, for the days employed (in the branch, when one
         // is chosen). A public holiday expects nothing; approved leave expects nothing (half a day of leave, half).
         foreach (var day in calendar.Values.OrderBy(d => d.WorkDate))
@@ -143,6 +152,7 @@ public class WorkedTimeReportService : IWorkedTimeReportService
             row.FullName = day.FullName;
             row.DepartmentName = day.DepartmentName;
             row.BranchName = day.BranchName; // the latest day's branch wins: where they are now in this period
+            row.StandardDayMinutes = DayLengthOf(day.EmployeeId);
             if (!IsCounted(day.WorkDate)) continue;
 
             var date = day.WorkDate.Date;
@@ -159,7 +169,7 @@ public class WorkedTimeReportService : IWorkedTimeReportService
                 continue;
             }
 
-            var perDay = input.Standard.StandardDaysPerMonth * input.Standard.StandardDayMinutes / DateTime.DaysInMonth(date.Year, date.Month);
+            var perDay = input.Standard.StandardDaysPerMonth * DayLengthOf(day.EmployeeId) / DateTime.DaysInMonth(date.Year, date.Month);
             var onLeave = leave.GetValueOrDefault((day.EmployeeId, date));
             row.LeaveDays += onLeave;
             expected[day.EmployeeId] += perDay * (1 - onLeave);
@@ -203,13 +213,13 @@ public class WorkedTimeReportService : IWorkedTimeReportService
         }
 
         // NOT ON THE ROSTER: punched, missing from an approved roster, no attendance day yet - measured from the
-        // punches as a day with no shift (script 114) and counted like any day worked. Extra time is what a day with no
-        // shift has: beyond the standard day.
+        // punches as a day with no rostered shift (script 114) and counted like any day worked. Extra time is what such
+        // a day has: beyond the length of the shift its first punch fits (script 117).
         foreach (var p in input.PunchDays.Where(p => IsCounted(p.WorkDate) && !recordDays.Contains((p.EmployeeId, p.WorkDate.Date))))
         {
             if (DayOf(p.EmployeeId, p.WorkDate) is not { } day || !input.Sees(p.EmployeeId, p.BranchId ?? day.BranchId)) continue;
             var row = rows[p.EmployeeId];
-            var extra = Math.Max(0, p.WorkedMinutes - input.Standard.StandardDayMinutes);
+            var extra = Math.Max(0, p.WorkedMinutes - (p.StandardMinutes > 0 ? p.StandardMinutes : DayLengthOf(p.EmployeeId)));
             row.DaysWorked++;
             row.WorkedMinutes += p.WorkedMinutes;
             row.OvertimeMinutes += extra;

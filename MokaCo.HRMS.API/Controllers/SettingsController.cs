@@ -16,8 +16,8 @@ namespace MokaCo.HRMS.Api.Controllers;
 /// WHO MAY CALL WHAT, and why the split is not uniform:
 ///   GET  /api/settings      SETTING_MANAGE — the full list, including the values that decide
 ///                           what a working day IS and therefore what people are paid.
-///   PUT  /api/settings/{k}  SETTING_MANAGE — owner-level. Changing StandardWorkDayHours
-///                           silently re-prices every part-day and every exit permission at once.
+///   PUT  /api/settings/{k}  SETTING_MANAGE — owner-level. Changing StandardWorkingDaysPerMonth
+///                           silently re-prices every day rate at once.
 ///   GET  /api/settings/ui   ANY SIGNED-IN USER — see below.
 /// </summary>
 [ApiController]

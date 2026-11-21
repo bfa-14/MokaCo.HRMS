@@ -47,6 +47,9 @@ public class WorkedTimeRow
     public string DepartmentName { get; set; } = string.Empty;
 
     /// <summary>Days with a first punch (a worked rest day or holiday counts too), or a day HR credited with worked time.</summary>
+    /// <summary>The length of this person's working day in minutes: their shift's (the default day when none of their days was measured).</summary>
+    public int StandardDayMinutes { get; set; }
+
     public int DaysWorked { get; set; }
 
     /// <summary>Time worked, extra time included: first in to last out (paired, gaps out) - on a day with an approved
@@ -132,6 +135,9 @@ public class WorkedTimePunchDay
     public int PunchCount { get; set; }
     public int WorkedMinutes { get; set; }
     public bool MissingPunch { get; set; }
+
+    /// <summary>Script 117: the length of the shift the day's first punch fits (0 from a database without that script: the default day is used).</summary>
+    public int StandardMinutes { get; set; }
 }
 
 /// <summary>The first result of report.usp_Report_WorkedTime_Days: the standard the progress is measured against.</summary>

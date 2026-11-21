@@ -89,11 +89,13 @@ public class ReportRepository : IReportRepository
         });
 
     public Task<IEnumerable<WorkedTimePunchDay>> GetWorkedTimePunchDaysAsync(DateTime from, DateTime to, int? employeeId)
-        => MissingScriptException.GuardAsync(Scripts.WorkedTimePunchDays114, "report.usp_Report_WorkedTime_PunchDays", async () =>
+        // Script 117: measured against the shift the first punch fits (its break, its length) - script 114's procedure
+        // measured every such day as a day with no shift at all.
+        => MissingScriptException.GuardAsync(Scripts.ShiftHours117, "report.usp_Report_WorkedTime_PunchDaysByShift", async () =>
         {
             using var db = _factory.Create();
             return await db.QueryAsync<WorkedTimePunchDay>(
-                "report.usp_Report_WorkedTime_PunchDays",
+                "report.usp_Report_WorkedTime_PunchDaysByShift",
                 new { From = from.Date, To = to.Date, EmployeeId = employeeId },
                 commandType: CommandType.StoredProcedure);
         });

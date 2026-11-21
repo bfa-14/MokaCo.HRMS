@@ -14,6 +14,8 @@ that have already bitten this codebase).
   otherwise; it is tested with deploy/sync-test.sh (laptop) + deploy/test-env/deploy-test.sh (VM). "to production"
   -> merge `dev` into `main` and push; deployed with deploy/sync-prod.sh, then on the VM deploy/update-prod.sh (backup, missing scripts, API; --web adds the website).
   An urgent fix made on `main` is merged back into `dev`.
+  Without a laptop the VM downloads the code itself: `deploy/fetch-code.sh test|prod` (dev -> ~/src-test, main -> ~/src);
+  for private repositories its `token` command saves a read-only GitHub token on the VM (never in chat or tracked files).
 - Test environment (test API, MokaCo_HRMS_Test, the login switch): deploy/test-env/README.md.
 
 ## The two repositories
