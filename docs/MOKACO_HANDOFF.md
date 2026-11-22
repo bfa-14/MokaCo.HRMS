@@ -326,7 +326,7 @@ Errors are `{ error, code }` with codes `invalid_input`, `room_unavailable`, `cl
 
 ### 7.8 Notifications
 
-One outbox (`core.EMAIL_OUTBOX`) for both channels. Rows carry the booking or request id, the mail kind, language, channel, attempt count, and — for booking mail — the sender address, name, SMTP account and template. `usp_Email_GetPending` **claims** rows (double-send proof; it once sent the same mail eleven times), retries three times at five-minute intervals, and the worker attaches a QuestPDF document for closed requests. Bodies are bilingual (English / Arabic) by the employee's preferred language. WhatsApp uses the same outbox and sends when the Meta credentials are filled.
+One outbox (`core.EMAIL_OUTBOX`) for both channels. Rows carry the booking or request id, the mail kind, language, channel, attempt count, and — for booking mail — the sender address, name, SMTP account and template. `usp_Email_GetPending` **claims** rows (double-send proof; it once sent the same mail eleven times), retries three times at five-minute intervals, and the worker attaches a QuestPDF document for closed requests. Bodies are bilingual (English / Arabic) by the employee's preferred language. WhatsApp uses the same outbox and sends when the Meta credentials are filled. When a booking mail did not arrive, `bash deploy/check-mail.sh` on the VM (read-only; `test` for the test database) prints the two mail accounts as the worker reads them, the last booking messages with the mail server's own error, and a verdict. The worker sends nothing at all while the HR `SmtpHost` is empty, even when the bookings mailbox has a server of its own.
 
 ### 7.9 Reports and dashboards
 
