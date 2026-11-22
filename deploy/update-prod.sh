@@ -143,6 +143,10 @@ main() {
     *'"schema"'*) warn "the new API could not check the scripts yet; it will again on the next /health" ;;
     *) die "the API answering on $PORT is not the new one (no \"schema\" in /health). Send Claude the log: $LOG" ;;
   esac
+  # The mail guard: an API that is not running as Production writes e-mail only to its list of test recipients.
+  # deploy-api.sh sets ASPNETCORE_ENVIRONMENT=Production in the unit; anything else here would silence real mail.
+  [[ "$health" == *'"environment":"Production"'* ]] \
+    || warn "this API does not say it is Production (see /health above): it will e-mail ONLY the test recipients. Tell Claude."
   access=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://127.0.0.1:$PORT/api/access" || true)
   [[ "$access" == 401 ]] || die "/api/access answers HTTP $access, expected 401 (the new API asking for a sign-in). Send Claude the log: $LOG"
   echo "    /api/access: HTTP 401 (the new API)"

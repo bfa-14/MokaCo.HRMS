@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MokaCo.HRMS.Api.Auth;
+using MokaCo.HRMS.Api.Jobs;
 using MokaCo.HRMS.Model.Core;
 using MokaCo.HRMS.Services.Core;
 using MokaCo.HRMS.Services.Security.Gate;
@@ -26,11 +27,15 @@ public class SettingsController : ControllerBase
 {
     private readonly ISettingService _settings;
     private readonly ILiveNotifier _live;
+    private readonly IMailProbe? _mail;
+    private readonly IHostEnvironment? _environment;
 
-    public SettingsController(ISettingService settings, ILiveNotifier live)
+    public SettingsController(ISettingService settings, ILiveNotifier live, IMailProbe? mail = null, IHostEnvironment? environment = null)
     {
         _settings = settings;
         _live = live;
+        _mail = mail;
+        _environment = environment;
     }
 
     private int CurrentUserId =>
@@ -93,4 +98,42 @@ public class SettingsController : ControllerBase
         await _live.NotifyAsync("workflow", "payroll", "attendance", "hr", "dashboard");
         return NoContent();
     }
+
+    /// <summary>
+    /// Whether this system is the production one, and, where it is not, who it may write to (<see cref="MailGuard"/>):
+    /// the Settings page shows the list of test recipients on a test system only.
+    /// </summary>
+    [HttpGet("mail-guard")]
+    [HasPermission("SETTING_MANAGE")]
+    public async Task<IActionResult> MailGuardState()
+    {
+        var production = _environment?.IsProduction() ?? true;
+        var list = production ? null : (await _settings.GetAsync(MailGuard.SettingKey))?.SettingValue;
+        var guard = MailGuard.Of(production, list);
+        return Ok(new { production, recipients = guard.Allowed.Order(StringComparer.Ordinal).ToArray(), settingKey = MailGuard.SettingKey });
+    }
+
+    /// <summary>
+    /// Sends ONE test message now, through the HR account ("hr") or the bookings mailbox ("booking"), with the
+    /// settings as they are saved, and answers with what the mail server said. 200 either way: a refused login is
+    /// the answer, not a fault of this call. The password is never in the answer.
+    /// </summary>
+    [HttpPost("mail-test")]
+    [HasPermission("SETTING_MANAGE")]
+    public async Task<IActionResult> MailTest([FromBody] MailTestRequest? request, CancellationToken cancellationToken)
+    {
+        var account = MailProbe.ParseAccount(request?.Account);
+        if (account is null)
+            return BadRequest(new { error = "Choose the account to test: hr or booking." });
+        var to = (request?.To ?? string.Empty).Trim();
+        if (to.Length is 0 or > 150 || !System.Net.Mail.MailAddress.TryCreate(to, out var parsed) || parsed.Address != to)
+            return BadRequest(new { error = "Type the e-mail address the test message goes to." });
+        if (_mail is null)
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new { error = "The mail test is not available on this server." });
+
+        return Ok(await _mail.SendTestAsync(account, to, cancellationToken));
+    }
 }
+
+/// <summary>POST api/settings/mail-test.</summary>
+public sealed record MailTestRequest(string? Account, string? To);

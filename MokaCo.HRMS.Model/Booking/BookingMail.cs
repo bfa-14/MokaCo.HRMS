@@ -39,6 +39,12 @@ public sealed record BookingMailSettings(
     /// <summary>The bookings mailbox can log in on its own: it has a user and a password.</summary>
     public bool HasOwnAccount => !string.IsNullOrWhiteSpace(User) && !string.IsNullOrEmpty(Password);
 
+    /// <summary>
+    /// The bookings mailbox can send with NO HR mail server at all: its own login and its own server. This is
+    /// what lets booking mail be tried on a test copy whose HR mail is switched off (the copy holds real staff).
+    /// </summary>
+    public bool StandsAlone => HasOwnAccount && !string.IsNullOrWhiteSpace(Host);
+
     public static readonly BookingMailSettings None = new(string.Empty, 0, string.Empty, string.Empty,
         string.Empty, string.Empty, string.Empty, string.Empty);
 }
@@ -84,6 +90,16 @@ public static class BookingMailRouting
         var fromName = FirstFilled(sender.FromName, booking.FromName) ?? mainFromName;
         return new MailRoute(MailAccount.Booking, fromEmail, fromName);
     }
+
+    /// <summary>The mail server a routed message goes through: the bookings mailbox's own, else the HR one. Empty = none.</summary>
+    public static string Host(MailRoute route, BookingMailSettings booking, string? mainHost)
+        => route.Account == MailAccount.Booking && !string.IsNullOrWhiteSpace(booking.Host)
+            ? booking.Host.Trim()
+            : (mainHost ?? string.Empty).Trim();
+
+    /// <summary>Its port: the bookings mailbox's own when set, else the HR one.</summary>
+    public static int Port(MailRoute route, BookingMailSettings booking, int mainPort)
+        => route.Account == MailAccount.Booking && booking.Port > 0 ? booking.Port : mainPort;
 
     public static string WhatsAppTemplate(BookingMailSender? sender, BookingMailSettings booking, string mainTemplate)
         => sender is null ? mainTemplate : FirstFilled(sender.Template, booking.WhatsAppTemplate) ?? mainTemplate;

@@ -8,7 +8,9 @@
        database and then erases the terminal's own log, so production loses those punches for good.
        The Pull now / Clear buttons ignore MachinePullEnabled and IsActive: only an empty PullIp
        stops them (MachinePullService);
-     * accept website bookings: a MISSING BookingWebsiteEnabled row means ON (PublicBookingGate).
+     * accept website bookings: a MISSING BookingWebsiteEnabled row means ON (PublicBookingGate);
+     * carry production's payment keys (script 119). The test server has its own signing key, so it cannot
+       open them - and a saved key it cannot open hides the test keys of its own server file.
    It also turns the copy's Google sign-in gate off (docs/97_google_signin_gate.sql): production's
    switch would otherwise come along, and the test copy's gate is turned on by hand when it is tried.
 
@@ -70,6 +72,27 @@ WHERE PullEnabled = 1 OR PullIp IS NOT NULL;
       Everyone signs in to the test copy afresh. */
 DELETE FROM security.REFRESH_TOKEN;
 
+/* 5. Payment gateways (script 119; a backup older than it has no such tables). The saved keys that CAME WITH
+      THE BACKUP, test and live alike, are removed: they are production's secrets, this server cannot open them,
+      and while they sit there the gateway reads "keys cannot be opened" instead of using the test keys of its
+      own server file. A gateway production runs live is put on test, so nothing on the test side (Check,
+      Refund, the gateway test page) starts out pointing at the real bank or at Whish with real money.
+      "Came with the backup" = saved before this database was last restored (msdb keeps that time, in the
+      server's local time). Keys typed into the test side afterwards are newer and are left alone, so running
+      this again (refresh-test-db.sh --in-place, setup-test-api.sh) does not wipe them. No restore on record:
+      nothing here came from a backup, nothing is removed. The history and the payment log stay: they are what
+      one comes here to look at. Dynamic SQL: the tables may not exist. */
+DECLARE @RestoredUtc DATETIME2(0) =
+    (SELECT DATEADD(MINUTE, DATEDIFF(MINUTE, GETDATE(), GETUTCDATE()), MAX(restore_date))
+     FROM msdb.dbo.restorehistory WHERE destination_database_name = DB_NAME());
+IF OBJECT_ID(N'booking.GATEWAY_CONFIG', N'U') IS NOT NULL
+    EXEC sys.sp_executesql N'DELETE FROM booking.GATEWAY_CONFIG WHERE ModifiedAtUtc < @At;',
+         N'@At DATETIME2(0)', @At = @RestoredUtc;
+IF OBJECT_ID(N'booking.GATEWAY', N'U') IS NOT NULL
+    EXEC sys.sp_executesql N'UPDATE booking.GATEWAY SET ActiveMode = ''test''
+                             WHERE ActiveMode = ''live'' AND (ModifiedAtUtc IS NULL OR ModifiedAtUtc < @At);',
+         N'@At DATETIME2(0)', @At = @RestoredUtc;
+
 COMMIT;
 
 /* What it left, for the operator to read. */
@@ -82,3 +105,11 @@ ORDER BY SettingKey;
 
 SELECT (SELECT COUNT(*) FROM core.EMAIL_OUTBOX WHERE [Status] = 'Pending')  AS PendingOutbox,
        (SELECT COUNT(*) FROM attendance.DEVICE WHERE PullIp IS NOT NULL)    AS DevicesWithAddress;
+
+IF OBJECT_ID(N'booking.GATEWAY_CONFIG', N'U') IS NOT NULL
+    EXEC sys.sp_executesql N'SELECT
+       (SELECT COUNT(*) FROM booking.GATEWAY_CONFIG WHERE ModifiedAtUtc < @At)                    AS CopiedGatewayKeys,
+       (SELECT COUNT(*) FROM booking.GATEWAY WHERE ActiveMode = ''live''
+                                               AND (ModifiedAtUtc IS NULL OR ModifiedAtUtc < @At)) AS CopiedGatewaysOnLive,
+       (SELECT COUNT(*) FROM booking.GATEWAY_CONFIG)                                              AS KeysTypedHere;',
+         N'@At DATETIME2(0)', @At = @RestoredUtc;

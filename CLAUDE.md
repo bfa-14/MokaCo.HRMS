@@ -12,7 +12,8 @@ that have already bitten this codebase).
 - Push to GitHub (origin). GitLab push is disabled.
 - Branches (both repos): `main` = production, `dev` = all work and testing. Push work to `dev` unless told
   otherwise; it is tested with deploy/sync-test.sh (laptop) + deploy/test-env/deploy-test.sh (VM), or in one
-  command on the VM with deploy/test-env/update-test.sh (applies the scripts the test database lacks, then deploys). "to production"
+  command on the VM with deploy/test-env/update-test.sh (applies the scripts the test database lacks, then deploys;
+  `--fresh` first replaces the test database with a safe copy of the live one). "to production"
   -> merge `dev` into `main` and push; deployed with deploy/sync-prod.sh, then on the VM deploy/update-prod.sh (backup, missing scripts, API; --web adds the website).
   An urgent fix made on `main` is merged back into `dev`.
   Without a laptop the VM downloads the code itself: `deploy/fetch-code.sh test|prod` (dev -> ~/src-test, main -> ~/src);
