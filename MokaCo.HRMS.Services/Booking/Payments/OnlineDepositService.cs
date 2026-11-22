@@ -446,6 +446,15 @@ public sealed class OnlineDepositService : IOnlineDepositService
             // (POST /release) would cancel it. The reference is the only credential /verify and /release
             // need, so that is what an anonymous caller could otherwise do (QA3 BKG-1). A hold is only
             // ever stamped by /pay, which stamps PaymentOpenedUtc with it.
+            //
+            // EXCEPT (script 121) a booking HELD FOR ITS DEPOSIT, which carries its hold from creation: a hold
+            // with no payment opened is, by construction, a deposit booking nobody has tried to pay. The guest
+            // giving it back (they pressed Cancel, or the payment page never opened and the site let go of it)
+            // releases it now instead of in fifteen minutes. It would be released by the sweep anyway, so the
+            // reference holder gains nothing; a request staff confirm has no hold and is still never touched.
+            if (trigger == SettleTrigger.GuestRelease && state.Status == "Pending" && state.HoldExpiresUtc is not null)
+                return await ReleaseAsync(state, "the guest left before paying", ifNotReleased: SettlementResult.NotApplicable);
+
             return new Settlement(SettlementResult.NotApplicable, bookingRef, false, state.Status, "no payment was opened");
         }
 

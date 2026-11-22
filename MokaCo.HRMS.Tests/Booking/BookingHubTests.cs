@@ -202,6 +202,26 @@ public class BookingHubTests
         Assert.False(throttle.IsBlocked("203.0.113.7"));
     }
 
+    /// <summary>
+    /// Script 121: a website booking held for its online deposit is not a request for staff to confirm. Only a
+    /// Pending website booking that carries a hold is one; a request (no hold) and a staff booking never are.
+    /// </summary>
+    [Theory]
+    [InlineData("Pending", "Website", true, true)]
+    [InlineData("Pending", "Website", false, false)]     // a request staff confirm: the toast speaks
+    [InlineData("Confirmed", "Website", true, false)]
+    [InlineData("Cancelled", "Website", true, false)]
+    [InlineData("Pending", "Manual", true, false)]
+    public void Only_a_held_pending_website_booking_awaits_payment(string status, string source, bool held, bool expected)
+    {
+        var booking = new BookingRefDetail
+        {
+            BookingId = 7, BookingRef = "MC-0000AAAA", Status = status, Source = source, RoomCode = "r1",
+            BookDate = new DateTime(2026, 12, 1), HoldExpiresUtc = held ? new DateTime(2026, 11, 30, 10, 15, 0, DateTimeKind.Utc) : null,
+        };
+        Assert.Equal(expected, BookingLivePublisher.AwaitsPayment(booking));
+    }
+
     [Fact]
     public void The_two_messages_carry_the_contract_fields_under_the_contract_names()
     {
@@ -216,8 +236,9 @@ public class BookingHubTests
 
         using var staff = JsonDocument.Parse(JsonSerializer.Serialize(BookingLivePublisher.StaffMessage(booking), options));
         Assert.Equal(
-            ["bookingId", "ref", "status", "roomCode", "date", "startMin", "endMin", "guestName", "source"],
+            ["bookingId", "ref", "status", "roomCode", "date", "startMin", "endMin", "guestName", "source", "awaitingPayment"],
             staff.RootElement.EnumerateObject().Select(p => p.Name));
+        Assert.False(staff.RootElement.GetProperty("awaitingPayment").GetBoolean());   // cancelled: nothing is awaited
         Assert.Equal("2026-09-29", staff.RootElement.GetProperty("date").GetString());
         Assert.Equal(1500, staff.RootElement.GetProperty("endMin").GetInt32());     // after midnight stays minutes, not a wrapped clock
 

@@ -44,12 +44,14 @@ public class OnlineDepositServiceTests
             NullLogger<OnlineDepositService>.Instance, new FixedClock(Now));
 
         /// <param name="holdMinutesLeft">Minutes until HoldExpiresUtc; negative = the hold has run out.</param>
-        public void State(string status = "Pending", int openedMinutesAgo = 5, bool gatewayPaid = false, bool opened = true, int holdMinutesLeft = 10)
+        public void State(string status = "Pending", int openedMinutesAgo = 5, bool gatewayPaid = false, bool opened = true, int holdMinutesLeft = 10,
+            bool held = false)
             => Deposits.Setup(d => d.GetPaymentStateAsync(Ref)).ReturnsAsync(new PaymentState
             {
                 BookingId = 42, BookingRef = Ref, Status = status, Source = "Website", DepositDue = 12.50m, CurrencyCode = "USD",
                 PaymentOpenedUtc = opened ? Now.AddMinutes(-openedMinutesAgo) : null, GatewayPaid = gatewayPaid,
-                HoldExpiresUtc = opened ? Now.AddMinutes(holdMinutesLeft) : null,
+                // held: a booking waiting for its online deposit carries its hold from creation (script 121).
+                HoldExpiresUtc = opened || held ? Now.AddMinutes(holdMinutesLeft) : null,
             });
 
         /// <summary>Nothing about the hold or the booking was written.</summary>
@@ -615,6 +617,55 @@ public class OnlineDepositServiceTests
         Assert.Equal((SettlementResult.NotApplicable, false, "Pending"), (settled.Result, settled.Changed, settled.Status));
         rig.NothingWritten();
         rig.Client.Verify(c => c.RetrieveOrderAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never());
+    }
+
+    /// <summary>
+    /// Script 121: a booking held for its deposit from creation, whose payment was never opened, is given back
+    /// at once when the guest lets go of it. The gateway is not asked: there is no session to ask about.
+    /// </summary>
+    [Fact]
+    public async Task Release_of_a_held_deposit_booking_nobody_tried_to_pay_releases_it_now()
+    {
+        var rig = new Rig();
+        rig.State(opened: false, held: true);
+        rig.Releases();
+
+        var settled = await rig.Service.SettleAsync(Ref, SettleTrigger.GuestRelease);
+
+        Assert.Equal((SettlementResult.Released, true, "Cancelled"), (settled.Result, settled.Changed, settled.Status));
+        rig.Client.Verify(c => c.RetrieveOrderAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never());
+        rig.Deposits.Verify(d => d.PaymentCheckedAsync(It.IsAny<string>(), It.IsAny<bool>()), Times.Never());
+    }
+
+    /// <summary>Only the guest giving it back does that: the return page, the job and a second /pay write nothing; the sweep owns it.</summary>
+    [Theory]
+    [InlineData(SettleTrigger.GatewayReturn)]
+    [InlineData(SettleTrigger.Reconciliation)]
+    [InlineData(SettleTrigger.PayAgain)]
+    public async Task A_held_deposit_booking_nobody_tried_to_pay_is_left_to_the_sweep(SettleTrigger trigger)
+    {
+        var rig = new Rig();
+        rig.State(opened: false, held: true);
+        rig.Releases();      // were it called, it would cancel
+
+        var settled = await rig.Service.SettleAsync(Ref, trigger);
+
+        Assert.Equal((SettlementResult.NotApplicable, false, "Pending"), (settled.Result, settled.Changed, settled.Status));
+        rig.NothingWritten();
+    }
+
+    /// <summary>Already decided (staff confirmed it by hand): giving it back does nothing.</summary>
+    [Fact]
+    public async Task Release_of_a_held_booking_staff_already_confirmed_releases_nothing()
+    {
+        var rig = new Rig();
+        rig.State(status: "Confirmed", opened: false, held: true);
+        rig.Releases();
+
+        var settled = await rig.Service.SettleAsync(Ref, SettleTrigger.GuestRelease);
+
+        Assert.Equal((SettlementResult.NotApplicable, false, "Confirmed"), (settled.Result, settled.Changed, settled.Status));
+        rig.NothingWritten();
     }
 
     [Fact]

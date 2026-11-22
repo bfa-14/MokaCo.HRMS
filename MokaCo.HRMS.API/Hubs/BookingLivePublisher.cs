@@ -101,7 +101,14 @@ public sealed class BookingLivePublisher : IBookingLivePublisher
         endMin = b.EndMin,
         guestName = b.GuestName,
         source = b.Source,
+        // Held for its online deposit (script 121): NOT a request for staff to confirm. The staff toast stays
+        // silent for it; the payment confirms it, or it is released.
+        awaitingPayment = AwaitsPayment(b),
     };
+
+    /// <summary>A website booking that is Pending and carries a hold is waiting for its online deposit: only those are held.</summary>
+    public static bool AwaitsPayment(BookingRefDetail b)
+        => b.Status == "Pending" && b.Source == "Website" && b.HoldExpiresUtc is not null;
 
     /// <summary>What the guest's page repaints from. changedAt is the website's fifth field (confirmed.ts).</summary>
     public static object GuestMessage(BookingRefDetail b) => new
