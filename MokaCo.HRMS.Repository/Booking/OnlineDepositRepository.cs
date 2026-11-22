@@ -21,6 +21,10 @@ public interface IOnlineDepositRepository
     /// <summary>Records the deposit and confirms. IDEMPOTENT: a second call for the same order is 'Replay' and writes nothing.</summary>
     Task<OnlinePaymentRecorded?> ConfirmOnlinePaymentAsync(string bookingRef, decimal amount, string currency, string gatewayOrderId, string? transactionId);
 
+    /// <summary>The same, for a method other than the card: its name goes on the payment line ("Whish").</summary>
+    Task<OnlinePaymentRecorded?> ConfirmOnlinePaymentAsync(string bookingRef, decimal amount, string currency, string gatewayOrderId, string? transactionId,
+        string methodName);
+
     /// <summary>Stamps PaymentCheckedUtc; <paramref name="keepHold"/> pushes the hold out so the slot is not offered while the outcome is unknown.</summary>
     Task PaymentCheckedAsync(string bookingRef, bool keepHold);
 
@@ -30,6 +34,25 @@ public interface IOnlineDepositRepository
     Task<bool> QueuePaymentAlertAsync(int bookingId, string kind, string? detail);
 
     Task<IReadOnlyList<PaymentToReconcile>> ListPaymentsToReconcileAsync(int openedMinutesAgo);
+
+    /* ---- Whish (script 118) ---- */
+
+    /// <summary>The next Whish attempt of a booking whose payment was just started; refusals as SqlException 50000.</summary>
+    Task<WhishAttemptStarted?> StartWhishAttemptAsync(string bookingRef);
+
+    /// <summary>After a paid Whish attempt was recorded: the payer's phone on the booking, the payment line named as Whish's.</summary>
+    Task SetWhishPayerAsync(string bookingRef, string externalId, string? payerPhone);
+
+    /// <summary>The setting BookingWhishEnabled. False on a database without it.</summary>
+    Task<bool> IsWhishEnabledAsync();
+
+    /* ---- the mode a payment was opened in (script 119) ---- */
+
+    /// <summary>Notes in which mode ("test" | "live") the booking's payment was just opened. Nothing on a database without script 119.</summary>
+    Task SetPaymentModeAsync(string bookingRef, string mode);
+
+    /// <summary>The mode the booking's payment was opened in; null when unknown (an older payment, or a database without script 119).</summary>
+    Task<string?> GetPaymentModeAsync(string bookingRef);
 }
 
 public class OnlineDepositRepository : IOnlineDepositRepository
@@ -51,20 +74,29 @@ public class OnlineDepositRepository : IOnlineDepositRepository
             "booking.usp_Booking_GetPaymentState", new { Ref = bookingRef }, commandType: CommandType.StoredProcedure);
     }
 
-    public async Task<OnlinePaymentRecorded?> ConfirmOnlinePaymentAsync(string bookingRef, decimal amount, string currency, string gatewayOrderId, string? transactionId)
+    public Task<OnlinePaymentRecorded?> ConfirmOnlinePaymentAsync(string bookingRef, decimal amount, string currency, string gatewayOrderId, string? transactionId)
+        => ConfirmAsync(bookingRef, amount, currency, gatewayOrderId, transactionId, methodName: null);
+
+    public Task<OnlinePaymentRecorded?> ConfirmOnlinePaymentAsync(string bookingRef, decimal amount, string currency, string gatewayOrderId, string? transactionId,
+        string methodName)
+        => ConfirmAsync(bookingRef, amount, currency, gatewayOrderId, transactionId, methodName);
+
+    private async Task<OnlinePaymentRecorded?> ConfirmAsync(string bookingRef, decimal amount, string currency, string gatewayOrderId, string? transactionId,
+        string? methodName)
     {
         using var db = _factory.Create();
+        var args = new DynamicParameters(new
+        {
+            Ref = bookingRef,
+            Amount = amount,
+            CurrencyCode = currency,
+            GatewayOrderId = gatewayOrderId,
+            TransactionId = transactionId,
+        });
+        // The procedure's own default is the card's name; only another method names itself.
+        if (methodName is not null) args.Add("MethodName", methodName);
         return await db.QuerySingleOrDefaultAsync<OnlinePaymentRecorded>(
-            "booking.usp_Booking_ConfirmOnlinePayment",
-            new
-            {
-                Ref = bookingRef,
-                Amount = amount,
-                CurrencyCode = currency,
-                GatewayOrderId = gatewayOrderId,
-                TransactionId = transactionId,
-            },
-            commandType: CommandType.StoredProcedure);
+            "booking.usp_Booking_ConfirmOnlinePayment", args, commandType: CommandType.StoredProcedure);
     }
 
     public async Task PaymentCheckedAsync(string bookingRef, bool keepHold)
@@ -96,5 +128,62 @@ public class OnlineDepositRepository : IOnlineDepositRepository
         var rows = await db.QueryAsync<PaymentToReconcile>(
             "booking.usp_Booking_ListPaymentsToReconcile", new { OpenedMinutesAgo = openedMinutesAgo }, commandType: CommandType.StoredProcedure);
         return rows.ToList();
+    }
+
+    /* ---- Whish (script 118) ---- */
+
+    public Task<WhishAttemptStarted?> StartWhishAttemptAsync(string bookingRef)
+        => MissingScriptException.GuardAsync(Scripts.BookingWhish118, "booking.usp_Booking_StartWhishAttempt", async () =>
+        {
+            using var db = _factory.Create();
+            return await db.QuerySingleOrDefaultAsync<WhishAttemptStarted>(
+                "booking.usp_Booking_StartWhishAttempt", new { Ref = bookingRef }, commandType: CommandType.StoredProcedure);
+        });
+
+    public Task SetWhishPayerAsync(string bookingRef, string externalId, string? payerPhone)
+        => MissingScriptException.GuardAsync(Scripts.BookingWhish118, "booking.usp_Booking_SetWhishPayer", async () =>
+        {
+            using var db = _factory.Create();
+            await db.ExecuteAsync(
+                "booking.usp_Booking_SetWhishPayer",
+                new { Ref = bookingRef, ExternalId = externalId, Phone = payerPhone is { Length: > 30 } ? payerPhone[..30] : payerPhone },
+                commandType: CommandType.StoredProcedure);
+        });
+
+    public async Task<bool> IsWhishEnabledAsync()
+    {
+        using var db = _factory.Create();
+        // In either dialect a switch is stored ('1' or 'true'); no row = off.
+        var value = await db.QuerySingleOrDefaultAsync<string?>(
+            "SELECT SettingValue FROM core.SETTING WHERE SettingKey = @Key", new { Key = "BookingWhishEnabled" });
+        return value?.Trim().ToLowerInvariant() is "1" or "true";
+    }
+
+    /* ---- the mode a payment was opened in (script 119) ---- */
+
+    public async Task SetPaymentModeAsync(string bookingRef, string mode)
+    {
+        try
+        {
+            using var db = _factory.Create();
+            await db.ExecuteAsync("booking.usp_Booking_SetPaymentMode", new { Ref = bookingRef, Mode = mode }, commandType: CommandType.StoredProcedure);
+        }
+        catch (Microsoft.Data.SqlClient.SqlException ex) when (MissingScriptException.IsMissingObject(ex.Number))
+        {
+            // Without script 119 there is one mode, the server file's: nothing to note.
+        }
+    }
+
+    public async Task<string?> GetPaymentModeAsync(string bookingRef)
+    {
+        try
+        {
+            using var db = _factory.Create();
+            return await db.QuerySingleOrDefaultAsync<string?>("booking.usp_Booking_GetPaymentMode", new { Ref = bookingRef }, commandType: CommandType.StoredProcedure);
+        }
+        catch (Microsoft.Data.SqlClient.SqlException ex) when (MissingScriptException.IsMissingObject(ex.Number))
+        {
+            return null;
+        }
     }
 }

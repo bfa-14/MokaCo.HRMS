@@ -44,10 +44,10 @@ public class BookingPaymentReconcileJob : IJob
 
     public async Task Execute(IJobExecutionContext context)
     {
-        // No gateway configured: there is nobody to ask. The start already logged which keys are missing.
-        if (!_settle.Gateway.IsConfigured)
-            return;
-
+        // NOT skipped when the mode in use has no keys (script 119): a payment is settled with the keys of the mode
+        // it was OPENED in, which may well be saved while the mode in use is another. With no payment opened the
+        // list below is empty and the run costs one query; a payment whose keys are really gone is said so in its
+        // log and, past the patience, in an e-mail to staff.
         var due = await _deposits.ListPaymentsToReconcileAsync(_timing.ReconcileAfterMinutes);
 
         // Silent on the ordinary outcome, like the hold-expiry sweep: most runs have nothing to do.

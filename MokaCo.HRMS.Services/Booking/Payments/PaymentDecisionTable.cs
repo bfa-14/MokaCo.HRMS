@@ -22,7 +22,12 @@ public enum PaymentOutcome
 /// ever attempted on the order — it does not know the order, or the order carries no transaction and
 /// no money. ABANDONED, not "cannot tell": a network error or a timeout never sets it.
 /// </param>
-public sealed record PaymentDecision(PaymentOutcome Outcome, string Reason, bool NothingAttempted = false);
+/// <param name="Final">
+/// Set only with <see cref="PaymentOutcome.Failed"/>: nothing more can happen on this payment (a Whish link that
+/// expired unpaid). The reconciliation job then releases the booking at once; a card order that failed is given
+/// its patience first, because the guest may still be retrying on the gateway's page.
+/// </param>
+public sealed record PaymentDecision(PaymentOutcome Outcome, string Reason, bool NothingAttempted = false, bool Final = false);
 
 /// <summary>
 /// THE ONE PLACE that decides whether a deposit was paid, from what RETRIEVE_ORDER said. Pure: no

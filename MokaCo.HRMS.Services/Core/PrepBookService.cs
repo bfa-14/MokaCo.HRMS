@@ -16,17 +16,21 @@ public interface IPrepBookService
     Task<PrepBookInfo?> GetInfoAsync();
     Task<byte[]?> GetScanAsync(string kind, int number);
 
-    /// <summary>Checks an uploaded recipe book (.zip) and replaces the one on file with it.</summary>
-    Task<PrepBookInfo> ReplaceAsync(Stream zip, int uploadedByUserId);
+    /// <summary>
+    /// Replaces the book on file with an upload: the guide as a PDF (the system draws its pages,
+    /// <see cref="PrepBookPdfReader"/>) or a recipe book (.zip, <see cref="PrepBookPackageReader"/>).
+    /// </summary>
+    Task<PrepBookInfo> ReplaceAsync(Stream upload, int uploadedByUserId);
 }
 
 /// <summary>
 /// THE DRINK RECIPES ("Recipes" page) — the bar's Drink Preparation Guide and the MC MIX labels.
 ///
 /// THE GUIDE IS CONFIDENTIAL, so its content is neither in the source code nor in the website's files: an admin
-/// uploads the recipe book as one .zip, it is checked here, stored in the database (script 115) and served only to
-/// a signed-in user who holds PREP_BOOK_VIEW. Uploading again replaces the whole book: that is how a new version of
-/// the guide is published.
+/// uploads it - the guide itself as a PDF (its pages are drawn here and shown as a book of pages), or a recipe book
+/// (.zip: recipe cards with their scans) - it is checked here, stored in the database (script 115) and served only
+/// to a signed-in user who holds PREP_BOOK_VIEW. Uploading again replaces the whole book: that is how a new version
+/// of the guide is published.
 /// </summary>
 public class PrepBookService : IPrepBookService
 {
@@ -45,9 +49,34 @@ public class PrepBookService : IPrepBookService
     public Task<byte[]?> GetScanAsync(string kind, int number)
         => kind is "page" or "label" && number is >= 1 and <= 999 ? _repo.GetScanAsync(kind, number) : Task.FromResult<byte[]?>(null);
 
-    public async Task<PrepBookInfo> ReplaceAsync(Stream zip, int uploadedByUserId)
+    public async Task<PrepBookInfo> ReplaceAsync(Stream upload, int uploadedByUserId)
     {
-        var package = PrepBookPackageReader.Read(zip);
+        // Read whole first: the size is checked on what actually arrived, and what the file IS is decided by its own
+        // first bytes, never by its name.
+        using var buffer = new MemoryStream();
+        var chunk = new byte[81920];
+        int read;
+        while ((read = await upload.ReadAsync(chunk)) > 0)
+        {
+            if (buffer.Length + read > PrepBookPackageReader.MaxZipBytes)
+                throw new WorkflowException(400, $"The file is larger than {PrepBookPackageReader.MaxZipBytes / (1024 * 1024)} MB.");
+            buffer.Write(chunk, 0, read);
+        }
+        if (buffer.Length == 0) throw new WorkflowException(400, "The file is empty. Choose the guide (PDF) or the recipe book (.zip).");
+
+        PrepBookPackage package;
+        if (PrepBookPdfReader.LooksLikePdf(buffer.GetBuffer().AsSpan(0, (int)buffer.Length)))
+        {
+            // Drawing the pages is a few seconds of processor work: off the request's thread.
+            var pdf = buffer.ToArray();
+            package = await Task.Run(() => PrepBookPdfReader.Read(pdf));
+        }
+        else
+        {
+            buffer.Position = 0;
+            package = PrepBookPackageReader.Read(buffer);
+        }
+
         await _repo.ReplaceAsync(package, uploadedByUserId);
         var row = await _repo.GetAsync(package.ETag);
         return row is null
@@ -111,12 +140,12 @@ public static partial class PrepBookPackageReader
             if (buffer.Length + read > MaxZipBytes) throw Refuse($"The recipe book is larger than {MaxZipBytes / (1024 * 1024)} MB.");
             buffer.Write(chunk, 0, read);
         }
-        if (buffer.Length == 0) throw Refuse("The file is empty. Choose the recipe book (.zip).");
+        if (buffer.Length == 0) throw Refuse("The file is empty. Choose the guide (PDF) or the recipe book (.zip).");
         buffer.Position = 0;
 
         ZipArchive zip;
         try { zip = new ZipArchive(buffer, ZipArchiveMode.Read, leaveOpen: true); }
-        catch (InvalidDataException) { throw Refuse("That file is not a .zip. Choose the recipe book (.zip)."); }
+        catch (InvalidDataException) { throw Refuse("That file is neither a PDF nor a .zip. Choose the guide (PDF) or the recipe book (.zip)."); }
 
         using (zip)
         {

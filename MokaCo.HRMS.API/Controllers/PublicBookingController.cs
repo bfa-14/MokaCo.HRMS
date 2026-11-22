@@ -77,14 +77,35 @@ public partial class PublicBookingController : ControllerBase
 
     private readonly ILogger<PublicBookingController>? _log;
 
+    /// <summary>
+    /// Gateway tests opened from HRMS (script 119). Their trip back uses the SAME public addresses as a booking's -
+    /// that is what makes a test prove the addresses work - under a reference no booking can have (GT-XXXXXXXX).
+    /// </summary>
+    private readonly IGatewayAdminService? _gatewayTests;
+
     public PublicBookingController(IBookingService bookings, IRoomService rooms, IBookingLivePublisher? live = null,
-        IOnlineDepositService? deposits = null, ILogger<PublicBookingController>? log = null)
+        IOnlineDepositService? deposits = null, ILogger<PublicBookingController>? log = null, IGatewayAdminService? gatewayTests = null)
     {
         _bookings = bookings;
         _rooms = rooms;
         _live = live;
         _deposits = deposits;
         _log = log;
+        _gatewayTests = gatewayTests;
+    }
+
+    /// <summary>
+    /// A GATEWAY TEST'S RETURN: the test is checked and the tester's browser goes back to the HRMS page it was opened
+    /// from. No page to go back to (the test was not opened from a browser): a line of text.
+    /// </summary>
+    private async Task<IActionResult> TestReturnAsync(string testRef)
+    {
+        if (_gatewayTests is null) return NotFound();
+
+        var back = await _gatewayTests.TestReturnAsync(testRef);
+        return back is not null
+            ? Redirect(back)
+            : Content("The test payment was recorded. Go back to HRMS: Settings > Gateway test.", "text/plain");
     }
 
     private IOnlineDepositService Deposits
@@ -98,6 +119,9 @@ public partial class PublicBookingController : ControllerBase
     public async Task<IActionResult> GetCatalog()
     {
         var catalog = await _rooms.GetPublicCatalogAsync();
+        // The ways the deposit can be paid right now: "card" when its gateway is set up, "whish" when Whish is set
+        // up AND switched on (Settings). A site that does not know this field offers the card, as before.
+        var depositMethods = _deposits is null ? (IReadOnlyList<string>)[PaymentMethods.Card] : await _deposits.MethodsAsync();
 
         Response.Headers.CacheControl = "public, max-age=60";
 
@@ -135,6 +159,7 @@ public partial class PublicBookingController : ControllerBase
                 holdMinutes = catalog.Rules.HoldMinutes,
                 depositFloor = catalog.Rules.DepositFloor,
                 depositRequired = catalog.Rules.DepositRequired,
+                depositMethods,
                 currency = catalog.Rules.Currency,
                 cancelHours = catalog.Rules.CancelHours,
                 turnaroundMinutes = catalog.Rules.TurnaroundMinutes,
@@ -391,21 +416,53 @@ public partial class PublicBookingController : ControllerBase
     ///
     /// Refusals: 404 not_found, 409 not_pending, 409 hold_expired, 409 already_paid, 409 nothing_due,
     /// 409 payment_unconfirmed, 502 gateway_error, 503 paused, 401 unauthorized, 429.
+    ///
+    /// THE METHOD. An optional JSON body { "method": "card" | "whish" } (or ?method=): absent = card, so a site
+    /// that sends no body keeps working. For WHISH the answer carries collectUrl - Whish's own payment page, with
+    /// its QR code and six-digit code - instead of a sessionId, and the site sends the guest there. A Whish link
+    /// allows one attempt and lives five minutes; pressing pay again opens a NEW attempt once the earlier one is
+    /// settled, and answers 409 payment_unconfirmed while the earlier link can still be paid. Same refusal codes.
     /// </summary>
     [HttpPost("{bookingRef:" + RefPattern + "}/pay")]
     [PausesWithWebsite]
     [EnableRateLimiting(WriteRateLimitPolicy)]
-    public async Task<IActionResult> Pay(string bookingRef)
+    public async Task<IActionResult> Pay(string bookingRef, [FromQuery] string? method = null)
     {
-        var opening = await Deposits.OpenAsync(bookingRef.ToUpperInvariant());
+        var chosen = PaymentMethods.Parse(method ?? await MethodFromBodyAsync());
+        if (chosen is null)
+            return BadRequest(new
+            {
+                error = "The payment method must be card or whish.",
+                code = BookingRefusals.InvalidInput,
+                field = "method",
+                timeZone = TimeZoneName,
+            });
+
+        var opening = chosen == PaymentMethods.Whish
+            ? await Deposits.OpenAsync(bookingRef.ToUpperInvariant(), PaymentMethods.Whish)
+            : await Deposits.OpenAsync(bookingRef.ToUpperInvariant());
 
         if (opening.Changed && _live is not null) await _live.PublishAsync(opening.BookingRef);
 
         return opening.Result switch
         {
+            PayOpenResult.Opened when chosen == PaymentMethods.Whish => Ok(new
+            {
+                timeZone = TimeZoneName,
+                method = PaymentMethods.Whish,
+                collectUrl = opening.CollectUrl,
+                @ref = opening.BookingRef,
+                deposit = opening.Deposit,
+                currency = opening.Currency,
+                holdExpiresUtc = opening.HoldExpiresUtc is { } whishUtc ? DateTime.SpecifyKind(whishUtc, DateTimeKind.Utc) : (DateTime?)null,
+                expiresAt = opening.HoldExpiresUtc is { } whishHold ? BeirutTime.FromUtc(whishHold) : (DateTimeOffset?)null,
+                // How long Whish's link itself can be paid: shorter than the hold.
+                linkMinutes = (int)WhishOptions.LinkLifetime.TotalMinutes,
+            }),
             PayOpenResult.Opened => Ok(new
             {
                 timeZone = TimeZoneName,
+                method = PaymentMethods.Card,
                 sessionId = opening.SessionId,
                 @ref = opening.BookingRef,
                 deposit = opening.Deposit,
@@ -460,10 +517,13 @@ public partial class PublicBookingController : ControllerBase
     [EnableRateLimiting(ReadRateLimitPolicy)]
     public async Task<IActionResult> Verify([FromQuery(Name = "ref")] string? reference)
     {
-        var gateway = Deposits.Gateway;
         Response.Headers.CacheControl = "no-store";
 
         var bookingRef = (reference ?? string.Empty).Trim().ToUpperInvariant();
+        if (GatewayTestRefs.IsTestRef(bookingRef))
+            return await TestReturnAsync(bookingRef);
+
+        var gateway = await Deposits.GatewayAsync();
         if (!ReferenceShape().IsMatch(bookingRef))
             return Redirect(gateway.FailedUrl());
 
@@ -489,6 +549,118 @@ public partial class PublicBookingController : ControllerBase
                 => Redirect(gateway.FailedUrl()),
             _ => Redirect(gateway.UnconfirmedUrl(bookingRef)),
         };
+    }
+
+    /// <summary>
+    /// WHISH'S CALLBACK (successCallbackUrl and failureCallbackUrl both lead here): Whish's server says an attempt on
+    /// this booking was processed. A server-to-server GET with nothing of Whish's own in it - it forwards our own
+    /// query string - so it is only a SIGNAL: the answer is Whish's status call, asked here, through the same
+    /// settlement path as everything else. The token keeps junk from making us ask Whish about a booking; it proves
+    /// nothing about a payment. Answered 200 once the signal is taken, whatever the settlement came to (the
+    /// reconciliation job is the net under a settlement that failed here). IDEMPOTENT.
+    /// </summary>
+    [HttpGet("whish/callback")]
+    [GatewayReturn]
+    [EnableRateLimiting(ReadRateLimitPolicy)]
+    public async Task<IActionResult> WhishCallback([FromQuery(Name = "ref")] string? reference, [FromQuery(Name = "t")] string? token)
+    {
+        Response.Headers.CacheControl = "no-store";
+
+        var bookingRef = (reference ?? string.Empty).Trim().ToUpperInvariant();
+
+        // A gateway test opened from HRMS: only noted (it proves Whish's server reaches this address).
+        if (GatewayTestRefs.IsTestRef(bookingRef))
+            return _gatewayTests is not null && await _gatewayTests.TestCallbackAsync(bookingRef, token) ? Ok() : NotFound();
+
+        // The token is the one made when the attempt was opened: checked against the keys of THAT mode.
+        if (!ReferenceShape().IsMatch(bookingRef) || !(await Deposits.WhishForAsync(bookingRef)).IsCallbackToken(bookingRef, token))
+            return NotFound();
+
+        try
+        {
+            var settled = await Deposits.SettleAsync(bookingRef, SettleTrigger.GatewayCallback);
+            if (settled.Changed && _live is not null) await _live.PublishAsync(bookingRef);
+        }
+        catch (Exception ex)
+        {
+            _log?.LogError(ex, "Whish callback {Ref}: settlement failed; the reconciliation job settles it.", bookingRef);
+        }
+
+        return Ok();
+    }
+
+    /// <summary>
+    /// THE GUEST'S RETURN FROM WHISH'S PAGE (successRedirectUrl and failureRedirectUrl both lead here; which one
+    /// was used is never trusted). The same as <see cref="Verify"/>: settle by Whish's status, then the same three
+    /// places on the site -
+    ///
+    ///   paid         → 302 {site}/reservations/confirmed/?ref=
+    ///   failed       → the hold is released, 302 {site}/reservations/?payment=failed
+    ///   anything else → the hold is kept, 302 {site}/reservations/?payment=unconfirmed&amp;ref=
+    ///                  (also an attempt that failed while its link can still be paid: Whish reads "pending" until
+    ///                  the link's five minutes are over, and nobody is told "nothing was charged" before that)
+    /// </summary>
+    [HttpGet("whish/return")]
+    [GatewayReturn]
+    [EnableRateLimiting(ReadRateLimitPolicy)]
+    public async Task<IActionResult> WhishReturn([FromQuery(Name = "ref")] string? reference)
+    {
+        Response.Headers.CacheControl = "no-store";
+
+        var bookingRef = (reference ?? string.Empty).Trim().ToUpperInvariant();
+        if (GatewayTestRefs.IsTestRef(bookingRef))
+            return await TestReturnAsync(bookingRef);
+
+        // A reference of the wrong shape names no booking: the mode in use says where the website is.
+        var whish = ReferenceShape().IsMatch(bookingRef) ? await Deposits.WhishForAsync(bookingRef) : await Deposits.WhishAsync();
+        if (!whish.IsConfigured)
+            return NotFound();
+
+        if (!ReferenceShape().IsMatch(bookingRef))
+            return Redirect(whish.FailedUrl());
+
+        Settlement settled;
+        try
+        {
+            settled = await Deposits.SettleAsync(bookingRef, SettleTrigger.GatewayReturn);
+        }
+        catch (Exception ex)
+        {
+            _log?.LogError(ex, "Whish return {Ref}: settlement failed; the guest is sent to the unconfirmed page.", bookingRef);
+            return Redirect(whish.UnconfirmedUrl(bookingRef));
+        }
+
+        if (settled.Changed && _live is not null) await _live.PublishAsync(bookingRef);
+
+        return settled.Result switch
+        {
+            SettlementResult.Paid => Redirect(whish.ConfirmedUrl(bookingRef)),
+            SettlementResult.Released or SettlementResult.Failed or SettlementResult.UnknownBooking or SettlementResult.NotApplicable
+                => Redirect(whish.FailedUrl()),
+            _ => Redirect(whish.UnconfirmedUrl(bookingRef)),
+        };
+    }
+
+    /// <summary>
+    /// "method" from an optional JSON body. No body (what the site sent before Whish) = null = the card. A body that
+    /// is not JSON, or whose "method" is not text, comes back as itself-unparseable and is refused by the caller.
+    /// </summary>
+    private async Task<string?> MethodFromBodyAsync()
+    {
+        var request = ControllerContext?.HttpContext?.Request;
+        if (request is null || request.ContentLength is null or 0) return null;
+        if (request.ContentLength > 2048) return "(too long)";
+        try
+        {
+            using var body = await System.Text.Json.JsonDocument.ParseAsync(request.Body);
+            if (body.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object) return "(not an object)";
+            if (!body.RootElement.TryGetProperty("method", out var value) || value.ValueKind == System.Text.Json.JsonValueKind.Null) return null;
+            return value.ValueKind == System.Text.Json.JsonValueKind.String ? value.GetString() : "(not text)";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return "(not JSON)";
+        }
     }
 
     [System.Text.RegularExpressions.GeneratedRegex("^MC-[A-Z0-9]{8}$")]
