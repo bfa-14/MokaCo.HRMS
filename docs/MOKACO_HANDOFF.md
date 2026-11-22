@@ -375,7 +375,7 @@ Daily and monthly attendance, payroll runs and payslips, bookings (period, room,
 |---|---|---|
 | `tests/qa` | `MokaCo.HRMS/tests/qa` (`bash tests/qa/run.sh`) | 216 checks: rosters, attendance, leaves, payroll, bookings, permissions, cultures, responsive smoke |
 | `tests/qa2` | `MokaCo.HRMS/tests/qa2` (`bash tests/qa2/run.sh`) | 67 checks of **complex** scenarios: same-day combinations, overnight + DST + month end, leave edge cases, roster changes, payroll proration and statutory math, plus browser checks |
-| `tests/qa3` | `MokaCo.HRMS/tests/qa3/<area>/*.sql` (`sqlcmd -I -b -d <db> -i <file>`) | 59 SQL scenarios for the scripts 98–119; each runs in a transaction it rolls back and prints `ok <name>`. Report: `tests/qa3/QA_REPORT_3.md` |
+| `tests/qa3` | `MokaCo.HRMS/tests/qa3/<area>/*.sql` (`sqlcmd -I -b -d <db> -i <file>`) | 60 SQL scenarios for the scripts 98–120; each runs in a transaction it rolls back and prints `ok <name>`. Report: `tests/qa3/QA_REPORT_3.md` |
 | unit + database tests | `dotnet test` | 1997 tests; the database ones run when `MOKACO_TEST_CONNECTION` points at a database with the scripts, otherwise they skip |
 
 Both suites seed everything with a `QA ` / `QA2 ` prefix, run inside transactions where the data is real (payroll), and `cleanup.sql` removes their rows and **verifies integrity**: real row counts plus checksums of rosters, attendance records and the leave ledger must match the baseline taken at seed time. Reports: `QA_REPORT.md` and `tests/qa2/QA_REPORT_2.md` (bug table, rules decided, features added, disposition per finding).
@@ -437,6 +437,7 @@ If a suite is interrupted, run its `cleanup.sql` before anything else — it als
 23. In React, `event.currentTarget` is gone by the time a state UPDATER runs: `setX(c => ({ ...c, f: event.currentTarget.value }))` crashed the gateway keys form on the first key press. Read the value first, then call the setter.
 24. A new script's procedure names must not land in a family production already owns (`booking.usp_Payment_Add` is production's; script 119's reads are `usp_OnlinePayment_*`), and script 119 checks before anything else that no object of its names is somebody else's (a table without its columns, a procedure without the text "script 119"): it then stops with nothing applied.
 25. A browser check with a hand-made token for an admin's user id shows every page whatever permissions the token names: the web app asks the server who the user is. Test "may not see it" with a token for a user who really lacks the permission.
+26. `BookingAutoConfirm` confirmed a website booking at creation even while online deposits were on: Confirmed with nothing paid, `/pay` then refused it (409, "it is Confirmed"), the site said the payment failed and the room stayed booked. Script 120: the starting status comes from `booking.fn_NewBookingStatus`; a booking that must pay a deposit online starts Pending and only its payment confirms it. Auto-confirm still applies to website bookings taken without a deposit.
 
 ## 12. Open items
 

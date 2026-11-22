@@ -44,6 +44,9 @@ public static class Scripts
     /// <summary>The gateways' keys and mode (encrypted, entered in HRMS), the payment log, the payments page, the gateway tests.</summary>
     public const string PaymentGateways119 = "docs/119_payment_gateways.sql";
 
+    /// <summary>A website booking that must be paid online starts Pending whatever BookingAutoConfirm says: its payment confirms it.</summary>
+    public const string DepositBeforeConfirm120 = "docs/120_booking_deposit_before_confirm.sql";
+
     /// <summary>
     /// QA3 DEPLOY GUARD: every numbered script this build of the API calls, in apply order, each with the
     /// object it is checked by. SchemaCheck looks for them at startup; while one is missing the log names
@@ -81,5 +84,8 @@ public static class Scripts
         new(BookingWhish118, "booking.usp_Booking_SetWhishPayer"),
         // The last procedure the script creates.
         new(PaymentGateways119, "booking.usp_GatewayTest_List"),
+        // A function, and the only object the script adds (it otherwise redefines usp_Booking_Create). deploy/check-scripts.sql
+        // checks the procedure's own text, so a run that stopped between the two still reads as missing there.
+        new(DepositBeforeConfirm120, "booking.fn_NewBookingStatus"),
     ];
 }
