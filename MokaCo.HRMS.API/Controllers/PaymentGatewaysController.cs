@@ -14,6 +14,7 @@ namespace MokaCo.HRMS.Api.Controllers;
 ///   PUT    /api/payment-gateways/{gateway}/{mode}/keys    save the keys of one mode (blank = keep what is saved)
 ///   DELETE /api/payment-gateways/{gateway}/{mode}/keys    remove them from HRMS
 ///   PUT    /api/payment-gateways/{gateway}/mode           { mode: "test" | "live" | null }   null = follow the server file
+///   PUT    /api/payment-gateways/website                  { deposits?, whish? }   what guests can do on the website
 ///   POST   /api/payment-gateways/{gateway}/{mode}/check   connection check: asks the gateway, moves no money
 ///   GET    /api/payment-gateways/tests                    the last test payments
 ///   POST   /api/payment-gateways/tests                    { gateway, mode, amount, currency } -> a payment page to open
@@ -48,6 +49,7 @@ public class PaymentGatewaysController : ControllerBase
             whish = Shape(overview.Whish),
             whishOnWebsite = overview.WhishOnWebsite,
             depositsRequired = overview.DepositsRequired,
+            production = overview.Production,
             siteUrl = overview.SiteUrl,
             apiPublicUrl = overview.ApiPublicUrl,
             maxTestAmount = new { usd = GatewayAdminService.MaxTestAmountUsd, lbp = GatewayAdminService.MaxTestAmountLbp },
@@ -99,6 +101,22 @@ public class PaymentGatewaysController : ControllerBase
 
         return Answer(await _gateways.SetModeAsync(name, mode, User.UserId()));
     }
+
+    public sealed class WebsiteRequest
+    {
+        public bool? Deposits { get; set; }
+        public bool? Whish { get; set; }
+    }
+
+    /// <summary>
+    /// What guests can do on the website: PUT { deposits?: bool, whish?: bool } (a field left out is not changed).
+    /// Turning one on is refused, in a sentence, while no gateway is ready - or, on the live system, while the
+    /// gateway is in test mode.
+    /// </summary>
+    [HttpPut("website")]
+    [HasPermission(Permission)]
+    public async Task<IActionResult> SetWebsite([FromBody] WebsiteRequest? request)
+        => Answer(await _gateways.SetWebsiteAsync(request?.Deposits, request?.Whish, User.UserId()));
 
     [HttpPost("{gateway}/{mode}/check")]
     [HasPermission(Permission)]

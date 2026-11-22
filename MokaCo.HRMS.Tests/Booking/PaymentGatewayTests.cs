@@ -295,8 +295,21 @@ public class PaymentGatewayTests
         public PaymentGateways Real { get; }
         public GatewayAdminService Service { get; }
 
-        public AdminRig(MpgsOptions? serverCard = null)
+        /// <summary>The two website switches as core.SETTING holds them ('1' / '0').</summary>
+        public Dictionary<string, string> Switches { get; } = new() { [GatewayAdminService.DepositsSetting] = "0", [WhishOptions.EnabledSetting] = "0" };
+
+        public AdminRig(MpgsOptions? serverCard = null, bool production = false)
         {
+            var settings = new Mock<MokaCo.HRMS.Services.Core.ISettingService>();
+            settings.Setup(x => x.GetAsync(It.IsAny<string>())).ReturnsAsync((string key) => Switches.TryGetValue(key, out var value)
+                ? new MokaCo.HRMS.Model.Core.Setting { SettingKey = key, SettingValue = value, DataType = "bool", Description = "kept" } : null);
+            settings.Setup(x => x.UpsertAsync(It.IsAny<string>(), It.IsAny<MokaCo.HRMS.Model.Core.SettingUpsertRequest>(), It.IsAny<int?>()))
+                .Callback((string key, MokaCo.HRMS.Model.Core.SettingUpsertRequest request, int? _) => Switches[key] = request.SettingValue)
+                .Returns(Task.CompletedTask);
+            Deposits.Setup(d => d.IsWhishEnabledAsync()).ReturnsAsync(() => Switches[WhishOptions.EnabledSetting] == "1");
+            Bookings.Setup(b => b.IsDepositRequiredAsync()).ReturnsAsync(() => Switches[GatewayAdminService.DepositsSetting] == "1");
+            Production = production;
+            Settings = settings.Object;
             Real = Gateways(Store, serverCard);
             // The real resolution, but the two clients are the mocks: nothing here reaches a network.
             var gateways = new Mock<IPaymentGateways>();
@@ -310,9 +323,12 @@ public class PaymentGatewayTests
             gateways.Setup(g => g.CardClient(It.IsAny<MpgsOptions>())).Returns(Card.Object);
 
             Service = new GatewayAdminService(gateways.Object, Store, Protector, new PaymentEventLog(Store, NullLogger<PaymentEventLog>.Instance),
-                Deposits.Object, Bookings.Object, new GatewayServerFacts("https://site.example.test", "https://api.example.test"),
-                NullLogger<GatewayAdminService>.Instance, new FixedClock(Now));
+                Deposits.Object, Bookings.Object, new GatewayServerFacts("https://site.example.test", "https://api.example.test", Production),
+                NullLogger<GatewayAdminService>.Instance, new FixedClock(Now), Settings);
         }
+
+        public bool Production { get; }
+        public MokaCo.HRMS.Services.Core.ISettingService Settings { get; }
 
         public Task<GatewayActionResult> SaveWhish(string mode, IReadOnlyDictionary<string, string> keys) => Service.SaveKeysAsync(GatewayNames.Whish, mode, new GatewayKeysInput
         {
@@ -1171,5 +1187,79 @@ public class PaymentGatewayTests
         store.Slow = false;
         store.Next = live;
         Assert.Equal(GatewayModes.Live, (await gateways.WhishAsync()).Mode);
+    }
+
+    /* ---- what guests can do on the website -------------------------------------------------------- */
+
+    [Fact]
+    public async Task Whish_is_offered_to_guests_only_when_its_keys_are_there()
+    {
+        var rig = new AdminRig();
+
+        var noKeys = await rig.Service.SetWebsiteAsync(null, true, 7);
+        Assert.False(noKeys.Ok);
+        Assert.Contains("Save the Whish keys first", noKeys.Message);
+        Assert.Equal("0", rig.Switches[WhishOptions.EnabledSetting]);
+
+        await rig.SaveWhish(GatewayModes.Test, WhishTestKeys);
+        var on = await rig.Service.SetWebsiteAsync(null, true, 7);
+        Assert.True(on.Ok);
+        Assert.Equal("1", rig.Switches[WhishOptions.EnabledSetting]);
+        Assert.Contains("only see it once the deposit is taken online", on.Message);      // the other switch is still off
+
+        // Deposits on: with Whish offered and ready, a gateway is ready.
+        Assert.True((await rig.Service.SetWebsiteAsync(true, null, 7)).Ok);
+        Assert.Equal("1", rig.Switches[GatewayAdminService.DepositsSetting]);
+
+        // And off again, always allowed.
+        Assert.True((await rig.Service.SetWebsiteAsync(false, false, 7)).Ok);
+        Assert.Equal(("0", "0"), (rig.Switches[GatewayAdminService.DepositsSetting], rig.Switches[WhishOptions.EnabledSetting]));
+    }
+
+    [Fact]
+    public async Task Deposits_are_not_taken_online_while_no_gateway_is_ready()
+    {
+        var rig = new AdminRig();
+        var refused = await rig.Service.SetWebsiteAsync(true, null, 7);
+        Assert.False(refused.Ok);
+        Assert.Contains("No gateway is ready", refused.Message);
+        Assert.Equal("0", rig.Switches[GatewayAdminService.DepositsSetting]);
+    }
+
+    [Fact]
+    public async Task On_the_live_system_guests_are_never_offered_a_gateway_in_test_mode()
+    {
+        // The live system, with the bank's TEST profile in the server file and Whish's test keys saved.
+        var rig = new AdminRig(ServerCard, production: true);
+        await rig.SaveWhish(GatewayModes.Test, WhishTestKeys);
+
+        // A test payment costs nothing and would confirm a real booking: neither switch goes on.
+        Assert.Contains("TEST mode", (await rig.Service.SetWebsiteAsync(null, true, 7)).Message);
+        Assert.Contains("Bank of Beirut is in TEST mode", (await rig.Service.SetWebsiteAsync(true, null, 7)).Message);
+        Assert.Equal(("0", "0"), (rig.Switches[GatewayAdminService.DepositsSetting], rig.Switches[WhishOptions.EnabledSetting]));
+
+        // The same choices on the test side are fine: that is what it is for.
+        var test = new AdminRig(ServerCard, production: false);
+        await test.SaveWhish(GatewayModes.Test, WhishTestKeys);
+        Assert.True((await test.Service.SetWebsiteAsync(true, true, 7)).Ok);
+    }
+
+    [Fact]
+    public async Task On_the_live_system_a_gateway_guests_pay_with_cannot_be_put_into_test_mode()
+    {
+        var rig = new AdminRig(production: true);
+        await rig.SaveWhish(GatewayModes.Test, WhishTestKeys);
+        await rig.SaveWhish(GatewayModes.Live, WhishLiveKeys);
+        Assert.True((await rig.Service.SetModeAsync(GatewayNames.Whish, GatewayModes.Live, 7)).Ok);
+        Assert.True((await rig.Service.SetWebsiteAsync(true, true, 7)).Ok);           // live, offered to guests
+
+        var refused = await rig.Service.SetModeAsync(GatewayNames.Whish, GatewayModes.Test, 7);
+        Assert.False(refused.Ok);
+        Assert.Contains("Turn off", refused.Message);
+        Assert.Equal(GatewayModes.Live, (await rig.Real.WhishAsync()).Mode);
+
+        // Taken off the website first, it can be tested again.
+        Assert.True((await rig.Service.SetWebsiteAsync(null, false, 7)).Ok);
+        Assert.True((await rig.Service.SetModeAsync(GatewayNames.Whish, GatewayModes.Test, 7)).Ok);
     }
 }

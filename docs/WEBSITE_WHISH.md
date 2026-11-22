@@ -57,9 +57,11 @@ not seen when this was written: the file names below are where the HRMS notes sa
 
 ## Trying it
 
-- Whish must be offered by the API: in HRMS, Settings > Payment gateways holds the Whish keys (test or live), and the
-  setting "Whish on the website" (`BookingWhishEnabled`) must be on, together with online deposits
-  (`BookingDepositRequired`). Until then `depositMethods` does not contain `"whish"` and the site shows the card only.
+- Whish must be offered by the API: in HRMS, Settings > Payment gateways holds the Whish keys (test or live), and on
+  the same tab, under "What guests can do on the website", both switches must be on: "Take the deposit online"
+  (`BookingDepositRequired`) and "Offer Whish on the website" (`BookingWhishEnabled`). Until then `depositMethods`
+  does not contain `"whish"` and the site shows the card only. On the live system HRMS refuses those switches while
+  the gateway is in test mode; try the test keys on the test side.
 - With the **test** keys, Whish's page shows two buttons, **Simulate Success** and **Simulate Failure**; press one
   instead of paying. The real Whish app answers "invalid QR code" to a test payment: that is expected.
 - After Simulate Success the guest lands on the confirmed page, and HRMS shows the payment under Bookings > Payments.
