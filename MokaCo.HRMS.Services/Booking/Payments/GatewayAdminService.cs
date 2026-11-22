@@ -40,6 +40,7 @@ public sealed record GatewayView(
 
 /// <param name="WhishOnWebsite">The setting BookingWhishEnabled: the website offers Whish.</param>
 /// <param name="DepositsRequired">The setting BookingDepositRequired: the website takes deposits online at all.</param>
+/// <param name="Production">This is the live system: a gateway in test mode must not be offered to guests here.</param>
 public sealed record GatewayOverview(
     GatewayView Card,
     GatewayView Whish,
@@ -47,7 +48,8 @@ public sealed record GatewayOverview(
     bool DepositsRequired,
     string? SiteUrl,
     string? ApiPublicUrl,
-    IReadOnlyList<GatewayHistoryRow> History);
+    IReadOnlyList<GatewayHistoryRow> History,
+    bool Production = false);
 
 /// <summary>The outcome of something an admin asked for, in a sentence they can act on.</summary>
 public sealed record GatewayActionResult(bool Ok, string Message, int? Milliseconds = null, GatewayTestRow? Test = null,
@@ -72,7 +74,8 @@ public sealed class GatewayKeysInput
 }
 
 /// <summary>The two public origins of the server file, which the gateways' return addresses are built from.</summary>
-public sealed record GatewayServerFacts(string? SiteUrl, string? ApiPublicUrl);
+/// <param name="Production">This is the live system (not the test side, not a developer's machine): real guests reach it.</param>
+public sealed record GatewayServerFacts(string? SiteUrl, string? ApiPublicUrl, bool Production = false);
 
 /// <summary>A gateway test's reference: GT-XXXXXXXX. Never the shape of a booking's (MC-XXXXXXXX).</summary>
 public static partial class GatewayTestRefs
@@ -112,6 +115,13 @@ public interface IGatewayAdminService
     Task<GatewayActionResult> SaveKeysAsync(string gateway, string mode, GatewayKeysInput input, int userId);
     Task<GatewayActionResult> DeleteKeysAsync(string gateway, string mode, int userId);
     Task<GatewayActionResult> SetModeAsync(string gateway, string? mode, int userId);
+
+    /// <summary>
+    /// The two switches that decide what GUESTS can do on the website: pay the deposit online at all
+    /// (BookingDepositRequired), and choose Whish beside the card (BookingWhishEnabled). Null = leave as it is.
+    /// Turning one on needs a gateway that is ready - and, on the live system, in LIVE mode.
+    /// </summary>
+    Task<GatewayActionResult> SetWebsiteAsync(bool? deposits, bool? whish, int userId);
     Task<GatewayActionResult> CheckConnectionAsync(string gateway, string mode, int userId, CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<GatewayTestRow>> ListTestsAsync();
@@ -149,11 +159,16 @@ public sealed partial class GatewayAdminService : IGatewayAdminService
     private readonly GatewayServerFacts _server;
     private readonly TimeProvider _clock;
     private readonly ILogger<GatewayAdminService> _log;
+    private readonly Core.ISettingService? _settings;
+
+    /// <summary>The setting that makes a website booking ask for its deposit online.</summary>
+    public const string DepositsSetting = "BookingDepositRequired";
 
     public GatewayAdminService(IPaymentGateways gateways, IPaymentGatewayRepository repository, GatewayKeyProtector protector,
         IPaymentEventLog events, IOnlineDepositRepository deposits, IBookingService bookings, GatewayServerFacts server,
-        ILogger<GatewayAdminService> log, TimeProvider? clock = null)
+        ILogger<GatewayAdminService> log, TimeProvider? clock = null, Core.ISettingService? settings = null)
     {
+        _settings = settings;
         _gateways = gateways;
         _repository = repository;
         _protector = protector;
@@ -173,7 +188,7 @@ public sealed partial class GatewayAdminService : IGatewayAdminService
         var whish = await WhishViewAsync();
         var history = await _repository.GetHistoryAsync(15);
         return new GatewayOverview(card, whish, await _deposits.IsWhishEnabledAsync(), await _bookings.IsDepositRequiredAsync(),
-            _server.SiteUrl, _server.ApiPublicUrl, history);
+            _server.SiteUrl, _server.ApiPublicUrl, history, _server.Production);
     }
 
     private async Task<GatewayView> CardViewAsync()
@@ -335,6 +350,14 @@ public sealed partial class GatewayAdminService : IGatewayAdminService
                 return new GatewayActionResult(false, $"Save the {mode} keys first: a gateway cannot work in a mode it has no keys for.");
         }
 
+        // ON THE LIVE SYSTEM A GATEWAY GUESTS CAN PAY WITH IS NEVER PUT INTO TEST MODE: a test payment costs nothing
+        // (Whish's test page has a "Simulate Success" button, the bank's takes test cards), and it would confirm a
+        // real booking. Test mode is for the test side and for the Gateway test page, which asks for it by name.
+        if (mode == GatewayModes.Test && _server.Production && await OfferedToGuestsAsync(gateway))
+            return new GatewayActionResult(false, gateway == GatewayNames.Whish
+                ? "Guests can pay with Whish on the website right now. Turn off \"Offer Whish on the website\" first: in test mode anybody could confirm a booking without paying."
+                : "Guests pay their deposit online on the website right now. Turn off \"Take the deposit online\" first: in test mode anybody could confirm a booking with a test card.");
+
         await _repository.SetModeAsync(gateway, mode, userId);
         _gateways.Refresh();
         _log.LogInformation("Gateway {Gateway}: mode set to {Mode} by user {UserId}.", gateway, mode ?? "the server file", userId);
@@ -345,6 +368,71 @@ public sealed partial class GatewayAdminService : IGatewayAdminService
             GatewayModes.Test => "This gateway now works in TEST mode: no real money moves.",
             _ => "This gateway now follows the server file again.",
         });
+    }
+
+    /// <summary>Whether guests on the website can pay through this gateway right now.</summary>
+    private async Task<bool> OfferedToGuestsAsync(string gateway)
+        => await _bookings.IsDepositRequiredAsync() && (gateway == GatewayNames.Card || await _deposits.IsWhishEnabledAsync());
+
+    public async Task<GatewayActionResult> SetWebsiteAsync(bool? deposits, bool? whish, int userId)
+    {
+        if (_settings is null)
+            return new GatewayActionResult(false, "The settings are not available here.");
+        if (deposits is null && whish is null)
+            return new GatewayActionResult(false, "Say which switch to change.");
+
+        var card = await _gateways.CardAsync();
+        var whishNow = await _gateways.WhishAsync();
+        var whishOn = whish ?? await _deposits.IsWhishEnabledAsync();
+        var depositsOn = deposits ?? await _bookings.IsDepositRequiredAsync();
+
+        // What "usable for guests" means: its keys are there - and on the live system it is in LIVE mode.
+        bool Usable(bool configured, string mode) => configured && !(_server.Production && mode == GatewayModes.Test);
+
+        if (whish == true)
+        {
+            if (!whishNow.IsConfigured)
+                return new GatewayActionResult(false, "Save the Whish keys first, and press Check connection.");
+            if (!Usable(true, whishNow.Mode))
+                return new GatewayActionResult(false, "Whish is in TEST mode. On the live website anybody could confirm a booking without paying (Whish's test page has a Simulate Success button). Switch Whish to Live first.");
+        }
+
+        // With deposits on, every method the website offers must be usable: the card always is offered when its
+        // keys are there, Whish when its switch is on.
+        if (depositsOn && (deposits == true || whish == true))
+        {
+            var cardUsable = Usable(card.IsConfigured, card.Mode);
+            var whishUsable = whishOn && Usable(whishNow.IsConfigured, whishNow.Mode);
+            if (!card.IsConfigured && !whishUsable)
+                return new GatewayActionResult(false, "No gateway is ready: save the Bank of Beirut keys (or the Whish keys, with Whish offered) first.");
+            if (card.IsConfigured && !cardUsable)
+                return new GatewayActionResult(false, "Bank of Beirut is in TEST mode. On the live website a booking could be confirmed with a test card. Switch Bank of Beirut to Live first.");
+        }
+
+        if (deposits is { } wantDeposits) await WriteSwitchAsync(DepositsSetting, wantDeposits, userId);
+        if (whish is { } wantWhish) await WriteSwitchAsync(WhishOptions.EnabledSetting, wantWhish, userId);
+        _log.LogInformation("Website payments: deposits {Deposits}, Whish {Whish}, set by user {UserId}.",
+            deposits?.ToString() ?? "unchanged", whish?.ToString() ?? "unchanged", userId);
+
+        return new GatewayActionResult(true, (depositsOn, whishOn) switch
+        {
+            (false, true) => "Saved. Whish is switched on, but guests will only see it once the deposit is taken online (the switch above).",
+            (false, false) => "Saved. Guests do not pay online: a website booking is a request that staff confirm.",
+            (true, true) => "Saved. Guests pay the deposit online, by card or by Whish.",
+            (true, false) => "Saved. Guests pay the deposit online, by card.",
+        });
+    }
+
+    /// <summary>A switch is stored '1' / '0' (several procedures read exactly that), keeping the row's own type and description.</summary>
+    private async Task WriteSwitchAsync(string key, bool on, int userId)
+    {
+        var current = await _settings!.GetAsync(key);
+        await _settings.UpsertAsync(key, new Model.Core.SettingUpsertRequest
+        {
+            SettingValue = on ? "1" : "0",
+            DataType = current?.DataType ?? "bool",
+            Description = current?.Description,
+        }, userId);
     }
 
     /* ---- the connection check: moves no money ------------------------------------------------ */

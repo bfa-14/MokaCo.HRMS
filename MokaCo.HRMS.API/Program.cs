@@ -302,7 +302,8 @@ builder.Services.AddHttpClient(PaymentGateways.WhishHttpClient, client => client
 builder.Services.AddSingleton(new GatewayKeyProtector(jwtOptions.SecretKey));
 builder.Services.AddSingleton<GatewayStoreCache>();
 builder.Services.AddSingleton(new GatewayServerFacts(
-    builder.Configuration[MpgsOptions.SiteUrlKey]?.Trim().TrimEnd('/'), builder.Configuration[MpgsOptions.ApiPublicUrlKey]?.Trim().TrimEnd('/')));
+    builder.Configuration[MpgsOptions.SiteUrlKey]?.Trim().TrimEnd('/'), builder.Configuration[MpgsOptions.ApiPublicUrlKey]?.Trim().TrimEnd('/'),
+    Production: builder.Environment.IsProduction()));
 builder.Services.AddScoped<IPaymentGatewayRepository, PaymentGatewayRepository>();
 builder.Services.AddScoped<IPaymentGateways>(services => new PaymentGateways(
     services.GetRequiredService<IPaymentGatewayRepository>(), services.GetRequiredService<GatewayStoreCache>(),

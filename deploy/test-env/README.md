@@ -39,6 +39,7 @@ to production. In test, the login page and the header turn red with a TEST tag.
 | `setup-test-api.sh` | run with sudo | Steps 2, 4, 5 and 6 below in one run: login, files, settings, service, then checks it. |
 | `deploy-test.sh` | run on the VM | Builds what `deploy/sync-test.sh` (laptop) sent from `dev` and updates the test side only. |
 | `apply-sql-test.sh` | run | Applies `docs/*.sql` to the test DB with the `USE MokaCo_HRMS;` line removed. |
+| `update-test.sh` | run from `~/src-test/MokaCo.HRMS/deploy/test-env/` | **The one command for the test side.** Asks the test database which numbered scripts it lacks (`deploy/check-scripts.sql`), applies exactly those in order with `apply-sql-test.sh`, then runs `deploy-test.sh`. `--check` only lists what is missing. Use it whenever the test login answers 502 after a deploy: that is `deploy-test.sh` having stopped the test API because a script was missing. |
 | `mokaco-api-test.service` | `/etc/systemd/system/` | The unit. |
 | `api-test.env.example` | `/etc/mokaco/api-test.env` | Settings template; fill it in on the VM. |
 | `enable-env-switch.sh` | run with sudo | Turns the login switch on in nginx; `--undo` puts the site back exactly. |
