@@ -83,6 +83,32 @@ public class BookingRow
     public DateTime? HoldExpiresUtc { get; set; }
     public DateTime? PaidConfirmedUtc { get; set; }
 
+    /// <summary>
+    /// A website booking that never became one (script 121): still HELD for its online deposit, or RELEASED
+    /// because the deposit was not paid. The bookings list and the calendar leave these out unless asked: to
+    /// staff, an attempt nobody paid for is not a booking. Decided here, once, for every screen.
+    /// </summary>
+    public bool UnpaidAttempt => IsUnpaidAttempt(Status, Source, HoldExpiresUtc, PaidAmount, RefundedAmount, DecidedByUserId, CancelledBy, CancelReason);
+
+    /// <summary>
+    /// Held: Pending from the website with a hold (only a deposit booking carries one). Released: Cancelled by
+    /// nobody (not staff, not the guest) with the release procedures' own reason, and no money ever on it.
+    /// A booking staff cancelled, or one the guest paid on, is never an "attempt", whatever its reason says.
+    /// </summary>
+    public static bool IsUnpaidAttempt(string? status, string? source, DateTime? holdExpiresUtc, decimal paidAmount, decimal refundedAmount,
+        int? decidedByUserId, string? cancelledBy, string? cancelReason)
+    {
+        if (source != "Website") return false;
+        if (status == "Pending") return holdExpiresUtc is not null;
+        return status == "Cancelled"
+            && paidAmount <= 0 && refundedAmount <= 0
+            && decidedByUserId is null && string.IsNullOrWhiteSpace(cancelledBy)
+            && (cancelReason ?? string.Empty).TrimStart().StartsWith(UnpaidReason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>How booking.usp_Booking_ReleaseHold ("Payment not completed.") and usp_Booking_ExpireHolds ("Payment not completed in time.") word it.</summary>
+    public const string UnpaidReason = "Payment not completed";
+
     /* ---- joined, not stored ---- */
 
     public string RoomName { get; set; } = string.Empty;
