@@ -59,7 +59,7 @@ if [ "$what" != web ]; then
     sleep 2
     [ -n "$health" ] || health=$(curl -s -m 3 "http://127.0.0.1:$PORT/health" || true)
     journal=$(sudo journalctl -u "$UNIT" --since "$since" --no-pager -o cat 2>/dev/null || true)
-    if [ -n "$health" ] && grep -q 'Notifications are OFF' <<< "$journal" && grep -q 'Machine pull is OFF' <<< "$journal"; then
+    if [ -n "$health" ] && grep -qE 'Notifications are OFF|Mail guard: this is not the production system' <<< "$journal" && grep -q 'Machine pull is OFF' <<< "$journal"; then
       ok=1
       break
     fi

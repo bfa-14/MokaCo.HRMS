@@ -226,6 +226,7 @@ builder.Services.AddScoped<IApprovalTierService, ApprovalTierService>();
 
 // --- DI: services (Attendance) ---
 builder.Services.AddScoped<ISettingService, SettingService>();
+builder.Services.AddScoped<MokaCo.HRMS.Api.Jobs.IMailProbe, MokaCo.HRMS.Api.Jobs.MailProbe>();
 builder.Services.AddScoped<IDeviceService, DeviceService>();
 builder.Services.AddScoped<IShiftService, ShiftService>();
 builder.Services.AddScoped<IRosterService, RosterService>();

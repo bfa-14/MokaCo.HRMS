@@ -34,8 +34,10 @@ DECLARE @BPass BIT = IIF((SELECT V FROM @set WHERE K = 'BookingSmtpPassword') IS
 DECLARE @BFrom NVARCHAR(200) = (SELECT V FROM @set WHERE K = 'BookingFromEmail');
 DECLARE @WhatsApp BIT = IIF(LOWER(ISNULL((SELECT V FROM @set WHERE K = 'WhatsAppEnabled'), N'0')) IN (N'1', N'true', N'yes', N'on')
                             AND NOT EXISTS (SELECT 1 FROM @set WHERE K IN ('WhatsAppApiUrl', 'WhatsAppPhoneNumberId', 'WhatsAppAccessToken') AND V IS NULL), 1, 0);
-DECLARE @WorkerOn BIT = IIF(@Host IS NOT NULL OR @WhatsApp = 1, 1, 0);
 DECLARE @OwnAccount BIT = IIF(@BUser = 1 AND @BPass = 1, 1, 0);
+/* The bookings mailbox with a server of its own needs no HR mail server (API of 22 Nov 2026 and later). */
+DECLARE @Alone BIT = IIF(@OwnAccount = 1 AND @BHost IS NOT NULL, 1, 0);
+DECLARE @WorkerOn BIT = IIF(@Host IS NOT NULL OR @WhatsApp = 1 OR @Alone = 1, 1, 0);
 DECLARE @SendHost NVARCHAR(200) = ISNULL(@BHost, @Host);
 DECLARE @SendPort NVARCHAR(20)  = ISNULL(@BPort, @Port);
 DECLARE @missing NVARCHAR(MAX) = (SELECT STRING_AGG(CAST(K AS NVARCHAR(MAX)), N', ') FROM @set
@@ -53,8 +55,9 @@ SET @out += CONCAT(@nl, N'== The two mail accounts', @nl,
         N'; port ', ISNULL(@BPort, CONCAT(N'the HR port, ', @Port)), @nl,
     IIF(@missing IS NULL, N'', CONCAT(N'Rows that do not exist in the settings table at all: ', @missing, @nl)),
     N'Booking mail is sent through: ',
-        CASE WHEN @WorkerOn = 0 THEN N'NOTHING - the mail service is off (no HR mail server, WhatsApp off)'
-             WHEN @Host IS NULL THEN N'NOTHING - there is no HR mail server, and e-mail needs one'
+        CASE WHEN @WorkerOn = 0 THEN N'NOTHING - the mail service is off (no mail server, WhatsApp off)'
+             WHEN @OwnAccount = 1 AND @SendHost IS NULL THEN N'NOTHING - the bookings mailbox has a login but no mail server (its own or the HR one)'
+             WHEN @OwnAccount = 0 AND @Host IS NULL THEN N'NOTHING - there is no HR mail server and the bookings mailbox has no login of its own'
              WHEN @OwnAccount = 1 THEN CONCAT(N'the bookings mailbox, ', @SendHost, N':', @SendPort, N', written as ', ISNULL(@BFrom, N'its login'))
              ELSE N'the HR account and the HR address (the bookings mailbox has no login and password)' END, @nl,
     N'Staff are told of website bookings at (BookingNotifyEmail): ', IIF((SELECT V FROM @set WHERE K = 'BookingNotifyEmail') IS NULL, N'EMPTY - no staff alert', N'filled'), @nl);
@@ -118,7 +121,8 @@ FROM booking.BOOKING b ORDER BY b.BookingId DESC;
 DECLARE @NewQueued BIT = IIF(EXISTS (SELECT 1 FROM core.EMAIL_OUTBOX WHERE BookingId = @NewId AND Channel = 'Email' AND MailKind <> 'StaffAlert'), 1, 0);
 
 DECLARE @hint NVARCHAR(400) = CASE
-    WHEN @LastErr LIKE N'%No SmtpHost%' THEN N'There is no mail server: fill Settings > Notifications > Mail server.'
+    WHEN @LastErr LIKE N'%TEST SYSTEM%' THEN N'This is a TEST system: it writes only to the test recipients listed on Settings > Notifications. Add the address there to receive this message.'
+    WHEN @LastErr LIKE N'%No SmtpHost%' THEN N'There is no mail server for it: fill the bookings mailbox''s own Mail server, or Settings > Notifications > Mail server.'
     WHEN @LastErr LIKE N'%authenticat%' OR @LastErr LIKE N'%5.7.%' OR @LastErr LIKE N'%credential%' OR @LastErr LIKE N'%535%' OR @LastErr LIKE N'%534%'
          THEN N'The mail server REFUSED THE LOGIN. Wrong login or password, a mailbox that needs an "app password" (Google), a mailbox where sending by password is switched off (Microsoft 365), or an account that may not send as this From address.'
     WHEN @LastErr LIKE N'%timed out%' OR @LastErr LIKE N'%No such host%' OR @LastErr LIKE N'%name or service%' OR @LastErr LIKE N'%refused%' OR @LastErr LIKE N'%Failure sending%' OR @LastErr LIKE N'%Unable to connect%'
@@ -129,9 +133,9 @@ DECLARE @hint NVARCHAR(400) = CASE
 
 SET @out += CONCAT(@nl, N'== VERDICT', @nl, CASE
     WHEN @WorkerOn = 0
-        THEN N'The mail service is OFF: Settings > Notifications > Mail server is empty (and WhatsApp is off), so HRMS sends nothing at all. Booking mail needs that row filled too, even with a bookings mailbox of its own.'
-    WHEN @Host IS NULL
-        THEN N'There is no HR mail server (Settings > Notifications > Mail server is empty): every e-mail fails, booking mail included.'
+        THEN N'The mail service is OFF: there is no mail server at all (Settings > Notifications > Mail server is empty, and the bookings mailbox has no server and login of its own), so HRMS sends nothing.'
+    WHEN @Host IS NULL AND @Alone = 0
+        THEN N'There is no mail server for booking mail: the HR Mail server is empty and the bookings mailbox has no server and login of its own.'
     WHEN @NewId IS NOT NULL AND @NewQueued = 0 AND @NewHasMail = 0
         THEN CONCAT(N'The newest booking (', @NewRef, N') has NO guest e-mail address, so there was nobody to write to. Give the booking an e-mail address and try again.')
     WHEN @NewId IS NOT NULL AND @NewQueued = 0
@@ -150,6 +154,8 @@ SET @out += CONCAT(@nl, N'== VERDICT', @nl, CASE
     ELSE N'No booking message in the last 7 days: nothing was written, so nothing could be sent.' END, @nl);
 
 DECLARE @Stale INT = (SELECT COUNT(*) FROM @box WHERE [Status] IN ('Pending', 'Sending') AND CreatedUtc < DATEADD(DAY, -1, @now));
+IF @Host IS NULL AND @Alone = 1
+    SET @out += CONCAT(N'NOTE: the HR mail server is empty and the bookings mailbox uses its own. That works with the API of 22 Nov 2026 and later; an older API sends nothing until the HR Mail server is filled.', @nl);
 IF @Stale > 0
     SET @out += CONCAT(N'CAREFUL: ', @Stale, N' booking message(s) have been waiting for more than a day. The moment mail works they ALL go out, old ones included. Tell Claude before fixing the mail settings.', @nl);
 

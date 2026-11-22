@@ -76,11 +76,18 @@ public class EmailWorker : BackgroundService
     /// </summary>
     private bool? _lastConfigured;
 
-    public EmailWorker(IServiceScopeFactory scopes, IHttpClientFactory http, ILogger<EmailWorker> logger)
+    /// <summary>Only the production system writes to whoever the outbox names (<see cref="MailGuard"/>).</summary>
+    private readonly bool _production;
+
+    /// <summary>The test recipients the last cycle applied, so a change of the list is logged once.</summary>
+    private string? _lastGuard;
+
+    public EmailWorker(IServiceScopeFactory scopes, IHttpClientFactory http, ILogger<EmailWorker> logger, IHostEnvironment environment)
     {
         _scopes = scopes;
         _http = http;
         _logger = logger;
+        _production = environment.IsProduction();
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -90,6 +97,14 @@ public class EmailWorker : BackgroundService
             "and WhatsApp settings are re-read before EVERY cycle, so changing them on the Settings page " +
             "takes effect without restarting the API.",
             (int)StartupDelay.TotalSeconds, (int)Interval.TotalSeconds);
+
+        // AT START, not in the first cycle: deploy-test.sh reads the journal for these words before it leaves a
+        // test API running on a copy of production.
+        if (!_production)
+            _logger.LogInformation(
+                MailGuard.StartupLine + ", so e-mail and WhatsApp go ONLY to the test recipients listed on " +
+                "Settings > Notifications ({Setting}). Everybody else is refused, whatever the mail settings say.",
+                MailGuard.SettingKey);
 
         try
         {
@@ -148,23 +163,28 @@ public class EmailWorker : BackgroundService
         var bookings = scope.ServiceProvider.GetRequiredService<IBookingRepository>();
 
         var config = await ReadSettingsAsync(settings);
+        var guard = await ReadGuardAsync(settings);
 
         // EITHER channel is enough to make the cycle worth running. Gating the whole thing on SMTP
         // would leave a WhatsApp-only installation queueing nothing at all.
         var smtpReady = !string.IsNullOrWhiteSpace(config.Host);
+        // The bookings mailbox with a server of its own needs no HR mail server: booking mail can be on while the
+        // HR mail is off (a test copy, whose HR notifications would reach real staff).
+        var bookingMailAlone = !smtpReady && config.Booking.StandsAlone;
         var whatsAppReady = config.WhatsAppEnabled
             && !string.IsNullOrWhiteSpace(config.WhatsAppApiUrl)
             && !string.IsNullOrWhiteSpace(config.WhatsAppPhoneNumberId)
             && !string.IsNullOrWhiteSpace(config.WhatsAppAccessToken);
 
-        if (!smtpReady && !whatsAppReady)
+        if (!smtpReady && !bookingMailAlone && !whatsAppReady)
         {
             // SILENTLY, as specified — but once, on the way into the state, not every minute.
             if (_lastConfigured != false)
             {
                 _logger.LogInformation(
-                    "Notifications are OFF: no SmtpHost is set and WhatsApp is not enabled, so nothing is " +
-                    "queued or sent. This line is logged again the moment either appears.");
+                    "Notifications are OFF: no SmtpHost is set, the bookings mailbox has no server and login of its " +
+                    "own, and WhatsApp is not enabled, so nothing is queued or sent. This line is logged again the " +
+                    "moment any of them appears.");
                 _lastConfigured = false;
             }
             return;
@@ -173,7 +193,8 @@ public class EmailWorker : BackgroundService
         if (_lastConfigured != true)
         {
             _logger.LogInformation("Notifications are ON. Email: {Email}. WhatsApp: {WhatsApp}.",
-                smtpReady ? $"{config.Host}:{config.Port}" : "off",
+                smtpReady ? $"{config.Host}:{config.Port}"
+                    : bookingMailAlone ? $"booking mail only, through {config.Booking.Host}" : "off",
                 whatsAppReady ? "on" : "off");
             _lastConfigured = true;
         }
@@ -182,7 +203,9 @@ public class EmailWorker : BackgroundService
         // automatic ever, because nothing else in the system writes those rows. Cheap and idempotent:
         // the procedure checks its own on/off setting, looks back only seven days, and a unique index
         // keeps it to one row per request per channel however often this runs.
-        var queued = await outbox.QueueClosedRequestsAsync();
+        // Only when a channel of the HR notifications is on: with the bookings mailbox alone, those rows would be
+        // written just to fail ("No SmtpHost is configured").
+        var queued = smtpReady || whatsAppReady ? await outbox.QueueClosedRequestsAsync() : 0;
 
         // EVERY CYCLE, INCLUDING ZERO. "queued 0" is the answer to "is this thing running at all?",
         // and logging only the non-zero case makes a worker that is working perfectly look identical
@@ -248,6 +271,10 @@ public class EmailWorker : BackgroundService
                  */
                 try
                 {
+                    // A test system writes only to its test recipients: a copy of production names real people.
+                    if (!guard.Allows(row.ToAddress))
+                        throw new InvalidOperationException(MailGuard.Refusal);
+
                     if (isWhatsApp)
                     {
                         if (!whatsAppReady)
@@ -258,16 +285,16 @@ public class EmailWorker : BackgroundService
                     }
                     else
                     {
-                        if (!smtpReady)
+                        // The server THIS row goes through: the bookings mailbox's own, else the HR one.
+                        var route = BookingMailRouting.Email(sender, config.Booking, config.FromEmail, config.FromName);
+                        var host = BookingMailRouting.Host(route, config.Booking, config.Host);
+                        if (host.Length == 0)
                             throw new InvalidOperationException("No SmtpHost is configured.");
 
-                        var route = BookingMailRouting.Email(sender, config.Booking, config.FromEmail, config.FromName);
                         var client = route.Account == MailAccount.Booking
-                            ? bookingSmtp ??= BuildClient(
-                                string.IsNullOrWhiteSpace(config.Booking.Host) ? config.Host : config.Booking.Host,
-                                config.Booking.Port > 0 ? config.Booking.Port : config.Port,
-                                config.Booking.User, config.Booking.Password)
-                            : smtp ??= BuildClient(config.Host, config.Port, config.User, config.Password);
+                            ? bookingSmtp ??= BuildClient(host, BookingMailRouting.Port(route, config.Booking, config.Port),
+                                config.Booking.User, config.Booking.Password, _logger)
+                            : smtp ??= BuildClient(host, config.Port, config.User, config.Password, _logger);
                         await SendEmailAsync(client, row, route, pdfs, ct);
                     }
 
@@ -296,7 +323,9 @@ public class EmailWorker : BackgroundService
 
                     // BEFORE the log line, so a logger that throws cannot cost the row its result —
                     // an unmarked row is a duplicate; a missing log line is only a missing log line.
-                    await outbox.MarkResultAsync(row.EmailId, false, Truncate(ex.Message, MaxErrorLength));
+                    // The whole chain: for a connection that failed, SmtpClient says only "Failure sending mail." and
+                    // the reason (refused, timed out, no such host) is in the inner exception.
+                    await outbox.MarkResultAsync(row.EmailId, false, Truncate(MailProbe.Chain(ex), MaxErrorLength));
 
                     // Warning, not Error: a typo in somebody's address is ordinary, and the reason is
                     // recorded against the row where whoever fixes the address will find it. The
@@ -400,7 +429,7 @@ public class EmailWorker : BackgroundService
     /// Builds the client from the settings as they stand THIS cycle — never cached, so a corrected
     /// password works on the next pass rather than after a restart.
     /// </summary>
-    private SmtpClient BuildClient(string host, int port, string user, string password)
+    internal static SmtpClient BuildClient(string host, int port, string user, string password, ILogger logger)
     {
         var client = new SmtpClient(host, port);
 
@@ -429,7 +458,7 @@ public class EmailWorker : BackgroundService
          * failures apart: no user reaching the server is a settings problem, and a user that IS
          * reaching it and still being refused is a credential the provider rejects.
          */
-        _logger.LogInformation("authenticating as '{SmtpUser}'", user);
+        logger.LogInformation("authenticating as '{SmtpUser}'", user);
 
         return client;
     }
@@ -519,6 +548,34 @@ public class EmailWorker : BackgroundService
     /* ─────────────────────────────── Settings ──────────────────────────── */
 
     /// <summary>
+    /// The test-system guard for this cycle. FAILS CLOSED: a list that cannot be read is an empty one, so a
+    /// test system then writes to nobody.
+    /// </summary>
+    private async Task<MailGuard> ReadGuardAsync(ISettingService settings)
+    {
+        if (_production) return MailGuard.Of(true, null);
+
+        string? list = null;
+        try
+        {
+            list = (await settings.GetAsync(MailGuard.SettingKey))?.SettingValue;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read {Setting}; this cycle writes to nobody.", MailGuard.SettingKey);
+        }
+
+        var guard = MailGuard.Of(false, list);
+        var described = guard.Describe();
+        if (_lastGuard != described)
+        {
+            _logger.LogInformation("Mail guard: test recipients are now: {Recipients}.", described);
+            _lastGuard = described;
+        }
+        return guard;
+    }
+
+    /// <summary>
     /// Every setting the two channels need, read fresh every cycle.
     ///
     /// FAILS SAFE: an unreadable setting comes back as an empty host with WhatsApp off, which the
@@ -529,12 +586,8 @@ public class EmailWorker : BackgroundService
     {
         try
         {
-            var host = (await settings.GetAsync("SmtpHost"))?.SettingValue;
-            var port = (await settings.GetAsync("SmtpPort"))?.SettingValue;
-            var user = (await settings.GetAsync("SmtpUser"))?.SettingValue;
-            var password = (await settings.GetAsync("SmtpPassword"))?.SettingValue;
-            var fromEmail = (await settings.GetAsync("SmtpFromEmail"))?.SettingValue;
-            var fromName = (await settings.GetAsync("SmtpFromName"))?.SettingValue;
+            // The two mail accounts: one reader, shared with the Settings page's test button (MailAccountSettings).
+            var mail = await MailAccountSettings.ReadAsync(settings);
 
             var waEnabled = (await settings.GetAsync("WhatsAppEnabled"))?.SettingValue;
             var waUrl = (await settings.GetAsync("WhatsAppApiUrl"))?.SettingValue;
@@ -542,33 +595,14 @@ public class EmailWorker : BackgroundService
             var waToken = (await settings.GetAsync("WhatsAppAccessToken"))?.SettingValue;
             var waTemplate = (await settings.GetAsync("WhatsAppTemplateName"))?.SettingValue;
 
-            // The bookings mailbox (QA3 BKG-7).
-            var bookingPort = (await settings.GetAsync("BookingSmtpPort"))?.SettingValue;
-            var booking = new BookingMailSettings(
-                Trimmed((await settings.GetAsync("BookingSmtpHost"))?.SettingValue),
-                int.TryParse(bookingPort, out var parsedBookingPort) && parsedBookingPort > 0 ? parsedBookingPort : 0,
-                Trimmed((await settings.GetAsync("BookingSmtpUser"))?.SettingValue),
-                (await settings.GetAsync("BookingSmtpPassword"))?.SettingValue ?? string.Empty,
-                Trimmed((await settings.GetAsync("BookingFromEmail"))?.SettingValue),
-                Trimmed((await settings.GetAsync("BookingFromName"))?.SettingValue),
-                Trimmed((await settings.GetAsync("BookingWhatsAppTemplate"))?.SettingValue),
-                Trimmed((await settings.GetAsync("BookingWhatsAppLang"))?.SettingValue));
-
             return new NotificationSettings(
-                (host ?? string.Empty).Trim(),
-                int.TryParse(port, out var parsed) && parsed > 0 ? parsed : 587,
-                (user ?? string.Empty).Trim(),
-                password ?? string.Empty,
-                // The From address falls back to the user, which for almost every provider IS the
-                // mailbox — a blank From is rejected outright and would fail every mail in the queue.
-                string.IsNullOrWhiteSpace(fromEmail) ? (user ?? string.Empty).Trim() : fromEmail.Trim(),
-                string.IsNullOrWhiteSpace(fromName) ? "MokaCo HRMS" : fromName.Trim(),
+                mail.Host, mail.Port, mail.User, mail.Password, mail.FromEmail, mail.FromName,
                 IsOn(waEnabled),
                 (waUrl ?? string.Empty).Trim(),
                 (waPhoneId ?? string.Empty).Trim(),
                 (waToken ?? string.Empty).Trim(),
                 string.IsNullOrWhiteSpace(waTemplate) ? "request_update" : waTemplate.Trim(),
-                booking);
+                mail.Booking);
         }
         catch (Exception ex)
         {

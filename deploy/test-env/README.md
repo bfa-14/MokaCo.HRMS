@@ -30,6 +30,14 @@ to production. In test, the login page and the header turn red with a TEST tag.
 
 `refresh-test-db.sh` always runs the neutralise script, so use it rather than restoring by hand.
 
+**The mail guard (22 Nov 2026).** Neutralising is no longer the only thing between the test API and real people:
+an API that is not the production one (the test API runs as `Staging`) writes e-mail and WhatsApp **only to the
+test recipients** listed on Settings > Notifications (`TestMailRecipients`; empty = nobody), whatever the mail
+settings say. So a mail account, or the bookings mailbox, may be filled on the test side to try a booking's
+e-mail: add your own address to the list first. `deploy-test.sh` accepts a test API whose log says either
+"Notifications are OFF" or "Mail guard: this is not the production system"; an older build with mail
+switched on is still stopped (that was the 502 after filling the Mail server on test).
+
 ## Files
 
 | File | Goes to | What it does |
@@ -75,7 +83,7 @@ sudo ~/test-env/setup-test-api.sh       # or: sudo MPGS_TEST_PASSWORD='...' ~/te
 ```
 It creates the login with a generated password, copies production's build and front end, writes
 `/etc/mokaco/api-test.env` once, installs the service with production's `ExecStart`, starts it, and stops
-it again unless `/health` says Staging and the log says mail and the machine pull are OFF. The steps below
+it again unless `/health` says Staging and the log says the machine pull is OFF and mail is OFF or guarded. The steps below
 are what it does, for doing them by hand.
 
 ### 2. Create the test API's SQL login (once)
