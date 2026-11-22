@@ -55,6 +55,18 @@ not seen when this was written: the file names below are where the HRMS notes sa
 
 `error` is a sentence written for the guest; show it as it stands.
 
+## A booking that is not paid is not a booking (HRMS script 121)
+
+While deposits are on, the booking the site creates is only **held** for the payment: the API gives it a time limit
+(`BookingHoldMinutes`, 15) from the moment it exists, tells nobody about it, and releases it by itself when it is not
+paid. Nothing for the site to build, with one courtesy worth adding:
+
+- when the guest **gives up** before a payment page opened (they close the payment choice, or `/pay` answered an error
+  and they do not retry), call `POST /api/public/booking/{ref}/release`. The slot is free again at once instead of
+  after the hold. The answer carries the status, as for the card's cancel today.
+- do not tell the guest "your request was received" after create while `depositRequired` is true: say it only on the
+  confirmed page. The guest gets no e-mail until the payment goes through.
+
 ## Trying it
 
 - Whish must be offered by the API: in HRMS, Settings > Payment gateways holds the Whish keys (test or live), and on

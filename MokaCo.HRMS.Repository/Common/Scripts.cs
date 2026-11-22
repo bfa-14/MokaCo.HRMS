@@ -47,6 +47,9 @@ public static class Scripts
     /// <summary>A website booking that must be paid online starts Pending whatever BookingAutoConfirm says: its payment confirms it.</summary>
     public const string DepositBeforeConfirm120 = "docs/120_booking_deposit_before_confirm.sql";
 
+    /// <summary>A booking waiting for its online deposit is held from creation, announced only when paid, released when not.</summary>
+    public const string UnpaidNeverStays121 = "docs/121_booking_unpaid_never_stays.sql";
+
     /// <summary>
     /// QA3 DEPLOY GUARD: every numbered script this build of the API calls, in apply order, each with the
     /// object it is checked by. SchemaCheck looks for them at startup; while one is missing the log names
@@ -87,5 +90,7 @@ public static class Scripts
         // A function, and the only object the script adds (it otherwise redefines usp_Booking_Create). deploy/check-scripts.sql
         // checks the procedure's own text, so a run that stopped between the two still reads as missing there.
         new(DepositBeforeConfirm120, "booking.fn_NewBookingStatus"),
+        // As for 120: the function is the only object it adds; check-scripts.sql reads the procedure's own text.
+        new(UnpaidNeverStays121, "booking.fn_DepositHoldUntil"),
     ];
 }
