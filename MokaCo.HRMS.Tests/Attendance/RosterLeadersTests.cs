@@ -21,7 +21,7 @@ namespace MokaCo.HRMS.Tests.Attendance;
 /// Script 123's shift leaders through the API: the service turns the procedure's rows into the branch's own list and
 /// everybody who counts as a leader, sends each person once, and says plainly (503) when the script is missing; the
 /// controller has the rotation's routes and permissions and answers a save with the list as stored. Against a real
-/// database (skipped without one): the three procedures bind and map, and the planning context carries the dated
+/// database (skipped without one): the procedures bind and map, and the planning context carries the dated
 /// shift hours and the leaders.
 /// </summary>
 [Collection(DatabaseCollection.Name)]
@@ -36,6 +36,16 @@ public class RosterLeadersTests
         new() { EmployeeId = 7, FullName = "Bilal", IsStored = true },
         new() { EmployeeId = 9, FullName = "Carla", IsStored = false, LeadSlot = "L1" },
     ];
+
+    /// <summary>Who may be added: the branch's people today (Bilal has moved away, Dina is new here).</summary>
+    private static readonly IReadOnlyList<RosterLeaderCandidateDto> Candidates =
+    [
+        new() { EmployeeId = 4, FullName = "Amal" },
+        new() { EmployeeId = 9, FullName = "Carla" },
+        new() { EmployeeId = 12, FullName = "Dina" },
+    ];
+
+    private const string NotInBranch = "Lina Haddad is not in this branch: only its own people can be its shift leaders.";
 
     private static object? Field(object? value, string name) => value?.GetType().GetProperty(name)?.GetValue(value);
 
@@ -59,6 +69,7 @@ public class RosterLeadersTests
     {
         var repo = new Mock<IAutoRosterRepository>(MockBehavior.Strict);
         repo.Setup(r => r.GetLeadersAsync(3, Caller)).ReturnsAsync(Rows);
+        repo.Setup(r => r.GetLeaderCandidatesAsync(3, Caller)).ReturnsAsync(Candidates);
 
         var leaders = await new AutoRosterService(repo.Object).GetLeadersAsync(3, Caller);
 
@@ -66,7 +77,36 @@ public class RosterLeadersTests
         Assert.Equal([4, 7], leaders.EmployeeIds);                                 // the picker: the stored list only
         Assert.Equal([4, 7, 9], leaders.Leaders.Select(l => l.EmployeeId));        // everybody kept apart, rotation leads too
         Assert.Equal("L1", leaders.Leaders.Single(l => l.EmployeeId == 9).LeadSlot);
+        Assert.Equal([4, 9, 12], leaders.Candidates.Select(c => c.EmployeeId));    // who the picker may add, as the procedure lists them
+        Assert.Equal("Dina", leaders.Candidates.Single(c => c.EmployeeId == 12).FullName);
     }
+
+    [Fact]
+    public async Task The_candidates_are_read_for_the_same_branch_and_caller_and_a_refusal_there_refuses_the_read()
+    {
+        var repo = new Mock<IAutoRosterRepository>(MockBehavior.Strict);
+        repo.Setup(r => r.GetLeadersAsync(3, Caller)).ReturnsAsync(Rows);
+        repo.Setup(r => r.GetLeaderCandidatesAsync(3, Caller)).ThrowsAsync(Missing("attendance.usp_AutoRoster_GetLeaderCandidates"));
+
+        // An earlier copy of script 123 (without the candidates): the deploy guard reads it as missing, and so does the read.
+        var ex = await Assert.ThrowsAsync<WorkflowException>(() => new AutoRosterService(repo.Object).GetLeadersAsync(3, Caller));
+
+        Assert.Equal(503, ex.StatusCode);
+        Assert.Equal(AutoRosterService.LeadersNotAvailable, ex.Message);
+        Assert.Equal("attendance.usp_AutoRoster_GetLeaderCandidates",
+            Assert.Single(Scripts.Required, m => m.Script == Scripts.RosterLeaders123).Object);
+    }
+
+    [Theory]
+    [InlineData(NotInBranch, "Lina Haddad")]
+    [InlineData("O'Neil, Sami is not in this branch: only its own people can be its shift leaders.", "O'Neil, Sami")]
+    [InlineData(" is not in this branch: only its own people can be its shift leaders.", null)]       // no name: not that refusal
+    [InlineData("Somebody on the shift leaders list was not found.", null)]
+    [InlineData(NotYourBranch, null)]
+    [InlineData("", null)]
+    [InlineData(null, null)]
+    public void The_not_in_this_branch_refusal_gives_back_the_person_it_names(string? message, string? name)
+        => Assert.Equal(name, AutoRosterService.LeaderNotInBranch(message));
 
     [Fact]
     public async Task The_save_sends_each_person_once_for_the_branch_and_the_caller()
@@ -142,7 +182,7 @@ public class RosterLeadersTests
 
     [Theory]
     [InlineData(NotYourBranch, 403)]
-    [InlineData("Lina Haddad is not in this branch: only its own people can be its shift leaders.", 400)]
+    [InlineData(NotInBranch, 400)]
     [InlineData("Somebody on the shift leaders list was not found.", 400)]
     [InlineData("The shift leaders list could not be read.", 400)]
     public void The_procedures_sentences_keep_their_text_and_get_their_status(string message, int status)
@@ -228,6 +268,37 @@ public class RosterLeadersTests
         auto.Verify(a => a.GetLeadersAsync(3, It.IsAny<int?>()), Times.Never);
     }
 
+    [Fact]
+    public async Task A_save_refused_for_somebody_of_another_branch_carries_a_code_and_the_name()
+    {
+        var (controller, auto, _) = Build();
+        auto.Setup(a => a.SaveLeadersAsync(It.IsAny<RosterLeadersDto>(), Caller)).ThrowsAsync(WorkflowSqlErrors.MapMessage(NotInBranch));
+
+        var save = Assert.IsAssignableFrom<ObjectResult>(await controller.SaveLeaders(new RosterLeadersDto { BranchId = 3, EmployeeIds = [4] }));
+
+        // The web says it in the reader's language from the code and the name; the sentence stays for anything else.
+        Assert.Equal(400, save.StatusCode);
+        Assert.Equal(NotInBranch, Field(save.Value, "error"));
+        Assert.Equal(AutoRosterService.LeaderNotInBranchCode, Field(save.Value, "code"));
+        Assert.Equal("leader_not_in_branch", Field(save.Value, "code"));
+        Assert.Equal("Lina Haddad", Field(save.Value, "name"));
+        auto.Verify(a => a.GetLeadersAsync(It.IsAny<int>(), It.IsAny<int?>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task Another_400_carries_no_code()
+    {
+        var (controller, auto, _) = Build();
+        auto.Setup(a => a.SaveLeadersAsync(It.IsAny<RosterLeadersDto>(), Caller))
+            .ThrowsAsync(WorkflowSqlErrors.MapMessage("Somebody on the shift leaders list was not found."));
+
+        var save = Assert.IsAssignableFrom<ObjectResult>(await controller.SaveLeaders(new RosterLeadersDto { BranchId = 3, EmployeeIds = [4] }));
+
+        Assert.Equal(400, save.StatusCode);
+        Assert.Null(Field(save.Value, "code"));
+        Assert.Null(Field(save.Value, "name"));
+    }
+
     /* ---- against the database (script 123 applied), skipped without one ---- */
 
     private static AutoRosterRepository Repo() => new(new SqlConnectionFactory(DbFactAttribute.ConnectionString));
@@ -246,16 +317,38 @@ public class RosterLeadersTests
         Assert.Equal(["ShiftId", "EffectiveFrom", "StartTime", "EndTime", "CrossesMidnight", "BreakMinutes"],
             await ColumnsOf("attendance.usp_AutoRoster_GetShiftHours"));
         Assert.Equal(["EmployeeId", "FullName", "IsStored", "LeadSlot"], await ColumnsOf("attendance.usp_AutoRoster_GetLeaders"));
+        Assert.Equal(["EmployeeId", "FullName"], await ColumnsOf("attendance.usp_AutoRoster_GetLeaderCandidates"));
     }
 
     [DbFact]
     public async Task The_leaders_calls_bind_and_refuse_an_unknown_branch_by_its_sentence()
     {
         var read = await Assert.ThrowsAsync<SqlException>(() => Repo().GetLeadersAsync(-1, null));
+        var candidates = await Assert.ThrowsAsync<SqlException>(() => Repo().GetLeaderCandidatesAsync(-1, null));
         var save = await Assert.ThrowsAsync<SqlException>(() => Repo().SaveLeadersAsync(-1, [1, 2], null));
 
         Assert.Equal("Branch not found.", read.Errors[0].Message);
+        Assert.Equal("Branch not found.", candidates.Errors[0].Message);
         Assert.Equal("Branch not found.", save.Errors[0].Message);
+    }
+
+    [DbFact]
+    public async Task The_candidates_are_the_branchs_people_today_who_still_work_here()
+    {
+        await using var db = new SqlConnection(DbFactAttribute.ConnectionString);
+        var branch = await db.QueryFirstOrDefaultAsync<int?>("SELECT TOP 1 BranchId FROM hr.EMPLOYEE WHERE IsDeleted = 0 AND BranchId IS NOT NULL ORDER BY BranchId");
+        Assert.NotNull(branch);
+        var expected = (await db.QueryAsync<int>(
+            """
+            SELECT EmployeeId FROM hr.EMPLOYEE
+            WHERE BranchId = @b AND IsDeleted = 0
+              AND (TerminationDate IS NULL OR TerminationDate >= CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Middle East Standard Time' AS DATE))
+            """, new { b = branch })).Order().ToList();
+
+        var candidates = await Repo().GetLeaderCandidatesAsync(branch.Value, null);
+
+        Assert.Equal(expected, candidates.Select(c => c.EmployeeId).Order());
+        Assert.All(candidates, c => Assert.False(string.IsNullOrWhiteSpace(c.FullName)));
     }
 
     [DbFact]

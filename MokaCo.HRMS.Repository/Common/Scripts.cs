@@ -104,7 +104,8 @@ public static class Scripts
         // The last object the script creates; the change log's triggers come before it. As for 120: check-scripts.sql
         // also reads the three procedures it redefines, so re-running script 100, 110 or 117 shows 122 as missing again.
         new(ShiftChangeLog122, "attendance.usp_Shift_GetChanges"),
-        // The last procedure the script creates: a run that stopped half-way still reads as missing.
-        new(RosterLeaders123, "attendance.usp_AutoRoster_GetLeaders"),
+        // The last procedure the script creates: a run that stopped half-way, or an earlier copy of the script (before
+        // the picker's candidates), still reads as missing.
+        new(RosterLeaders123, "attendance.usp_AutoRoster_GetLeaderCandidates"),
     ];
 }

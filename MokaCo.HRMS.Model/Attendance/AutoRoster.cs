@@ -392,6 +392,9 @@ public class AutoRosterSettings
     public string RosterPatternRestDays { get; set; } = "Preference";
     public int RosterMinHoursBetweenShifts { get; set; } = 11;
     public int RosterMinWeeklyRestHours { get; set; } = 36;
+
+    /// <summary>The new-hire rule (script 123): this many months of 6-day weeks from the hire date, then 6 and 5 in turn.</summary>
+    public int RosterNewHireSixDayMonths { get; set; } = 3;
 }
 
 /// <summary>A row of the drawer's staff list.</summary>

@@ -6,7 +6,9 @@
    - usp_AutoRoster_SaveLeaders replaces the branch's own list (a leader kept keeps who added them, duplicates count
      once, an empty list clears it); usp_AutoRoster_GetLeaders gives that list UNION the rotation list's Lead 1 /
      Lead 2, one row per person. A leader moved to another branch may be kept, not added; somebody of another branch
-     is refused by name. The scope is the auto-roster's: EMP_VIEW_ALL or the branch's manager.
+     is refused by name, and so is somebody who has left the company. usp_AutoRoster_GetLeaderCandidates lists exactly
+     the people a save accepts as new leaders: the branch's people today, still employed - so the drawer's picker never
+     offers somebody the save refuses. The scope is the auto-roster's: EMP_VIEW_ALL or the branch's manager.
    Runs on a real dev database: everything inside one transaction that is rolled back; seeded rows start with 'QA3 '
    (users 'qa3.lead.*'). The refusals come last (a refused save leaves the transaction uncommittable, trap 21).
    Prints 'ok roster_leaders', or raises the first wrong result. Needs 116, 117 and 123.
@@ -87,18 +89,35 @@ BEGIN TRY
            (NULL,   @BA, @Dep, @Pos, N'QA3 Lead Bilal', '2020-01-01'),
            (NULL,   @BA, @Dep, @Pos, N'QA3 Lead Carla', '2020-01-01'),
            (NULL,   @BB, @Dep, @Pos, N'QA3 Lead Dina of B', '2020-01-01');
+    DECLARE @Today DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Middle East Standard Time' AS DATE);
+    INSERT INTO hr.EMPLOYEE (UserId, BranchId, DepartmentId, PositionId, FullName, HireDate, TerminationDate)
+    VALUES (NULL, @BA, @Dep, @Pos, N'QA3 Lead Elie left', '2020-01-01', DATEADD(DAY, -1, @Today)),
+           (NULL, @BA, @Dep, @Pos, N'QA3 Lead Fadi leaving', '2020-01-01', DATEADD(DAY, 30, @Today));
     DECLARE @MgrA INT = (SELECT EmployeeId FROM hr.EMPLOYEE WHERE FullName = N'QA3 Lead Manager A');
     DECLARE @MgrB INT = (SELECT EmployeeId FROM hr.EMPLOYEE WHERE FullName = N'QA3 Lead Manager B');
     DECLARE @A1 INT = (SELECT EmployeeId FROM hr.EMPLOYEE WHERE FullName = N'QA3 Lead Amal');
     DECLARE @A2 INT = (SELECT EmployeeId FROM hr.EMPLOYEE WHERE FullName = N'QA3 Lead Bilal');
     DECLARE @A3 INT = (SELECT EmployeeId FROM hr.EMPLOYEE WHERE FullName = N'QA3 Lead Carla');
     DECLARE @B1 INT = (SELECT EmployeeId FROM hr.EMPLOYEE WHERE FullName = N'QA3 Lead Dina of B');
+    DECLARE @Left INT = (SELECT EmployeeId FROM hr.EMPLOYEE WHERE FullName = N'QA3 Lead Elie left');
     UPDATE hr.BRANCH SET ManagerEmployeeId = @MgrA WHERE BranchId = @BA;
     UPDATE hr.BRANCH SET ManagerEmployeeId = @MgrB WHERE BranchId = @BB;
 
     DECLARE @r TABLE (Leaders INT);
     DECLARE @l TABLE (EmployeeId INT, FullName NVARCHAR(150), IsStored BIT, LeadSlot VARCHAR(2));
     DECLARE @list NVARCHAR(MAX);
+    DECLARE @c TABLE (EmployeeId INT, FullName NVARCHAR(150));
+
+    /* ---- who the picker may add: the branch's people today, still employed (Elie left yesterday; Fadi leaves next month) ---- */
+    INSERT INTO @c EXEC attendance.usp_AutoRoster_GetLeaderCandidates @BranchId = @BA, @CallerUserId = @UMgrA;
+    SET @msg = (SELECT STRING_AGG(FullName, ' | ') WITHIN GROUP (ORDER BY FullName) FROM @c);
+    IF ISNULL(@msg, '') <> 'QA3 Lead Amal | QA3 Lead Bilal | QA3 Lead Carla | QA3 Lead Fadi leaving | QA3 Lead HR Officer | QA3 Lead Manager A'
+    BEGIN SET @msg = CONCAT('FAIL roster_leaders: branch A''s candidates should be its people today who still work here; got ', ISNULL(@msg, 'none')); RAISERROR(@msg, 16, 1); END
+    DELETE FROM @c;
+    INSERT INTO @c EXEC attendance.usp_AutoRoster_GetLeaderCandidates @BranchId = @BB, @CallerUserId = @UHr;
+    SET @msg = (SELECT STRING_AGG(FullName, ' | ') WITHIN GROUP (ORDER BY FullName) FROM @c);
+    IF ISNULL(@msg, '') <> 'QA3 Lead Dina of B | QA3 Lead Manager B'
+    BEGIN SET @msg = CONCAT('FAIL roster_leaders: branch B''s candidates should be only its own people; got ', ISNULL(@msg, 'none')); RAISERROR(@msg, 16, 1); END
 
     /* ---- nothing stored and no rotation: nobody ---- */
     INSERT INTO @l EXEC attendance.usp_AutoRoster_GetLeaders @BranchId = @BA, @CallerUserId = @UMgrA;
@@ -149,6 +168,26 @@ BEGIN TRY
     IF (SELECT COUNT(*) FROM attendance.ROSTER_SHIFT_LEADER WHERE BranchId = @BA AND EmployeeId IN (@A2, @A3)) <> 2
         RAISERROR('FAIL roster_leaders: a leader who moved to another branch could not be kept with a new one.', 16, 1);
 
+    /* ---- the candidates follow the move: Bilal is B's now, not A's ---- */
+    DELETE FROM @c;
+    INSERT INTO @c EXEC attendance.usp_AutoRoster_GetLeaderCandidates @BranchId = @BA, @CallerUserId = @UMgrA;
+    IF EXISTS (SELECT 1 FROM @c WHERE EmployeeId = @A2) OR (SELECT COUNT(*) FROM @c) <> 5
+        RAISERROR('FAIL roster_leaders: somebody who moved to another branch is still a candidate of the old one.', 16, 1);
+    DELETE FROM @c;
+    INSERT INTO @c EXEC attendance.usp_AutoRoster_GetLeaderCandidates @BranchId = @BB, @CallerUserId = @UMgrB;
+    IF NOT EXISTS (SELECT 1 FROM @c WHERE EmployeeId = @A2)
+        RAISERROR('FAIL roster_leaders: somebody who moved in is not a candidate of the new branch.', 16, 1);
+
+    /* ---- every candidate is accepted: the picker never offers somebody the save refuses ---- */
+    DELETE FROM @c;
+    INSERT INTO @c EXEC attendance.usp_AutoRoster_GetLeaderCandidates @BranchId = @BA, @CallerUserId = @UMgrA;
+    SET @list = (SELECT CONCAT(N'[', STRING_AGG(CAST(EmployeeId AS NVARCHAR(12)), N','), N']') FROM @c);
+    DELETE FROM @r;
+    INSERT INTO @r EXEC attendance.usp_AutoRoster_SaveLeaders @BranchId = @BA, @EmployeeIdsJson = @list, @CallerUserId = @UMgrA;
+    IF (SELECT TOP 1 Leaders FROM @r) <> 5
+        OR EXISTS (SELECT 1 FROM @c x WHERE NOT EXISTS (SELECT 1 FROM attendance.ROSTER_SHIFT_LEADER l WHERE l.BranchId = @BA AND l.EmployeeId = x.EmployeeId))
+        RAISERROR('FAIL roster_leaders: saving every candidate of branch A should store all five.', 16, 1);
+
     /* ---- an empty list clears the branch's own leaders; the rotation's leads remain ---- */
     INSERT INTO @r EXEC attendance.usp_AutoRoster_SaveLeaders @BranchId = @BA, @EmployeeIdsJson = N'[]', @CallerUserId = @UMgrA;
     IF EXISTS (SELECT 1 FROM attendance.ROSTER_SHIFT_LEADER WHERE BranchId = @BA)
@@ -173,6 +212,13 @@ BEGIN TRY
     SET @list = CONCAT(N'[', @A3, N',', @A2, N']');     -- Bilal is in branch B now and no longer on A's list
     SET @err = NULL; BEGIN TRY EXEC attendance.usp_AutoRoster_SaveLeaders @BranchId = @BA, @EmployeeIdsJson = @list, @CallerUserId = @UMgrA; END TRY BEGIN CATCH SET @err = ERROR_MESSAGE(); END CATCH;
     INSERT INTO @doors VALUES ('somebody of another branch', N'QA3 Lead Bilal is not in this branch: only its own people can be its shift leaders.', @err);
+    SET @list = CONCAT(N'[', @Left, N']');              -- Elie left the company yesterday and was never on the list
+    SET @err = NULL; BEGIN TRY EXEC attendance.usp_AutoRoster_SaveLeaders @BranchId = @BA, @EmployeeIdsJson = @list, @CallerUserId = @UMgrA; END TRY BEGIN CATCH SET @err = ERROR_MESSAGE(); END CATCH;
+    INSERT INTO @doors VALUES ('somebody who left', N'QA3 Lead Elie left is not in this branch: only its own people can be its shift leaders.', @err);
+    SET @err = NULL; BEGIN TRY EXEC attendance.usp_AutoRoster_GetLeaderCandidates @BranchId = @BA, @CallerUserId = @UMgrB; END TRY BEGIN CATCH SET @err = ERROR_MESSAGE(); END CATCH;
+    INSERT INTO @doors VALUES ('candidates of another branch', @NotYours, @err);
+    SET @err = NULL; BEGIN TRY EXEC attendance.usp_AutoRoster_GetLeaderCandidates @BranchId = -1, @CallerUserId = @UHr; END TRY BEGIN CATCH SET @err = ERROR_MESSAGE(); END CATCH;
+    INSERT INTO @doors VALUES ('candidates of no branch', N'Branch not found.', @err);
     SET @err = NULL; BEGIN TRY EXEC attendance.usp_AutoRoster_SaveLeaders @BranchId = @BA, @EmployeeIdsJson = N'[-5]', @CallerUserId = @UMgrA; END TRY BEGIN CATCH SET @err = ERROR_MESSAGE(); END CATCH;
     INSERT INTO @doors VALUES ('nobody', N'Somebody on the shift leaders list was not found.', @err);
     SET @err = NULL; BEGIN TRY EXEC attendance.usp_AutoRoster_SaveLeaders @BranchId = @BA, @EmployeeIdsJson = N'["x"]', @CallerUserId = @UMgrA; END TRY BEGIN CATCH SET @err = ERROR_MESSAGE(); END CATCH;

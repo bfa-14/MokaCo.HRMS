@@ -20,8 +20,13 @@
            LeadSlot = 'L1' / 'L2' when a lead of the rotation list.
       attendance.usp_AutoRoster_SaveLeaders @BranchId, @EmployeeIdsJson ([3, 5, 8]), @CallerUserId
         replaces the branch's own list (an empty array clears it; the rotation's leads are not touched). Refuses a
-        person who is not in that branch - unless already on its list (a leader moved to another branch mid-month
-        can be kept for the days still worked here, or taken off).
+        person who is not in that branch today, or who has left the company - unless already on its list (a leader
+        moved to another branch mid-month can be kept for the days still worked here, or taken off).
+      attendance.usp_AutoRoster_GetLeaderCandidates @BranchId, @CallerUserId
+        -> EmployeeId, FullName: the people the drawer's picker may add - those whose branch TODAY is this one, still
+           employed (no TerminationDate before today), not removed: exactly the people SaveLeaders accepts as new
+           leaders, so the picker never offers somebody the save then refuses (somebody who worked here earlier in
+           the month and has moved, or who only joins later in it). Leaders already stored stay listed by GetLeaders.
       Who may: as every auto-roster call - EMP_VIEW_ALL, or the branch's manager (the API: ATTENDANCE_VIEW to read,
       ATTENDANCE_MANAGE to save).
    3. attendance.usp_AutoRoster_GetShiftHours @FromDate, @ToDate
@@ -35,8 +40,9 @@
 
    The API reads 2 and 3 after the planning context (AutoRosterRepository): while this script is not applied both
    lists are empty and the planner works as before (leaders from the rotation list only, today's shift hours).
-   MARKER for the deploy guard: attendance.usp_AutoRoster_GetLeaders - the LAST object the script creates, so a run
-   that stopped half-way still reads as missing.
+   MARKER for the deploy guard: attendance.usp_AutoRoster_GetLeaderCandidates - the LAST object the script creates,
+   so a run that stopped half-way, or a database that has an earlier copy of this script (without it), still reads
+   as missing.
 
    Idempotent. Apply: sqlcmd -C -I -b -d <database> -i docs/123_roster_leaders.sql
    ============================================================================ */
@@ -62,7 +68,8 @@ INSERT INTO @own (Name, OwnColumn) VALUES
     (N'attendance.ROSTER_SHIFT_LEADER', N'CreatedByUserId'),
     (N'attendance.usp_AutoRoster_GetShiftHours', NULL),
     (N'attendance.usp_AutoRoster_SaveLeaders', NULL),
-    (N'attendance.usp_AutoRoster_GetLeaders', NULL);
+    (N'attendance.usp_AutoRoster_GetLeaders', NULL),
+    (N'attendance.usp_AutoRoster_GetLeaderCandidates', NULL);
 
 SELECT @foreign = STRING_AGG(o.Name, N', ')
 FROM @own o
@@ -167,11 +174,14 @@ BEGIN
     IF EXISTS (SELECT 1 FROM @ids x WHERE NOT EXISTS (SELECT 1 FROM hr.EMPLOYEE e WHERE e.EmployeeId = x.EmployeeId AND e.IsDeleted = 0))
     BEGIN RAISERROR('Somebody on the shift leaders list was not found.', 16, 1); RETURN 1; END
 
+    /* a new leader is one of the branch's people today, still employed: exactly whom usp_AutoRoster_GetLeaderCandidates
+       lists for the picker */
+    DECLARE @Today DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Middle East Standard Time' AS DATE);
     DECLARE @outsider NVARCHAR(200) = (
         SELECT TOP 1 e.FullName
         FROM @ids x
         JOIN hr.EMPLOYEE e ON e.EmployeeId = x.EmployeeId
-        WHERE ISNULL(e.BranchId, -1) <> @BranchId
+        WHERE (ISNULL(e.BranchId, -1) <> @BranchId OR e.TerminationDate < @Today)
           AND NOT EXISTS (SELECT 1 FROM attendance.ROSTER_SHIFT_LEADER l WHERE l.BranchId = @BranchId AND l.EmployeeId = x.EmployeeId)
         ORDER BY e.FullName);
     IF @outsider IS NOT NULL
@@ -193,7 +203,7 @@ BEGIN
 END;
 GO
 
-/* ---------------------------------------------------------------- 5. read the branch's shift leaders (the MARKER) */
+/* ---------------------------------------------------------------- 5. read the branch's shift leaders */
 CREATE OR ALTER PROCEDURE attendance.usp_AutoRoster_GetLeaders
     @BranchId     INT,
     @CallerUserId INT = NULL
@@ -232,6 +242,33 @@ BEGIN
     LEFT JOIN leads ld ON ld.EmployeeId = p.EmployeeId
     WHERE e.IsDeleted = 0
     ORDER BY e.FullName, p.EmployeeId;
+END;
+GO
+
+/* ---------------------------------------------------------------- 6. who may be added to the list (the MARKER) */
+CREATE OR ALTER PROCEDURE attendance.usp_AutoRoster_GetLeaderCandidates
+    @BranchId     INT,
+    @CallerUserId INT = NULL
+AS
+BEGIN
+    /* script 123: the people usp_AutoRoster_SaveLeaders accepts as NEW leaders of a branch - its people today
+       (hr.EMPLOYEE.BranchId, which a dated transfer changes on its day), still employed, not removed - by name. The
+       drawer's picker offers only them, beside the leaders already stored. */
+    SET NOCOUNT ON;
+    IF NOT EXISTS (SELECT 1 FROM hr.BRANCH WHERE BranchId = @BranchId)
+    BEGIN RAISERROR('Branch not found.', 16, 1); RETURN 1; END
+    DECLARE @SeesAll BIT, @CallerEmp INT;
+    SELECT @SeesAll = SeesAll, @CallerEmp = CallerEmployeeId FROM hr.fn_CallerScope(@CallerUserId);
+    IF @SeesAll = 0 AND NOT EXISTS (SELECT 1 FROM hr.BRANCH WHERE BranchId = @BranchId AND ManagerEmployeeId = @CallerEmp)
+    BEGIN RAISERROR('You can only plan rosters for the branches you manage.', 16, 1); RETURN 1; END
+
+    DECLARE @Today DATE = CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Middle East Standard Time' AS DATE);
+    SELECT e.EmployeeId, e.FullName
+    FROM hr.EMPLOYEE e
+    WHERE e.BranchId = @BranchId
+      AND e.IsDeleted = 0
+      AND (e.TerminationDate IS NULL OR e.TerminationDate >= @Today)
+    ORDER BY e.FullName, e.EmployeeId;
 END;
 GO
 

@@ -243,6 +243,17 @@ public class AutoRosterRepository : IAutoRosterRepository
             return (IReadOnlyList<RosterLeaderDto>)rows.AsList();
         });
 
+    public Task<IReadOnlyList<RosterLeaderCandidateDto>> GetLeaderCandidatesAsync(int branchId, int? callerUserId)
+        => MissingScriptException.GuardAsync(Scripts.RosterLeaders123, "attendance.usp_AutoRoster_GetLeaderCandidates", async () =>
+        {
+            using var db = _factory.Create();
+            var rows = await db.QueryAsync<RosterLeaderCandidateDto>(
+                "attendance.usp_AutoRoster_GetLeaderCandidates",
+                new { BranchId = branchId, CallerUserId = callerUserId },
+                commandType: CommandType.StoredProcedure);
+            return (IReadOnlyList<RosterLeaderCandidateDto>)rows.AsList();
+        });
+
     public Task SaveLeadersAsync(int branchId, IEnumerable<int> employeeIds, int? callerUserId)
         => MissingScriptException.GuardAsync(Scripts.RosterLeaders123, "attendance.usp_AutoRoster_SaveLeaders", async () =>
         {

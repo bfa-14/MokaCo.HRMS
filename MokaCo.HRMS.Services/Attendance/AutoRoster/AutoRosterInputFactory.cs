@@ -334,6 +334,7 @@ public static class AutoRosterInputFactory
         RosterPatternRestDays = s.PatternRestDays.ToString(),
         RosterMinHoursBetweenShifts = s.MinHoursBetweenShifts,
         RosterMinWeeklyRestHours = s.MinWeeklyRestHours,
+        RosterNewHireSixDayMonths = s.NewHireSixDayMonths,
     };
 
     public static bool TryParseMode(string? text, out RosterMode mode)
