@@ -205,8 +205,9 @@ public sealed class PlannerInput
     /// D16 — THE SHIFTS EVERY DAY MUST COVER, as the planner and the validator read them: the branch's
     /// stored per-shift staffing rows when it has any (a row with minimum 0 is the manager's "this shift
     /// need not be covered"), otherwise the shifts the branch actually runs (<see cref="ShiftCoverDetector"/>),
-    /// each with a minimum of one. So a branch that works mornings and evenings has both covered every
-    /// day without anyone setting it up; the drawer shows what was found and the manager can change it.
+    /// each with a minimum of one - and when nothing is found, every active shift. So a branch that works
+    /// mornings and evenings has both covered every day without anyone setting it up; the drawer shows what
+    /// was found and the manager can change it.
     /// </summary>
     public IReadOnlyList<StaffingRule> ShiftCover => _shiftCover ??= Rotation is { } rotation
         // The fixed rotation runs two shifts and no other: those are the ones a day must have somebody on. What the

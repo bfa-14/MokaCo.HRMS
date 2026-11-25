@@ -60,6 +60,7 @@ public class RosterPlannerStaffingTests
     public void A_weekday_minimum_beats_the_every_day_one_and_keeps_rests_off_that_day()
     {
         var world = new RosterWorld().WithStaff(5);
+        world.Min(1, shiftId: RosterWorld.Day);   // one shift to cover (with none named, all four active shifts would be: R3)
         world.Min(3);
         world.Min(5, dayOfWeek: 6);   // Saturday: everybody
         var p = world.Plan(Dec).Preview;

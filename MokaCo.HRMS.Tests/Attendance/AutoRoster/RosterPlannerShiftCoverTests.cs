@@ -89,16 +89,26 @@ public class RosterPlannerShiftCoverTests
     }
 
     [Fact]
-    public void With_no_roster_and_no_pattern_no_shift_is_covered()
+    public void With_no_roster_and_no_pattern_every_active_shift_is_covered()
     {
+        // R3 ("the rosters must cover daily all the shifts"): a new branch has nothing to read its shifts from, so
+        // every active shift is covered - it used to be none. The drawer shows them all, and the manager unticks
+        // what the branch does not run.
         var world = new RosterWorld().WithStaff(3);
         var run = world.Plan(Dec);
 
         Assert.True(run.Input.ShiftCoverDetected);
-        Assert.Empty(run.Input.ShiftCover);
-        Assert.All(run.Preview.PerDay, d => Assert.Empty(d.Shifts));
-        Assert.Empty(run.Preview.Issues.WithCode("SHIFT_UNCOVERED"));
-        Assert.DoesNotContain(run.Preview.Cells, c => c.ReasonCode == "WORK_SHIFT_COVER");
+        Assert.Equal([RosterWorld.Morning, RosterWorld.Day, RosterWorld.Evening, RosterWorld.Night], run.Input.ShiftCover.Select(r => r.ShiftId!.Value));
+        Assert.All(run.Input.ShiftCover, r => Assert.Equal(1, r.MinOnDuty));
+        Assert.All(run.Preview.PerDay, d => Assert.Equal(4, d.Shifts.Count));
+
+        var setup = AutoRosterSetupFactory.Create(world.Context(Dec), Dec);
+        Assert.True(setup.ShiftCoverDetected);
+        Assert.Equal([RosterWorld.Morning, RosterWorld.Day, RosterWorld.Evening, RosterWorld.Night], setup.ShiftCover.Select(r => r.ShiftId!.Value));
+
+        // Three people cannot hold four shifts: the shift left empty is reported every day, and nobody loses a rest day for it.
+        Assert.All(run.Preview.PerDay, d => Assert.Contains(run.Preview.Issues, i => i.Date == d.Date && i.Code == "SHIFT_UNCOVERED"));
+        Assert.All(run.Preview.PerEmployee, e => Assert.All(e.Weeks, w => Assert.True(w.Ok)));
     }
 
     [Fact]
