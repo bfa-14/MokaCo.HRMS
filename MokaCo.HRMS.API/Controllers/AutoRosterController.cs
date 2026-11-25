@@ -157,6 +157,53 @@ public class AutoRosterController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// The branch's SHIFT LEADERS (script 123), never planned on the same shift of a day, whichever method plans: its
+    /// own list, and everybody who counts as a leader - that list and the rotation list's Lead 1 / Lead 2.
+    /// </summary>
+    [HttpGet("leaders")]
+    [HasPermission("ATTENDANCE_VIEW")]
+    public async Task<IActionResult> GetLeaders([FromQuery] int branchId)
+    {
+        try
+        {
+            return Ok(await _auto.GetLeadersAsync(branchId, User.UserId()));
+        }
+        catch (WorkflowException ex)
+        {
+            return LeadersRefusal(ex);
+        }
+    }
+
+    /// <summary>
+    /// Replaces the branch's own list of shift leaders (the rotation's leads stay as they are) and answers with the
+    /// leaders as stored. Like the rotation, it writes no roster row: the next preview plans by it.
+    /// </summary>
+    [HttpPut("leaders")]
+    [HasPermission("ATTENDANCE_MANAGE")]
+    public async Task<IActionResult> SaveLeaders([FromBody] RosterLeadersDto leaders)
+    {
+        try
+        {
+            await _auto.SaveLeadersAsync(leaders, User.UserId());
+            return Ok(await _auto.GetLeadersAsync(leaders.BranchId, User.UserId()));
+        }
+        catch (WorkflowException ex)
+        {
+            return LeadersRefusal(ex);
+        }
+    }
+
+    /// <summary>
+    /// A leaders refusal: its status and sentence. The 503 (script 123 not applied, the only 503 these two calls refuse
+    /// with) also carries <see cref="AutoRosterService.LeadersNotAvailableCode"/>, so the web says it in the reader's
+    /// language: the database being too slow is a 503 as well.
+    /// </summary>
+    private ObjectResult LeadersRefusal(WorkflowException ex)
+        => ex.StatusCode == StatusCodes.Status503ServiceUnavailable
+            ? StatusCode(ex.StatusCode, new { error = ex.Message, code = AutoRosterService.LeadersNotAvailableCode })
+            : StatusCode(ex.StatusCode, new { error = ex.Message });
+
     /// <summary>The drawer's staff list: on rotation, and optionally a new 6/5 anchor ("this week is a 5-day week").</summary>
     [HttpPut("rhythm")]
     [HasPermission("ATTENDANCE_MANAGE")]

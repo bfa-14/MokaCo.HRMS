@@ -12,6 +12,8 @@ public interface IAutoRosterRepository
     /// <summary>
     /// attendance.usp_AutoRoster_GetContext — everything the planner reads, as the 15 result sets in
     /// their fixed order. <paramref name="lookbackWeeks"/> NULL = the RosterFairnessLookbackWeeks setting.
+    /// Then, beside it (script 123), the branch's shift leaders and the shifts' dated hours from the history's
+    /// first day to past the window: each empty while that script is not applied.
     /// </summary>
     Task<AutoRosterContext> GetContextAsync(int branchId, DateOnly monthDate, int? lookbackWeeks, int? callerUserId);
 
@@ -44,4 +46,16 @@ public interface IAutoRosterRepository
 
     /// <summary>attendance.usp_RosterRotation_Save: replaces the branch's rotation and the lines of its people.</summary>
     Task SaveRotationAsync(RosterRotationDto rotation, int? callerUserId);
+
+    /// <summary>
+    /// attendance.usp_AutoRoster_GetLeaders (script 123): the branch's shift leaders - its own list and the rotation
+    /// list's Lead 1 / Lead 2 - one row per person. <see cref="Common.MissingScriptException"/> while the script is not applied.
+    /// </summary>
+    Task<IReadOnlyList<RosterLeaderDto>> GetLeadersAsync(int branchId, int? callerUserId);
+
+    /// <summary>attendance.usp_AutoRoster_SaveLeaders (script 123): replaces the branch's own list; an empty list clears it.</summary>
+    Task SaveLeadersAsync(int branchId, IEnumerable<int> employeeIds, int? callerUserId);
+
+    /// <summary>attendance.usp_AutoRoster_GetShiftHours (script 123): every dated version of every shift in force at some point of the period.</summary>
+    Task<IReadOnlyList<AutoRosterShiftHoursRow>> GetShiftHoursAsync(DateOnly fromDate, DateOnly toDate);
 }

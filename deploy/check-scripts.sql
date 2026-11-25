@@ -74,7 +74,8 @@ INSERT INTO @S (No, Script, Applied, CheckedBy) VALUES
                                                        AND CHARINDEX(N'fn_ShiftHoursOn', ISNULL(OBJECT_DEFINITION(OBJECT_ID('attendance.usp_Correction_Create')), N'')) > 0
                                                        AND CHARINDEX(N'fn_ShiftHoursOn', ISNULL(OBJECT_DEFINITION(OBJECT_ID('attendance.usp_DayReport_Create')), N'')) > 0
                                                        AND EXISTS (SELECT 1 FROM sys.parameters WHERE object_id = OBJECT_ID('attendance.usp_Shift_RederiveDays') AND name = N'@Failed'), 1, 0),
-       N'usp_Shift_GetChanges, the change log trigger, usp_Correction_Create and usp_DayReport_Create call fn_ShiftHoursOn, usp_Shift_RederiveDays has @Failed');
+       N'usp_Shift_GetChanges, the change log trigger, usp_Correction_Create and usp_DayReport_Create call fn_ShiftHoursOn, usp_Shift_RederiveDays has @Failed'),
+ (123, N'123_roster_leaders.sql',                  IIF(OBJECT_ID('attendance.usp_AutoRoster_GetLeaders') IS NOT NULL, 1, 0), N'attendance.usp_AutoRoster_GetLeaders');
 
 INSERT INTO @S (No, Script, Applied, Admin, CheckedBy) VALUES
  (91, N'91_admin_reseed_identities.sql',          IIF(OBJECT_ID('dbo.usp_Admin_ReseedIdentities') IS NOT NULL, 1, 0), 1, N'admin tool'),

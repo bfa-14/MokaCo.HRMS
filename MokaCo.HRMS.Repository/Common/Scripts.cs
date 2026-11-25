@@ -54,6 +54,12 @@ public static class Scripts
     public const string ShiftChangeLog122 = "docs/122_shift_change_log.sql";
 
     /// <summary>
+    /// The auto-roster's shift leaders for every method (the branch's own list beside the rotation's Lead 1 / Lead 2),
+    /// the shifts' dated hours over the planning window, and the setting RosterNewHireSixDayMonths.
+    /// </summary>
+    public const string RosterLeaders123 = "docs/123_roster_leaders.sql";
+
+    /// <summary>
     /// QA3 DEPLOY GUARD: every numbered script this build of the API calls, in apply order, each with the
     /// object it is checked by. SchemaCheck looks for them at startup; while one is missing the log names
     /// it and /health says "schema":"behind" (deploy-test.sh refuses that, deploy-api.sh warns). A new
@@ -98,5 +104,7 @@ public static class Scripts
         // The last object the script creates; the change log's triggers come before it. As for 120: check-scripts.sql
         // also reads the three procedures it redefines, so re-running script 100, 110 or 117 shows 122 as missing again.
         new(ShiftChangeLog122, "attendance.usp_Shift_GetChanges"),
+        // The last procedure the script creates: a run that stopped half-way still reads as missing.
+        new(RosterLeaders123, "attendance.usp_AutoRoster_GetLeaders"),
     ];
 }
