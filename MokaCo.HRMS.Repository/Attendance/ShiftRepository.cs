@@ -6,7 +6,11 @@ using MokaCo.HRMS.Repository.Common;
 
 namespace MokaCo.HRMS.Repository.Attendance;
 
-/// <summary>Dapper access for shift definitions via the attendance.usp_Shift_* stored procedures.</summary>
+/// <summary>
+/// Dapper access for shift definitions via the attendance.usp_Shift_* stored procedures. Every write first puts the
+/// caller on the session (<see cref="SessionCaller"/>) so that the shift change log (script 122, written by triggers)
+/// says who made the change.
+/// </summary>
 public class ShiftRepository : IShiftRepository
 {
     /// <summary>"Procedure has too many arguments specified": the procedure is the one from before script 117.</summary>
@@ -27,6 +31,7 @@ public class ShiftRepository : IShiftRepository
         => Guard("attendance.usp_Shift_Create", async () =>
         {
             using var db = _factory.Create();
+            await SessionCaller.SetAsync(db, callerUserId);
             return await db.ExecuteScalarAsync<int>(
                 "attendance.usp_Shift_Create",
                 new
@@ -47,6 +52,7 @@ public class ShiftRepository : IShiftRepository
         => Guard("attendance.usp_Shift_Update", async () =>
         {
             using var db = _factory.Create();
+            await SessionCaller.SetAsync(db, callerUserId);
             // A change that reaches back derives every day it touches again: give it time.
             await db.ExecuteAsync(
                 "attendance.usp_Shift_Update",
@@ -84,11 +90,23 @@ public class ShiftRepository : IShiftRepository
         => Guard("attendance.usp_Shift_DeleteHours", async () =>
         {
             using var db = _factory.Create();
+            await SessionCaller.SetAsync(db, callerUserId);
             return await db.ExecuteScalarAsync<int>(
                 "attendance.usp_Shift_DeleteHours",
                 new { ShiftHoursId = shiftHoursId, CallerUserId = callerUserId },
                 commandType: CommandType.StoredProcedure,
                 commandTimeout: 300);
+        });
+
+    /// <summary>Script 122's change log of one shift, newest first. Without the script: <see cref="MissingScriptException"/>.</summary>
+    public Task<IEnumerable<ShiftChange>> GetChangesAsync(int shiftId)
+        => MissingScriptException.GuardAsync(Scripts.ShiftChangeLog122, "attendance.usp_Shift_GetChanges", async () =>
+        {
+            using var db = _factory.Create();
+            return await db.QueryAsync<ShiftChange>(
+                "attendance.usp_Shift_GetChanges",
+                new { ShiftId = shiftId },
+                commandType: CommandType.StoredProcedure);
         });
 
     public Task<int> SyncCurrentAsync()
