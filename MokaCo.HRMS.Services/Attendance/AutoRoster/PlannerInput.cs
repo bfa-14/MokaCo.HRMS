@@ -101,6 +101,13 @@ public sealed record ShiftInfo(
         => day.ToDateTime(TimeOnly.MinValue) + EndTime + (CrossesMidnight || EndTime <= StartTime ? TimeSpan.FromDays(1) : TimeSpan.Zero);
 }
 
+/// <summary>
+/// One dated version of a shift's hours (attendance.SHIFT_HOURS, script 117): in force from <paramref name="EffectiveFrom"/>
+/// until the day before the shift's next version. <paramref name="Hours"/> carries the shift's name and active flag as
+/// they are today, with the times of this version.
+/// </summary>
+public sealed record ShiftVersion(DateOnly EffectiveFrom, ShiftInfo Hours);
+
 public sealed record PatternDay(int EmployeeId, int DayOfWeek, int? ShiftId, bool IsRestDay);
 
 public sealed record StoredRhythm(int EmployeeId, DateOnly AnchorWeekStart, int AnchorWorkDays, bool OnRotation);
@@ -191,7 +198,16 @@ public sealed class PlannerInput
     /// <summary>Leave (Approved, Pending, OnHold), one entry per day up to <see cref="HorizonTo"/>. A full day beats a half day.</summary>
     public IReadOnlyDictionary<EmpDay, LeaveKind> LeaveDays { get; init; } = FrozenDictionary<EmpDay, LeaveKind>.Empty;
 
+    /// <summary>The shifts as they are TODAY (attendance.SHIFT): names, active flags, and the hours when no dated version is known.</summary>
     public IReadOnlyDictionary<int, ShiftInfo> Shifts { get; init; } = FrozenDictionary<int, ShiftInfo>.Empty;
+
+    /// <summary>
+    /// R1 for rosters: every dated version of each shift in force at some point of the window, oldest first (script 117,
+    /// read through usp_AutoRoster_GetShiftHours). The turnaround and weekly-rest maths measure a date with the hours in
+    /// force ON that date (<see cref="HoursOn"/>). Empty (the script is missing): today's hours for every date.
+    /// </summary>
+    public IReadOnlyDictionary<int, IReadOnlyList<ShiftVersion>> ShiftHours { get; init; }
+        = FrozenDictionary<int, IReadOnlyList<ShiftVersion>>.Empty;
 
     /// <summary>Weekly pattern by (EmployeeId, ISO weekday).</summary>
     public IReadOnlyDictionary<(int EmployeeId, int DayOfWeek), PatternDay> Patterns { get; init; }
@@ -264,6 +280,27 @@ public sealed class PlannerInput
         => BranchOfDay.TryGetValue(new EmpDay(employeeId, date), out var branch) && branch == BranchId;
 
     public bool IsActiveShift(int? shiftId) => shiftId is { } id && Shifts.TryGetValue(id, out var s) && s.IsActive;
+
+    /// <summary>
+    /// The shift as it was ON <paramref name="date"/>: the latest dated version on or before it (the earliest one known
+    /// for an earlier date), else today's hours. Null for a shift that does not exist.
+    /// </summary>
+    public ShiftInfo? HoursOn(int shiftId, DateOnly date)
+    {
+        if (!Shifts.TryGetValue(shiftId, out var today))
+            return null;
+        if (!ShiftHours.TryGetValue(shiftId, out var versions) || versions.Count == 0)
+            return today;
+
+        var found = versions[0];
+        foreach (var v in versions)
+        {
+            if (v.EffectiveFrom > date)
+                break;
+            found = v;
+        }
+        return found.Hours;
+    }
 
     /// <summary>
     /// R6, THE NEW-HIRE RULE: W0, the first Monday on or after HireDate + <see cref="PlannerSettings.NewHireSixDayMonths"/>

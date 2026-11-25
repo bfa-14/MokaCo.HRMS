@@ -1339,7 +1339,7 @@ public static class RosterPlanner
                     || before.Shift.ShiftId == current
                     || before.Shift.ShiftId == HomeShift(c.EmployeeId, yesterday)
                     || !CanSpare(current)
-                    || _in.Shifts[current].StartOn(date) - before.Shift.EndOn(yesterday) >= minGap)
+                    || _in.HoursOn(current, date)!.StartOn(date) - before.Shift.EndOn(yesterday) >= minGap)
                     continue;
                 Move(c, before.Shift.ShiftId, count);
             }
@@ -1452,7 +1452,7 @@ public static class RosterPlanner
                     && ShiftOn(c.EmployeeId, yesterday) is { } before
                     && before.Shift.ShiftId != current
                     && before.Shift.ShiftId != HomeShift(c.EmployeeId, yesterday)
-                    && _in.Shifts[current].StartOn(date) - before.Shift.EndOn(yesterday) < minGap)
+                    && _in.HoursOn(current, date)!.StartOn(date) - before.Shift.EndOn(yesterday) < minGap)
                     c.ShiftId = before.Shift.ShiftId;
             }
         }
@@ -1498,7 +1498,7 @@ public static class RosterPlanner
         {
             var e = cell.EmployeeId;
             var from = cell.ShiftId!.Value;
-            var shift = _in.Shifts[to];
+            var shift = _in.HoursOn(to, date)!;   // R1: the hours in force that day
             var minGap = TimeSpan.FromHours(_in.Settings.MinHoursBetweenShifts);
             double cost = 0;
             var turnaround = false;
@@ -1584,7 +1584,8 @@ public static class RosterPlanner
         }
 
         /// <summary>
-        /// The shift someone works on a day, for the turnaround: a window day as decided so far (a working
+        /// The shift someone works on a day, for the turnaround — with the hours in force ON that day (R1,
+        /// <see cref="PlannerInput.HoursOn"/>): a window day as decided so far (a working
         /// day still without a shift: the one it starts on), else the saved row around the window. A ghost
         /// day is the next month's to decide — it is never saved, and may be decided differently by the
         /// next run — so it counts as unknown here: who covers a shift must not hang on it, or a regenerate
@@ -1604,7 +1605,7 @@ public static class RosterPlanner
             {
                 id = _in.WorksOutsideWindow(e, date) ? _in.RowOf(e, date)?.ShiftId : null;
             }
-            return id is { } shiftId && _in.Shifts.TryGetValue(shiftId, out var info) ? (info, date) : null;
+            return id is { } shiftId && _in.HoursOn(shiftId, date) is { } info ? (info, date) : null;
         }
 
         /// <summary>The shift the generator saved on this working day (ReplanAuto, the row unchanged since), if it is still active.</summary>

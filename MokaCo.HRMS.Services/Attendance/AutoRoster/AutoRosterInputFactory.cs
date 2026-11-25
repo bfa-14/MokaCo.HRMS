@@ -5,7 +5,8 @@ using MokaCo.HRMS.Model.Attendance;
 namespace MokaCo.HRMS.Services.Attendance.AutoRoster;
 
 /// <summary>
-/// usp_AutoRoster_GetContext's 15 result sets + the drawer's request → one <see cref="PlannerInput"/>.
+/// usp_AutoRoster_GetContext's 15 result sets (+ the branch's shift leaders and the dated shift hours,
+/// read beside it, script 123) + the drawer's request → one <see cref="PlannerInput"/>.
 /// Pure mapping: DateTime columns become DateOnly, settings get their §3.2 defaults, the request's
 /// choices (mode, off-rotation list, holiday cover, overrides, draft edits) are folded in. The
 /// service only has to fetch the context and call <see cref="Create"/>.
@@ -181,6 +182,27 @@ public static class AutoRosterInputFactory
                 return new ShiftInfo(s.ShiftId, s.Name, s.StartTime, s.EndTime, s.CrossesMidnight, s.BreakMinutes, s.IsActive);
             });
 
+        // R1 for rosters: the dated versions of each shift, oldest first. A version of a shift the context does not know is
+        // dropped; two versions on one date (a broken feed) keep the first, so the result never depends on row order.
+        var shiftHours = new Dictionary<int, IReadOnlyList<ShiftVersion>>();
+        foreach (var g in (context.ShiftHours ?? []).Where(h => shifts.ContainsKey(h.ShiftId)).GroupBy(h => h.ShiftId))
+        {
+            var current = shifts[g.Key];
+            shiftHours[g.Key] = g
+                .OrderBy(h => h.EffectiveFrom)
+                .ThenBy(h => h.StartTime).ThenBy(h => h.EndTime).ThenBy(h => h.CrossesMidnight).ThenBy(h => h.BreakMinutes)
+                .GroupBy(h => D(h.EffectiveFrom))
+                .Select(v => v.First())
+                .Select(h => new ShiftVersion(D(h.EffectiveFrom), current with
+                {
+                    StartTime = h.StartTime,
+                    EndTime = h.EndTime,
+                    CrossesMidnight = h.CrossesMidnight,
+                    BreakMinutes = h.BreakMinutes,
+                }))
+                .ToList();
+        }
+
         var patterns = new Dictionary<(int, int), PatternDay>();
         foreach (var p in context.Patterns.Where(p => p.DayOfWeek is >= 1 and <= 7).OrderBy(p => p.EmployeeId).ThenBy(p => p.DayOfWeek))
             patterns.TryAdd((p.EmployeeId, p.DayOfWeek), new PatternDay(p.EmployeeId, p.DayOfWeek, p.ShiftId, p.IsRestDay));
@@ -237,6 +259,7 @@ public static class AutoRosterInputFactory
             HolidaysWorked = holidaysWorked.ToFrozenDictionary(),
             LeaveDays = leaveDays.ToFrozenDictionary(),
             Shifts = shifts.ToFrozenDictionary(),
+            ShiftHours = shiftHours.ToFrozenDictionary(),
             Patterns = patterns.ToFrozenDictionary(),
             Rhythms = rhythms.ToFrozenDictionary(),
             Cells = cells.ToFrozenDictionary(),

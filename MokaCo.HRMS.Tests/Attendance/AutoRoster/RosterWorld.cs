@@ -9,7 +9,9 @@ namespace MokaCo.HRMS.Tests.Attendance.AutoRoster;
 /// way usp_AutoRoster_GetContext does (staff by branch of day, rows of every branch and leave up to
 /// the cap past the window, locks before today, holidays and holidays worked, rhythm, cells), and <see cref="Commit"/> applies a
 /// commit the way usp_AutoRoster_Commit does (rows, ROSTER_CELL auto values and pins, rhythm). It
-/// never decides anything the planner decides.
+/// never decides anything the planner decides. The shift leaders and the dated shift hours (script 123,
+/// read beside the context by the repository) are filled from <see cref="ShiftLeaders"/> and
+/// <see cref="ShiftHours"/>.
 /// </summary>
 public sealed class RosterWorld
 {
@@ -35,6 +37,23 @@ public sealed class RosterWorld
     public List<AutoRosterPatternRow> Patterns { get; } = new();
     public List<AutoRosterStaffingRow> Staffing { get; } = new();
     public Dictionary<EmpDay, string> Locks { get; } = new();
+
+    /// <summary>The branch's stored shift leaders (usp_AutoRoster_GetLeaders, script 123): read beside the context.</summary>
+    public List<int> ShiftLeaders { get; } = new();
+
+    /// <summary>Dated versions of the shifts' hours (usp_AutoRoster_GetShiftHours, script 123): read beside the context.</summary>
+    public List<AutoRosterShiftHoursRow> ShiftHours { get; } = new();
+
+    /// <summary>A dated version of a shift's hours from <paramref name="from"/> on.</summary>
+    public void Hours(int shiftId, DateOnly from, int start, int end, bool crossesMidnight = false)
+        => ShiftHours.Add(new AutoRosterShiftHoursRow
+        {
+            ShiftId = shiftId,
+            EffectiveFrom = T(from),
+            StartTime = TimeSpan.FromHours(start),
+            EndTime = TimeSpan.FromHours(end),
+            CrossesMidnight = crossesMidnight,
+        });
 
     public List<AutoRosterShiftRow> Shifts { get; } =
     [
@@ -228,6 +247,8 @@ public sealed class RosterWorld
             .Select(c => c.Value)
             .ToList();
         ctx.Staffing = Staffing.ToList();
+        ctx.ShiftLeaders = ShiftLeaders.ToList();
+        ctx.ShiftHours = ShiftHours.ToList();
         return ctx;
     }
 

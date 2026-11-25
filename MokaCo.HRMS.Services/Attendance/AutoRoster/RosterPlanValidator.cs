@@ -365,7 +365,7 @@ public static class RosterPlanValidator
             }
             else if (input.WorksOutsideWindow(e, d) && input.RowOf(e, d) is { ShiftId: { } shiftId })
             {
-                shift = input.Shifts.TryGetValue(shiftId, out var s) ? s : null;
+                shift = input.HoursOn(shiftId, d);
             }
 
             if (shift is not null)
@@ -392,8 +392,9 @@ public static class RosterPlanValidator
         return longest;
     }
 
+    /// <summary>The shift of a working day with the hours in force ON that day (R1).</summary>
     private static ShiftInfo? ShiftOf(PlannerInput input, GridCell c)
-        => c.ShiftId is { } id && input.Shifts.TryGetValue(id, out var s) ? s : null;
+        => c.ShiftId is { } id ? input.HoursOn(id, c.Date) : null;
 
     /* ---- staffing (D8) and the shifts to cover (D16): rest days beat staffing, so these are warnings ---- */
 
