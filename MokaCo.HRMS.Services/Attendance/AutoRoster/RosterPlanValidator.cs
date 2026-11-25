@@ -440,8 +440,9 @@ public static class RosterPlanValidator
     }
 
     /// <summary>
-    /// Two shift leaders on the same shift while another shift the day must cover has none: the planner never
-    /// does that, so it is a day somebody decided by hand (or a saved day). A warning - the manager may mean it.
+    /// Two shift leaders on the same shift. The planner does that only when more leaders work that day than the day has
+    /// shifts to cover (the warning then says so), so otherwise it is a day somebody decided by hand (or a saved day).
+    /// A warning - the manager may mean it.
     /// </summary>
     private static void CheckLeads(PlannerInput input, RosterGrid grid, List<AutoRosterIssue> issues)
     {
@@ -455,10 +456,14 @@ public static class RosterPlanValidator
             var leads = grid.CellsOn(date)
                 .Where(c => input.ShiftLeads.Contains(c.EmployeeId) && c.InBranch && c.CountsAsWorkForRun && c.ShiftId is not null)
                 .ToList();
+            var shifts = input.CoverRulesFor(date).Count;
             foreach (var group in leads.GroupBy(c => c.ShiftId!.Value).Where(g => g.Count() >= 2).OrderBy(g => g.Key))
             {
                 var name = input.Shifts.TryGetValue(group.Key, out var s) ? s.Name : $"shift {group.Key}";
-                var issue = Issue(Warning, LeadsSameShift, null, date, $"{group.Count()} shift leaders are on {name}; each shift should keep one.");
+                var message = shifts > 0 && leads.Count > shifts
+                    ? $"{leads.Count} shift leaders work on {RosterPlanner.Day(date)} and the day has only {shifts} shift(s) to cover: {group.Count()} are on {name}."
+                    : $"{group.Count()} shift leaders are on {name}; each shift should keep one.";
+                var issue = Issue(Warning, LeadsSameShift, null, date, message);
                 issue.ShiftId = group.Key;
                 issues.Add(issue);
             }

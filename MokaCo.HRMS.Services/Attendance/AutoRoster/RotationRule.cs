@@ -30,7 +30,9 @@ public sealed record RotationSetup(DateOnly StartDate, int MorningShiftId, int E
 ///     people so far that day; on a tie the weeks, the days and the rows take turns.
 ///   · TWO LEADS NEVER SHARE A SHIFT. On the sheet that follows from the rule; on a real roster one lead's day may
 ///     be decided by somebody else (a hand edit, a saved day). The other lead then takes the OTHER shift, whatever
-///     the week says.
+///     the week says. A shift leader the list does not mark Lead 1 or Lead 2 (the branch's stored leaders, script
+///     123) whom the rule puts on a shift that already has a leader goes to the other shift when it has none, changing
+///     places with somebody the rule put there.
 ///
 /// R6, the new-hire rule, applies here too: a week before the person's W0 (<see cref="PlannerInput.AlternateFrom"/>) is a
 /// 6-day week, so in a week the sheet gives two days off a new hire gets only the FIRST of the two.
@@ -226,6 +228,51 @@ public static class RotationRule
                     if (cell.ShiftId == setup.MorningShiftId) mornings++;
                     else if (cell.ShiftId == setup.EveningShiftId) evenings++;
                 }
+            }
+
+            SeparateOtherLeads(input, grid, setup, ordered, date);
+        }
+    }
+
+    /// <summary>
+    /// R4 for the leaders who are not Lead 1 or Lead 2 on the list: one the rule placed on a shift that holds two leaders or
+    /// more, while the other shift holds none, goes there - changing places with somebody the rule put on that shift (the
+    /// first in list order who is no leader), so both shifts keep their numbers.
+    /// </summary>
+    private static void SeparateOtherLeads(PlannerInput input, RosterGrid grid, RotationSetup setup, IReadOnlyList<RotationMember> ordered, DateOnly date)
+    {
+        if (input.ShiftLeads.Count < 2)
+            return;
+        var position = ordered.Select((m, i) => (m, i)).ToDictionary(x => x.m.EmployeeId, x => x.i);
+        bool Placed(GridCell c) => c.IsPlannable && c.InBranch && c.State == CellState.Work && position.ContainsKey(c.EmployeeId);
+        List<GridCell> LeadsOn(int shift) => grid.CellsOn(date)
+            .Where(c => input.ShiftLeads.Contains(c.EmployeeId) && c.InBranch && c.CountsAsWorkForRun && c.ShiftId == shift)
+            .ToList();
+
+        foreach (var from in new[] { setup.MorningShiftId, setup.EveningShiftId })
+        {
+            var to = from == setup.MorningShiftId ? setup.EveningShiftId : setup.MorningShiftId;
+            var here = LeadsOn(from);
+            if (here.Count < 2 || LeadsOn(to).Count > 0)
+                continue;
+            var mover = here
+                .Where(c => Placed(c) && ordered[position[c.EmployeeId]].LeadSlot is null)
+                .OrderBy(c => position[c.EmployeeId])
+                .FirstOrDefault();
+            if (mover is null)
+                continue;
+            var partner = grid.CellsOn(date)
+                .Where(c => Placed(c) && c.Leave != LeaveKind.Full && c.ShiftId == to && !input.ShiftLeads.Contains(c.EmployeeId))
+                .OrderBy(c => position[c.EmployeeId])
+                .FirstOrDefault();
+            mover.ShiftId = to;
+            mover.ReasonCode = RosterPlanner.ReasonLeadApart;
+            mover.ReasonArgs = null;
+            if (partner is not null)
+            {
+                partner.ShiftId = from;
+                partner.ReasonCode = RosterPlanner.ReasonLeadApart;
+                partner.ReasonArgs = null;
             }
         }
     }

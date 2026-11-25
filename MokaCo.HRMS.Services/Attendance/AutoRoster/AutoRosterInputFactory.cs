@@ -105,9 +105,14 @@ public static class AutoRosterInputFactory
                     m.EmployeeId, m.Group == 1 ? 1 : 0, RosterCalendar.Mod(m.SingleRestDay, 7), RosterCalendar.Mod(m.PairRestDay, 7),
                     m.LeadSlot is "L1" or "L2" ? m.LeadSlot : null, m.SortOrder));
         var rotationMissing = new List<int>();
+
+        // R4: the shift leaders are the rotation list's Lead 1 and Lead 2 (script 116) AND the branch's stored leaders
+        // (script 123; empty when the script is missing), whichever method plans.
         var shiftLeads = (rotation?.Members ?? [])
             .Where(m => m.LeadSlot is "L1" or "L2")
             .Select(m => m.EmployeeId)
+            .Union(context.ShiftLeaders ?? [])
+            .Where(e => e > 0)
             .ToFrozenSet();
 
         var staff = context.Staff

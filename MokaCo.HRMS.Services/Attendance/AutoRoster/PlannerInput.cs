@@ -164,9 +164,10 @@ public sealed class PlannerInput
     public IReadOnlyList<int> RotationMissing { get; init; } = [];
 
     /// <summary>
-    /// The branch's SHIFT LEADERS: the people its rotation list names Lead 1 and Lead 2 (script 116), whichever method
-    /// plans. Two leaders are never planned onto the same shift on a day - each shift keeps one - and a day somebody
-    /// else decided that puts them together is reported (LEADS_SAME_SHIFT).
+    /// The branch's SHIFT LEADERS, whichever method plans: the people its rotation list names Lead 1 and Lead 2 (script
+    /// 116) and the branch's stored leaders (script 123), any number. The working leaders of a day are placed first, one
+    /// per shift; two share a shift only when more of them work than the day has shifts. A day somebody else decided
+    /// that puts two together is reported (LEADS_SAME_SHIFT).
     /// </summary>
     public IReadOnlySet<int> ShiftLeads { get; init; } = FrozenSet<int>.Empty;
 

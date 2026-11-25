@@ -62,12 +62,22 @@ public class RosterPlannerPropertyTests
         // A shift that only changed because the day before did follows that change (D16: who covers a
         // shift depends on the shifts worked the day before — someone who covered a night stays on
         // nights while going back would be a turnaround, and the next cover is chosen around them).
+        // After rest days "the day before" is the last working day before them: somebody who covered an
+        // evening and then took one day off stays on evenings (the weekly rest), so a change there carries over.
         var changedDays = new HashSet<DateOnly>();
+        var laterCells = later.Cells.ToDictionary(c => new EmpDay(c.EmployeeId, c.WorkDate));
+        bool RestOn(int e, DateOnly d) => laterCells.TryGetValue(new EmpDay(e, d), out var x) && x.State == "rest";
         foreach (var c in later.Cells.Where(c => c.Change is "insert" or "update" or "delete").OrderBy(c => c.WorkDate))
         {
             var week = RosterCalendar.WeekStart(c.WorkDate);
             var shiftOnly = c.Change == "update" && c.State == "work" && c.Expected.IsRestDay == false;
-            var followsDayBefore = shiftOnly && changedDays.Contains(c.WorkDate.AddDays(-1));
+            var before = c.WorkDate.AddDays(-1);
+            var followsDayBefore = shiftOnly && changedDays.Contains(before);
+            for (var k = 0; shiftOnly && !followsDayBefore && k < 3 && RestOn(c.EmployeeId, before); k++)
+            {
+                before = before.AddDays(-1);
+                followsDayBefore = changedDays.Contains(before) || changedDays.Contains(before.AddDays(1));
+            }
             changedDays.Add(c.WorkDate);
             Assert.True(followsDayBefore || lostGhostWeeks.Any(g => g.Week == week && g.WorkDate < world.Today),
                 $"seed {seed}: {c.EmployeeId} {c.WorkDate:yyyy-MM-dd} {c.Change} "
@@ -86,7 +96,7 @@ public class RosterPlannerPropertyTests
             Header = c.Header, Settings = S(c.Settings), Staff = S(c.Staff), StaffDays = S(c.StaffDays), Rows = S(c.Rows),
             Locks = S(c.Locks), Holidays = S(c.Holidays), HolidaysWorked = S(c.HolidaysWorked), Leaves = S(c.Leaves),
             Shifts = S(c.Shifts), Patterns = S(c.Patterns), Rhythm = S(c.Rhythm), Cells = S(c.Cells), Staffing = S(c.Staffing),
-            LastRun = c.LastRun,
+            LastRun = c.LastRun, ShiftLeaders = S(c.ShiftLeaders), ShiftHours = S(c.ShiftHours),
         };
     }
 
@@ -251,6 +261,31 @@ public class RosterPlannerPropertyTests
                     else world.Rest(e, d);
                 }
             }
+
+            // Script 123's lists and the new-hire rule, drawn from their own sequence so every earlier draw stays as it was:
+            // shift leaders (any number), dated shift hours changing inside the window, recent hires (some still in their
+            // first months, some just past them) and the new-hire setting.
+            var more = new Random(rng.Next());
+            if (more.Next(3) == 0)
+                world.ShiftLeaders.AddRange(world.People.Keys.Where(_ => more.Next(3) == 0));
+            if (more.Next(3) == 0)
+            {
+                var shift = WorkShifts[more.Next(WorkShifts.Length)];
+                var row = world.Shifts.Single(s => s.ShiftId == shift);
+                world.Hours(shift, new DateOnly(2000, 1, 1), row.StartTime.Hours, row.EndTime.Hours, row.CrossesMidnight);
+                var start = more.Next(5, 15);
+                world.Hours(shift, from.AddDays(more.Next(-7, 35)), start, (start + 8) % 24, start + 8 >= 24);
+            }
+            foreach (var person in world.People.Values.Where(p => p.Hire == new DateOnly(2024, 1, 1)))
+            {
+                if (more.Next(6) != 0)
+                    continue;
+                person.Hire = from.AddDays(-more.Next(20, 130));
+                foreach (var key in world.Rows.Keys.Where(k => k.EmployeeId == person.Id && k.Date < person.Hire).ToList())
+                    world.Rows.Remove(key);
+            }
+            if (more.Next(5) == 0)
+                world.Settings["RosterNewHireSixDayMonths"] = more.Next(-1, 6).ToString();
 
             void Configure(AutoRosterRequest r)
             {
