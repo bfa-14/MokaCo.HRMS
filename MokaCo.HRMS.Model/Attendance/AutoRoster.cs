@@ -513,6 +513,30 @@ public class AutoRosterContext
 
     /// <summary>0 or 1 row.</summary>
     public List<AutoRosterLastRunRow> LastRun { get; set; } = new();
+
+    /* ---- read by separate procedures (script 123), not by usp_AutoRoster_GetContext. Empty when the script is
+            not applied: the planner then works as before (leaders from the rotation list only, today's shift hours). */
+
+    /// <summary>The branch's shift leaders (attendance.usp_AutoRoster_GetLeaders): never two on the same shift on a day.</summary>
+    public List<int> ShiftLeaders { get; set; } = new();
+
+    /// <summary>
+    /// Every dated version of every shift that is in force at some point of the planning window
+    /// (attendance.usp_AutoRoster_GetShiftHours, from attendance.SHIFT_HOURS, script 117): the planner measures a
+    /// date with the hours in force ON that date, not today's.
+    /// </summary>
+    public List<AutoRosterShiftHoursRow> ShiftHours { get; set; } = new();
+}
+
+/// <summary>One dated version of a shift: in force from EffectiveFrom until the day before the shift's next version.</summary>
+public class AutoRosterShiftHoursRow
+{
+    public int ShiftId { get; set; }
+    public DateTime EffectiveFrom { get; set; }
+    public TimeSpan StartTime { get; set; }
+    public TimeSpan EndTime { get; set; }
+    public bool CrossesMidnight { get; set; }
+    public int BreakMinutes { get; set; }
 }
 
 /// <summary>Result set 1. Today is the Beirut date, read by the database so the planner never looks at a clock.</summary>
