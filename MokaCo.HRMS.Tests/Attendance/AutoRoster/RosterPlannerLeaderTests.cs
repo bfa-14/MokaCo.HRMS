@@ -80,30 +80,46 @@ public class RosterPlannerLeaderTests
         Assert.Contains(p.Cells, c => c.ReasonCode == RosterPlanner.ReasonLeadApart);
     }
 
+    /// <summary>
+    /// Two leaders share a shift when all three work, and otherwise only when keeping them apart would itself break the
+    /// rest rule: both worked the evening before (the three-leader day put the pair there), and the morning starts 8 hours
+    /// after it ends - the minimum is 11. The planner never makes a turnaround to keep leaders apart (it did before the
+    /// review of the shift-roster work: on those days one leader went from an evening to a morning).
+    /// </summary>
     [Fact]
-    public void Three_leaders_on_two_shifts_share_only_when_all_three_work_and_the_warning_names_the_day()
+    public void Three_leaders_on_two_shifts_share_only_when_all_three_work_or_a_move_would_be_a_turnaround()
     {
         var p = AllMornings(8, 1, 2, 3).Plan(Dec).Preview;
-        int?[] Leads(DateOnly d) => [ShiftOf(p, 1, d), ShiftOf(p, 2, d), ShiftOf(p, 3, d)];
+        int[] leaders = [1, 2, 3];
 
+        var forced = 0;
         foreach (var d in December)
         {
-            var working = Leads(d).Where(s => s is not null).ToList();
-            var shared = working.GroupBy(s => s).Any(g => g.Count() >= 2);
+            var working = leaders.Where(l => ShiftOf(p, l, d) is not null).ToList();
+            var shared = working.GroupBy(l => ShiftOf(p, l, d)).Any(g => g.Count() >= 2);
             if (working.Count == 3)
             {
                 // Both shifts keep a leader; two of the three share one, and the day is named.
-                Assert.Equal(2, working.Distinct().Count());
+                Assert.Equal(2, working.Select(l => ShiftOf(p, l, d)).Distinct().Count());
                 var issue = Assert.Single(p.Issues, i => i.Code == RosterPlanValidator.LeadsSameShift && i.Date == d);
                 Assert.Equal("warning", issue.Severity);
                 Assert.Contains("only 2 shift(s)", issue.Message);
             }
+            else if (shared)
+            {
+                forced++;
+                Assert.All(working, l => Assert.Equal(RosterWorld.Evening, ShiftOf(p, l, d)));
+                Assert.All(working, l => Assert.Equal(RosterWorld.Evening, ShiftOf(p, l, d.AddDays(-1))));
+                Assert.Single(p.Issues, i => i.Code == RosterPlanValidator.LeadsSameShift && i.Date == d);
+            }
             else
             {
-                Assert.False(shared, $"{d}: {working.Count} leaders share a shift");
                 Assert.DoesNotContain(p.Issues, i => i.Code == RosterPlanValidator.LeadsSameShift && i.Date == d);
             }
         }
+
+        Assert.True(forced <= 3, $"{forced} days with two of three leaders together");
+        Assert.DoesNotContain(p.Issues, i => i.Code == RosterPlanValidator.Turnaround && i.EmployeeId is 1 or 2 or 3);
     }
 
     /// <summary>Saturdays and Sundays off per person over the months planned and saved one after the other.</summary>
@@ -169,6 +185,55 @@ public class RosterPlannerLeaderTests
         Assert.True(led[1] > 0, $"{setup}: the leader got no weekend day off");
         Assert.Equal(baseline.Values.Sum(), led.Values.Sum());
         Assert.All(baseline, kv => Assert.InRange(led[kv.Key], kv.Value - 1, kv.Value + 1));
+    }
+
+    /// <summary>
+    /// The branch covers only the morning; one person works nights (22:00-06:00), a shift nobody has to cover. Two leaders on
+    /// the morning may be kept apart over the shifts the day uses, but never by a night that the leader's own morning follows
+    /// (one hour of rest), nor by any move that breaks a rest rule: nobody is kept on a shift that is not covered the next day.
+    /// The same with the evening stored at minimum 0 and worked by others.
+    /// </summary>
+    [Theory]
+    [InlineData(RosterWorld.Night)]
+    [InlineData(RosterWorld.Evening)]
+    public void A_leader_is_never_moved_onto_a_shift_nobody_covers_into_a_turnaround(int other)
+    {
+        var world = new RosterWorld { Today = new DateOnly(2026, 11, 1) }.WithStaff(7);
+        for (var e = 1; e <= 5; e++)
+            History(world, e, RosterWorld.Morning);
+        History(world, 6, other == RosterWorld.Night ? RosterWorld.Morning : other);
+        History(world, 7, other);
+        world.Min(1, shiftId: RosterWorld.Morning);
+        if (other == RosterWorld.Evening)
+            world.Min(0, shiftId: RosterWorld.Evening);
+        world.ShiftLeaders.AddRange([1, 2]);
+
+        var p = world.Plan(Dec).Preview;
+        Assert.DoesNotContain(p.Issues, i => i.Code is RosterPlanValidator.Turnaround or RosterPlanValidator.WeeklyRestHours);
+        Assert.Empty(p.Errors());
+    }
+
+    [Fact]
+    public void With_every_shift_stored_at_minimum_zero_nobody_is_moved()
+    {
+        // The manager's "no shift needs covering": the planner moves nobody, leaders included; the warning still names the days.
+        var world = new RosterWorld { Today = new DateOnly(2026, 11, 1) }.WithStaff(7);
+        for (var e = 1; e <= 6; e++)
+            History(world, e, RosterWorld.Morning);
+        History(world, 7, RosterWorld.Night);
+        foreach (var shift in new[] { RosterWorld.Day, RosterWorld.Morning, RosterWorld.Evening, RosterWorld.Night })
+            world.Min(0, shiftId: shift);
+        world.ShiftLeaders.AddRange([1, 2]);
+
+        var p = world.Plan(Dec).Preview;
+        foreach (var d in December)
+        {
+            for (var e = 1; e <= 7; e++)
+                if (ShiftOf(p, e, d) is { } shift)
+                    Assert.Equal(e == 7 ? RosterWorld.Night : RosterWorld.Morning, shift);
+        }
+        Assert.DoesNotContain(p.Cells, c => c.ReasonCode is RosterPlanner.ReasonLeadApart or RosterPlanner.ReasonShiftCover or RosterPlanner.ReasonShiftBalance);
+        Assert.Contains(p.Issues, i => i.Code == RosterPlanValidator.LeadsSameShift);
     }
 
     /// <summary>
