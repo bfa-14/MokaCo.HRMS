@@ -831,29 +831,54 @@ public static class RosterPlanner
                     .Where(p => p.Remaining > 0 && (p.Chosen >> x & 1) == 0 && (p.PMask >> x & 1) == 1)
                     .Where(p => !p.HasRows || p.Options.Any(o => (o >> x & 1) == 1))
                     .ToList();
-                var mostOwed = competitors.Count == 0 ? 0 : competitors.Max(p => WeekendLedger.Key(Ledger.Owed(p.EmployeeId, kind)));
-                var eligible = competitors
-                    .Where(p => p.Options.Any(o => (o >> x & 1) == 1))
-                    .Where(p => WeekendLedger.Key(Ledger.Owed(p.EmployeeId, kind)) > mostOwed - 1 + 1e-6)
-                    .OrderByDescending(p => WeekendLedger.Key(Ledger.Owed(p.EmployeeId, kind)))
-                    .ThenByDescending(p => WeekendLedger.Key(Ledger.OwedTotal(p.EmployeeId)))
-                    .ThenByDescending(p => _weekendStreak.TryGetValue(p.EmployeeId, out var s) ? s : 0)
-                    .ThenBy(p => p.Rotation)
-                    .ThenBy(p => p.EmployeeId)
-                    .ToList();
-
-                // R4: a shift leader whose day off would leave the day without any leader waits for another weekend
-                // (the ledger makes them the most owed next time); somebody else within the fair share takes the slot.
-                var given = 0;
-                foreach (var p in eligible)
+                List<PersonWeek> FairShare(List<PersonWeek> pool)
                 {
-                    if (given >= free)
+                    var mostOwed = pool.Count == 0 ? 0 : pool.Max(p => WeekendLedger.Key(Ledger.Owed(p.EmployeeId, kind)));
+                    return pool
+                        .Where(p => p.Options.Any(o => (o >> x & 1) == 1))
+                        .Where(p => WeekendLedger.Key(Ledger.Owed(p.EmployeeId, kind)) > mostOwed - 1 + 1e-6)
+                        .OrderByDescending(p => WeekendLedger.Key(Ledger.Owed(p.EmployeeId, kind)))
+                        .ThenByDescending(p => WeekendLedger.Key(Ledger.OwedTotal(p.EmployeeId)))
+                        .ThenByDescending(p => _weekendStreak.TryGetValue(p.EmployeeId, out var s) ? s : 0)
+                        .ThenBy(p => p.Rotation)
+                        .ThenBy(p => p.EmployeeId)
+                        .ToList();
+                }
+
+                // R4, soft: a shift leader whose day off would leave the day without any leader - while another leader
+                // works it, so it can be helped - waits for another weekend (the ledger makes them the most owed next
+                // time). The fair share is then worked out WITHOUT them, so the people a deferred leader would have
+                // kept out are in it again and somebody else takes the slot. A leader is never deferred when they are
+                // the only one working that day, and a slot nobody else can take goes to the deferred leader after
+                // all: keeping leaders apart never costs the branch a weekend day off.
+                var deferred = new List<PersonWeek>();
+                List<PersonWeek> picks;
+                for (;;)
+                {
+                    picks = [];
+                    var leadRests = _cover?.LeadRests[x] ?? 0;
+                    PersonWeek? wait = null;
+                    foreach (var p in FairShare(competitors.Where(p => !deferred.Contains(p)).ToList()))
+                    {
+                        if (picks.Count >= free)
+                            break;
+                        if (LeavesNoLead(p.EmployeeId, x, leadRests))
+                        {
+                            wait = p;
+                            break;
+                        }
+                        picks.Add(p);
+                        if (_in.ShiftLeads.Contains(p.EmployeeId))
+                            leadRests++;
+                    }
+                    if (wait is null)
                         break;
-                    if (LeavesNoLead(p.EmployeeId, x))
-                        continue;
+                    deferred.Add(wait);
+                }
+                foreach (var p in picks.Concat(deferred).Take(Math.Max(0, free)))
+                {
                     var owed = Math.Round(Ledger.Owed(p.EmployeeId, kind), 2);
                     Choose(p, x, ReasonWeekendOwed, RosterPlanner.Args(("owed", owed)), placed);
-                    given++;
                 }
 
                 // Not picked: drop the options holding this day, unless none would be left (then it is forced).
@@ -1341,9 +1366,14 @@ public static class RosterPlanner
             public readonly int[] Shifts = new int[7];
         }
 
-        /// <summary>R4: this person is a shift leader and their day off would leave a day with shifts to cover without any leader.</summary>
-        private bool LeavesNoLead(int e, int day)
-            => _cover is { } c && _in.ShiftLeads.Contains(e) && c.Shifts[day] > 0 && c.Leads[day] - c.LeadRests[day] - 1 <= 0;
+        /// <summary>
+        /// R4: this person is a shift leader and their day off (with <paramref name="leadRests"/> leaders already off) would
+        /// leave a day with shifts to cover without any leader although two or more would work it - a day off that another
+        /// leader's day could make room for. With one leader working (one leader in the branch, the other on leave, off
+        /// rotation or gone) nothing can be helped: false.
+        /// </summary>
+        private bool LeavesNoLead(int e, int day, int leadRests)
+            => _cover is { } c && _in.ShiftLeads.Contains(e) && c.Shifts[day] > 0 && c.Leads[day] >= 2 && c.Leads[day] - leadRests - 1 <= 0;
 
         /// <summary>
         /// Day by day, oldest first (a move looks at the shift the day before): every working day still

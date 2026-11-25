@@ -106,6 +106,71 @@ public class RosterPlannerLeaderTests
         }
     }
 
+    /// <summary>Saturdays and Sundays off per person over the months planned and saved one after the other.</summary>
+    private static Dictionary<int, int> WeekendsOff(RosterWorld world, int size, params DateOnly[] months)
+    {
+        foreach (var month in months)
+            world.PlanAndCommit(month);
+        var to = RosterCalendar.MonthEnd(months[^1]);
+        return Enumerable.Range(1, size).ToDictionary(
+            e => e,
+            e => RosterCalendar.Days(months[0], to).Count(d => RosterCalendar.IsWeekend(d) && world.IsRest(e, d)));
+    }
+
+    /// <summary>
+    /// The rest days keep a leader on duty only where another leader's day can make room: with ONE leader working (one leader
+    /// in the branch, a rotation list naming only Lead 1, or the other leader on leave for two months) the leader is never held
+    /// back from a weekend day off, and nobody else loses one either - every person's Saturdays and Sundays off are those of
+    /// the same branch without leaders.
+    /// </summary>
+    [Theory]
+    [InlineData("one stored leader")]
+    [InlineData("rotation list with Lead 1 only")]
+    [InlineData("two leaders, one on leave")]
+    public void One_working_leader_costs_nobody_a_weekend_day_off(string setup)
+    {
+        DateOnly[] months = [Dec, new(2027, 1, 1), new(2027, 2, 1)];
+        var withLeave = setup == "two leaders, one on leave";
+        if (withLeave)
+            months = [Dec, new(2027, 1, 1)];
+
+        RosterWorld World(bool leaders)
+        {
+            var world = AllMornings(7);
+            if (withLeave)
+                world.Leave(2, Dec, new DateOnly(2027, 1, 31));
+            if (!leaders)
+                return world;
+            switch (setup)
+            {
+                case "one stored leader":
+                    world.ShiftLeaders.Add(1);
+                    break;
+                case "rotation list with Lead 1 only":
+                    world.Rotation = new RosterRotationDto
+                    {
+                        BranchId = RosterWorld.Branch,
+                        StartDate = WindowFrom,
+                        MorningShiftId = RosterWorld.Morning,
+                        EveningShiftId = RosterWorld.Evening,
+                        Members = [new RosterRotationMemberDto { EmployeeId = 1, LeadSlot = "L1", SortOrder = 1 }],
+                    };
+                    break;
+                default:
+                    world.ShiftLeaders.AddRange([1, 2]);
+                    break;
+            }
+            return world;
+        }
+
+        var baseline = WeekendsOff(World(leaders: false), 7, months);
+        var led = WeekendsOff(World(leaders: true), 7, months);
+
+        Assert.True(led[1] > 0, $"{setup}: the leader got no weekend day off");
+        Assert.Equal(baseline.Values.Sum(), led.Values.Sum());
+        Assert.All(baseline, kv => Assert.InRange(led[kv.Key], kv.Value - 1, kv.Value + 1));
+    }
+
     /// <summary>
     /// Wednesday 9 December: Lead 1 is on the morning by a saved row, Lead 2's day is the planner's (Monday's saved rest
     /// fills the week's quota, so Wednesday is a working day; Tuesday's saved morning keeps the day before plain) and the
