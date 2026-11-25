@@ -322,6 +322,9 @@ public static class RosterPlanner
     /// saves is then that, and next month's run carries the same alternation on. A stored anchor or an override still
     /// decides the weeks from W0 on — the manager's (or an earlier run's) explicit choice wins there.
     /// </summary>
+    /// <summary>How far back a W0 still decides a new rhythm's parity (see <see cref="ResolveRhythms(PlannerInput, RosterGrid)"/>).</summary>
+    public const int JustFinishedWeeks = 4;
+
     public static IReadOnlyDictionary<int, ResolvedRhythm> ResolveRhythms(PlannerInput input, RosterGrid grid)
     {
         // The fixed rotation carries its own 6/5: the start date's week and each person's group.
@@ -353,7 +356,11 @@ public static class RosterPlanner
             var anchor = weeks.FirstOrDefault(ws => Enumerable.Range(0, 7).Any(i => input.IsEmployed(e, ws.AddDays(i))), firstWeek);
 
             // A new rhythm for somebody still in (or just finishing) the new-hire period starts its alternation on W0.
-            if (resolved is null && w0 is { } start && start >= anchor)
+            // "Just finishing" reaches back up to 4 weeks before the person's first window week: someone whose 6-day
+            // period ended a few weeks ago and who was never auto-rostered since keeps the W0 parity (6 on W0, then 5,
+            // 6, ...) instead of a fresh Aligned/Staggered start that could hand them a third 6-day week in a row.
+            // Long-serving staff (W0 further back) keep the branch's Aligned/Staggered choice.
+            if (resolved is null && w0 is { } start && start >= anchor.AddDays(-7 * JustFinishedWeeks))
                 resolved = new ResolvedRhythm(e, start, 6, true, w0);
 
             if (resolved is not null)

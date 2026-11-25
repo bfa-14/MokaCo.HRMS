@@ -43,6 +43,13 @@ public static class RosterPlanValidator
     public const string RotationNotSet = "ROTATION_NOT_SET";
     public const string LeadsSameShift = "LEADS_SAME_SHIFT";
 
+    /// <summary>
+    /// More leaders work on some days than the branch has shifts to cover, so on those days leaders share a shift. ONE
+    /// warning for the month (dated on the first such day), not one per day: the cause is the setup (too few shifts
+    /// ticked to cover, or too many leaders), and a list of thirty identical lines hides every other issue.
+    /// </summary>
+    public const string LeadsTooFewShifts = "LEADS_TOO_FEW_SHIFTS";
+
     /// <summary>Every issue of a decided grid, sorted (errors first, then by date, employee, code).</summary>
     public static List<AutoRosterIssue> Validate(PlannerInput input, RosterGrid grid, IReadOnlyDictionary<int, ResolvedRhythm> rhythms)
     {
@@ -449,6 +456,8 @@ public static class RosterPlanValidator
         if (input.MonthLocked || input.ShiftLeads.Count < 2)
             return;
 
+        var tooFew = new List<DateOnly>();
+        var fewestShifts = int.MaxValue;
         foreach (var date in RosterCalendar.Days(input.MonthStart, input.MonthEnd))
         {
             if (date < input.Today)
@@ -457,17 +466,31 @@ public static class RosterPlanValidator
                 .Where(c => input.ShiftLeads.Contains(c.EmployeeId) && c.InBranch && c.CountsAsWorkForRun && c.ShiftId is not null)
                 .ToList();
             var shifts = input.CoverRulesFor(date).Count;
-            foreach (var group in leads.GroupBy(c => c.ShiftId!.Value).Where(g => g.Count() >= 2).OrderBy(g => g.Key))
+            var shared = leads.GroupBy(c => c.ShiftId!.Value).Where(g => g.Count() >= 2).OrderBy(g => g.Key).ToList();
+            if (shared.Count == 0)
+                continue;
+
+            // More leaders than shifts that day: they cannot all be apart. Counted, and said once below.
+            if (shifts > 0 && leads.Count > shifts)
+            {
+                tooFew.Add(date);
+                fewestShifts = Math.Min(fewestShifts, shifts);
+                continue;
+            }
+
+            foreach (var group in shared)
             {
                 var name = input.Shifts.TryGetValue(group.Key, out var s) ? s.Name : $"shift {group.Key}";
-                var message = shifts > 0 && leads.Count > shifts
-                    ? $"{leads.Count} shift leaders work on {RosterPlanner.Day(date)} and the day has only {shifts} shift(s) to cover: {group.Count()} are on {name}."
-                    : $"{group.Count()} shift leaders are on {name}; each shift should keep one.";
-                var issue = Issue(Warning, LeadsSameShift, null, date, message);
+                var issue = Issue(Warning, LeadsSameShift, null, date, $"{group.Count()} shift leaders are on {name}; each shift should keep one.");
                 issue.ShiftId = group.Key;
                 issues.Add(issue);
             }
         }
+
+        if (tooFew.Count > 0)
+            issues.Add(Issue(Warning, LeadsTooFewShifts, null, tooFew[0],
+                $"On {tooFew.Count} day(s) from {RosterPlanner.Day(tooFew[0])} more shift leaders work than there are shifts to cover " +
+                $"({fewestShifts}), so leaders share a shift. Tick more shifts under 'Shifts to cover every day', or take a leader off the list."));
     }
 
     /// <summary>Staff working a given shift in the branch that day (a full-day leave is not on duty).</summary>

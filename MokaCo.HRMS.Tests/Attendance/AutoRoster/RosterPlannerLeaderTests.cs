@@ -93,17 +93,18 @@ public class RosterPlannerLeaderTests
         int[] leaders = [1, 2, 3];
 
         var forced = 0;
+        var threeWork = 0;
         foreach (var d in December)
         {
             var working = leaders.Where(l => ShiftOf(p, l, d) is not null).ToList();
             var shared = working.GroupBy(l => ShiftOf(p, l, d)).Any(g => g.Count() >= 2);
             if (working.Count == 3)
             {
-                // Both shifts keep a leader; two of the three share one, and the day is named.
+                // Both shifts keep a leader; two of the three share one. Not a warning per day: one for the month says
+                // that more leaders work than there are shifts (LEADS_TOO_FEW_SHIFTS, below).
                 Assert.Equal(2, working.Select(l => ShiftOf(p, l, d)).Distinct().Count());
-                var issue = Assert.Single(p.Issues, i => i.Code == RosterPlanValidator.LeadsSameShift && i.Date == d);
-                Assert.Equal("warning", issue.Severity);
-                Assert.Contains("only 2 shift(s)", issue.Message);
+                Assert.DoesNotContain(p.Issues, i => i.Code == RosterPlanValidator.LeadsSameShift && i.Date == d);
+                threeWork++;
             }
             else if (shared)
             {
@@ -119,6 +120,13 @@ public class RosterPlannerLeaderTests
         }
 
         Assert.True(forced <= 3, $"{forced} days with two of three leaders together");
+        // The days all three work are said ONCE, on the first of them.
+        if (threeWork > 0)
+        {
+            var month = Assert.Single(p.Issues, i => i.Code == RosterPlanValidator.LeadsTooFewShifts);
+            Assert.Equal("warning", month.Severity);
+            Assert.Contains($"On {threeWork} day(s)", month.Message);
+        }
         Assert.DoesNotContain(p.Issues, i => i.Code == RosterPlanValidator.Turnaround && i.EmployeeId is 1 or 2 or 3);
     }
 

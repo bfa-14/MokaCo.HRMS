@@ -409,6 +409,26 @@ public class AutoRosterSetupStaff
 
     /// <summary>6 or 5: the type of the month's first week as the planner would use it now (stored, or the default rule).</summary>
     public int FirstWeekWorkDays { get; set; }
+
+    /// <summary>
+    /// The new-hire rule (R6): the Monday from which this person alternates 6 and 5. Every week before it is a 6-day
+    /// week. Set only while that Monday is after the month's first week (the person still has 6-day weeks to go); null
+    /// otherwise, or when the hire date is unknown.
+    /// </summary>
+    public DateOnly? SixDayWeeksUntil { get; set; }
+
+    /// <summary>
+    /// Each Monday-Sunday week of the month (the window's weeks) and its type as the planner decides it now: 6 or 5.
+    /// The roster grid judges a SAVED month by these (no preview to ask), so a new hire's 6-day weeks in a row are right.
+    /// </summary>
+    public List<AutoRosterSetupWeek> Weeks { get; set; } = new();
+}
+
+/// <summary>One week of a person's rhythm: its Monday and its type.</summary>
+public class AutoRosterSetupWeek
+{
+    public DateOnly WeekStart { get; set; }
+    public int WorkDays { get; set; }
 }
 
 public class AutoRosterSetupHoliday
