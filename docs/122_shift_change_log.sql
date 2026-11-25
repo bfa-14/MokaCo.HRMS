@@ -24,7 +24,14 @@
    2. Written by TRIGGERS, so no procedure of script 117 is redefined for it:
         attendance.tr_SHIFT_HOURS_ChangeLog   AFTER INSERT, UPDATE, DELETE on attendance.SHIFT_HOURS. A row that
                                               changes nothing (the same hours as the version before it, which
-                                              usp_Shift_TidyHours then removes) is not logged.
+                                              usp_Shift_TidyHours then removes) is not logged. The last day of the
+                                              hours: for a change entered for a PERIOD, the period's own last day,
+                                              which the API puts on the session (SESSION_CONTEXT N'ShiftHoursFrom' /
+                                              N'ShiftHoursTo', next to N'UserId'): usp_Shift_SetHours writes the
+                                              period's version BEFORE the "back to the hours before" version that ends
+                                              it, so the table cannot tell the trigger that end yet. Otherwise the day
+                                              before the next later change already recorded (none = until the next
+                                              change).
         attendance.tr_SHIFT_ChangeLog         AFTER UPDATE on attendance.SHIFT, only when Name or IsActive really
                                               change: the nightly usp_Shift_SyncCurrent copies today's hours into
                                               attendance.SHIFT and must not fill the log with noise.
@@ -145,8 +152,16 @@ BEGIN
     DECLARE @Who INT = TRY_CONVERT(INT, SESSION_CONTEXT(N'UserId'));
     DECLARE @Now DATETIME2(0) = SYSUTCDATETIME();
 
-    /* the last day a version's hours run: the day before the next LATER version with other hours (a later version
-       with the same hours only repeats it, and usp_Shift_TidyHours removes it) */
+    /* the last day a version's hours run. A change entered for a PERIOD: the period's last day, as the caller typed it
+       (the API puts the change's dates on the session; no first day = today, as usp_Shift_Update does). It cannot be
+       read from the table: usp_Shift_SetHours writes the period's version BEFORE the "back to the hours before"
+       version on the day after the period. Any other version: the day before the next LATER version with other hours
+       (a later version with the same hours only repeats it, and usp_Shift_TidyHours removes it); none = until the
+       next change. */
+    DECLARE @PeriodTo DATE = TRY_CONVERT(DATE, SESSION_CONTEXT(N'ShiftHoursTo'));
+    DECLARE @PeriodFrom DATE = CASE WHEN @PeriodTo IS NOT NULL
+                                    THEN ISNULL(TRY_CONVERT(DATE, SESSION_CONTEXT(N'ShiftHoursFrom')),
+                                                CAST(SYSDATETIMEOFFSET() AT TIME ZONE 'Middle East Standard Time' AS DATE)) END;
     IF @HasIns = 1 AND @HasDel = 0
     BEGIN
         /* a NEW version. Before: the version in force on its date until now; for a shift's first version, the hours
@@ -158,7 +173,8 @@ BEGIN
              OldBreakMinutes, NewBreakMinutes, OldGraceMinutes, NewGraceMinutes, OldName, NewName, Note)
         SELECT x.ShiftId, @Now, COALESCE(@Who, x.CreatedByUserId),
                CASE WHEN x.OldFrom = 0 AND x.IsFirst = 1 THEN 'Created' ELSE 'HoursChanged' END,
-               x.EffectiveFrom, nx.LastDay,
+               x.EffectiveFrom,
+               CASE WHEN x.EffectiveFrom = @PeriodFrom AND NOT (x.OldFrom = 0 AND x.IsFirst = 1) THEN @PeriodTo ELSE nx.LastDay END,
                CASE x.OldFrom WHEN 1 THEN x.pStart WHEN 2 THEN x.sStart END, x.StartTime,
                CASE x.OldFrom WHEN 1 THEN x.pEnd   WHEN 2 THEN x.sEnd   END, x.EndTime,
                CASE x.OldFrom WHEN 1 THEN x.pCross WHEN 2 THEN x.sCross END, x.CrossesMidnight,
@@ -205,7 +221,8 @@ BEGIN
             (ShiftId, ChangedAtUtc, ChangedByUserId, [Action], EffectiveFrom, EffectiveTo,
              OldStartTime, NewStartTime, OldEndTime, NewEndTime, OldCrossesMidnight, NewCrossesMidnight,
              OldBreakMinutes, NewBreakMinutes, OldGraceMinutes, NewGraceMinutes, Note)
-        SELECT i.ShiftId, @Now, COALESCE(@Who, i.CreatedByUserId), 'HoursChanged', i.EffectiveFrom, nx.LastDay,
+        SELECT i.ShiftId, @Now, COALESCE(@Who, i.CreatedByUserId), 'HoursChanged', i.EffectiveFrom,
+               CASE WHEN i.EffectiveFrom = @PeriodFrom THEN @PeriodTo ELSE nx.LastDay END,
                d.StartTime, i.StartTime, d.EndTime, i.EndTime, d.CrossesMidnight, i.CrossesMidnight,
                d.BreakMinutes, i.BreakMinutes, d.GraceMinutes, i.GraceMinutes, i.Note
         FROM inserted i

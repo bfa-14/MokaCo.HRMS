@@ -18,7 +18,12 @@ public static class SessionCaller
     /// <summary>The session key the database's triggers read.</summary>
     public const string UserIdKey = "UserId";
 
-    public static async Task SetAsync(IDbConnection db, int? callerUserId, IDbTransaction? transaction = null)
+    public static Task SetAsync(IDbConnection db, int? callerUserId, IDbTransaction? transaction = null)
+        => SetValueAsync(db, UserIdKey, callerUserId, transaction);
+
+    /// <summary>Any other value a trigger reads from the session, on the same terms: the connection opened and left
+    /// open, the value written even when it is NULL.</summary>
+    public static async Task SetValueAsync<T>(IDbConnection db, string key, T value, IDbTransaction? transaction = null)
     {
         if (db.State != ConnectionState.Open)
         {
@@ -28,7 +33,7 @@ public static class SessionCaller
 
         await db.ExecuteAsync(
             "sys.sp_set_session_context",
-            new { key = UserIdKey, value = callerUserId },
+            new { key, value },
             transaction,
             commandType: CommandType.StoredProcedure);
     }

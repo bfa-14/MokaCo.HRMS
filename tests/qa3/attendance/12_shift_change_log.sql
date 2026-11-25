@@ -1,6 +1,7 @@
 /* Script 122: every change to a shift is written down and kept (attendance.SHIFT_CHANGE): created, hours changed,
    hours removed, renamed, switched off and on - with who, the before and the after - and nothing for a write that
-   changes nothing (the nightly sync, the same hours again, the tidy-up of a repeated version). The days a change
+   changes nothing (the nightly sync, the same hours again, the tidy-up of a repeated version). A change for a period
+   ends on the day typed (the API puts the dates on the session), with or without a later change. The days a change
    could not work out again are counted and logged. A correction and a day report read whether the day's shift
    crosses midnight from the hours in force ON THAT DAY.
    Runs on a dev database with docs/122_shift_change_log.sql applied. Three phases, each in a transaction that is
@@ -84,12 +85,19 @@ IF (SELECT COUNT(*) FROM attendance.SHIFT_CHANGE WHERE ShiftId = @S) <> @n
 
 /* ---- without a caller in the session: hours written are put down to the version's CreatedByUserId ---- */
 EXEC sys.sp_set_session_context @key = N'UserId', @value = NULL;
+/* the dates of a change, which the API puts on the session next to the caller (ShiftRepository.SetHoursPeriodAsync) */
+DECLARE @PFrom DATETIME = '2027-01-10', @PTo DATETIME = '2027-01-20';
+EXEC sys.sp_set_session_context @key = N'ShiftHoursFrom', @value = @PFrom;
+EXEC sys.sp_set_session_context @key = N'ShiftHoursTo', @value = @PTo;
 DELETE FROM @d;
 INSERT INTO @d EXEC attendance.usp_Shift_SetHours @ShiftId = @S, @EffectiveFrom = '2027-01-10', @EffectiveTo = '2027-01-20', @StartTime = '07:00', @EndTime = '15:00',
      @CrossesMidnight = 0, @BreakMinutes = 45, @Note = N'QA3 ten early days', @CallerUserId = @U2;
-/* a change for a period is two versions: the new hours on the 10th (until the 20th), the hours before back on the 21st */
+EXEC sys.sp_set_session_context @key = N'ShiftHoursFrom', @value = NULL;
+EXEC sys.sp_set_session_context @key = N'ShiftHoursTo', @value = NULL;
+/* a change for a period is two versions: the new hours on the 10th (until the 20th, as typed - no later change is
+   recorded, so the table alone would say "open-ended"), the hours before back on the 21st */
 IF NOT EXISTS (SELECT 1 FROM attendance.SHIFT_CHANGE WHERE ShiftId = @S AND [Action] = 'HoursChanged' AND EffectiveFrom = '2027-01-10'
-                  AND OldStartTime = '09:30' AND NewStartTime = '07:00' AND ChangedByUserId = @U2)
+                  AND EffectiveTo = '2027-01-20' AND OldStartTime = '09:30' AND NewStartTime = '07:00' AND ChangedByUserId = @U2)
    OR NOT EXISTS (SELECT 1 FROM attendance.SHIFT_CHANGE WHERE ShiftId = @S AND [Action] = 'HoursChanged' AND EffectiveFrom = '2027-01-21'
                   AND OldStartTime = '07:00' AND NewStartTime = '09:30' AND EffectiveTo IS NULL AND Note LIKE N'Back to the hours before%')
     BEGIN SET @fails += 1; RAISERROR('12: a change for a period was not logged as the new hours, then the old hours back (by the caller written on the version).', 16, 1); END
@@ -119,6 +127,39 @@ IF (SELECT COUNT(*) FROM @c) <> (SELECT COUNT(*) FROM attendance.SHIFT_CHANGE WH
    OR EXISTS (SELECT 1 FROM @c WHERE ChangedByUserId IS NOT NULL AND ChangedBy IS NULL)
    OR EXISTS (SELECT 1 FROM @c WHERE ChangedOn IS NULL)
     BEGIN SET @fails += 1; RAISERROR('12: usp_Shift_GetChanges does not list the shift''s log newest first with who and when.', 16, 1); END
+
+/* ---- a change for a period with a LATER change already recorded: it ends on the day typed, not the day before
+   the later change (usp_Shift_SetHours writes the period's version before the "back" version that ends it) ---- */
+DECLARE @P INT;
+DELETE FROM @t;
+INSERT INTO @t EXEC attendance.usp_Shift_Create @Name = N'QA3 Log Period', @StartTime = '08:00', @EndTime = '16:00', @GraceMinutes = NULL,
+     @CrossesMidnight = 0, @BreakMinutes = 30, @CallerUserId = @U;
+SET @P = (SELECT Id FROM @t);
+DELETE FROM @d;
+INSERT INTO @d EXEC attendance.usp_Shift_SetHours @ShiftId = @P, @EffectiveFrom = '2027-03-01', @StartTime = '10:00', @EndTime = '18:00',
+     @CrossesMidnight = 0, @BreakMinutes = 30, @Note = N'QA3 summer', @CallerUserId = @U;
+SET @PFrom = '2026-12-01'; SET @PTo = '2026-12-31';
+EXEC sys.sp_set_session_context @key = N'ShiftHoursFrom', @value = @PFrom;
+EXEC sys.sp_set_session_context @key = N'ShiftHoursTo', @value = @PTo;
+DELETE FROM @d;
+INSERT INTO @d EXEC attendance.usp_Shift_SetHours @ShiftId = @P, @EffectiveFrom = '2026-12-01', @EffectiveTo = '2026-12-31', @StartTime = '09:00', @EndTime = '17:00',
+     @CrossesMidnight = 0, @BreakMinutes = 30, @Note = N'QA3 Ramadan', @CallerUserId = @U;
+IF NOT EXISTS (SELECT 1 FROM attendance.SHIFT_CHANGE WHERE ShiftId = @P AND [Action] = 'HoursChanged' AND EffectiveFrom = '2026-12-01'
+                  AND EffectiveTo = '2026-12-31' AND OldStartTime = '08:00' AND NewStartTime = '09:00' AND Note = N'QA3 Ramadan')
+   OR NOT EXISTS (SELECT 1 FROM attendance.SHIFT_CHANGE WHERE ShiftId = @P AND [Action] = 'HoursChanged' AND EffectiveFrom = '2027-01-01'
+                  AND EffectiveTo = '2027-02-28' AND OldStartTime = '09:00' AND NewStartTime = '08:00' AND Note LIKE N'Back to the hours before%')
+    BEGIN SET @fails += 1; RAISERROR('12: a change for a period before a later change was not logged 1 Dec to 31 Dec, then the old hours back until 28 Feb.', 16, 1); END
+/* the same period entered again with an earlier end (the version is overwritten): it ends on the new last day */
+SET @PTo = '2026-12-15';
+EXEC sys.sp_set_session_context @key = N'ShiftHoursTo', @value = @PTo;
+DELETE FROM @d;
+INSERT INTO @d EXEC attendance.usp_Shift_SetHours @ShiftId = @P, @EffectiveFrom = '2026-12-01', @EffectiveTo = '2026-12-15', @StartTime = '09:30', @EndTime = '17:30',
+     @CrossesMidnight = 0, @BreakMinutes = 30, @Note = N'QA3 Ramadan shorter', @CallerUserId = @U;
+EXEC sys.sp_set_session_context @key = N'ShiftHoursFrom', @value = NULL;
+EXEC sys.sp_set_session_context @key = N'ShiftHoursTo', @value = NULL;
+IF NOT EXISTS (SELECT 1 FROM attendance.SHIFT_CHANGE WHERE ShiftId = @P AND [Action] = 'HoursChanged' AND EffectiveFrom = '2026-12-01'
+                  AND EffectiveTo = '2026-12-15' AND OldStartTime = '09:00' AND NewStartTime = '09:30' AND Note = N'QA3 Ramadan shorter')
+    BEGIN SET @fails += 1; RAISERROR('12: the same period entered again with an earlier end was not logged until that end.', 16, 1); END
 
 /* ---- a correction and a day report read the overnight flag of THAT day ---- */
 DECLARE @B INT, @E INT, @UE INT, @Night INT, @Att BIGINT, @Dev INT;

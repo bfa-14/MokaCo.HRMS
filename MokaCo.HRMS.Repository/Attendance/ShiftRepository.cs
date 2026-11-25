@@ -9,12 +9,20 @@ namespace MokaCo.HRMS.Repository.Attendance;
 /// <summary>
 /// Dapper access for shift definitions via the attendance.usp_Shift_* stored procedures. Every write first puts the
 /// caller on the session (<see cref="SessionCaller"/>) so that the shift change log (script 122, written by triggers)
-/// says who made the change.
+/// says who made the change, and the dates a change of hours is entered for (<see cref="HoursFromKey"/>,
+/// <see cref="HoursToKey"/>) so that a change for a period is logged with the last day the person chose.
 /// </summary>
 public class ShiftRepository : IShiftRepository
 {
     /// <summary>"Procedure has too many arguments specified": the procedure is the one from before script 117.</summary>
     private const int TooManyArguments = 8144;
+
+    /// <summary>
+    /// Session keys script 122's trigger on attendance.SHIFT_HOURS reads: the first and last day of a change of hours.
+    /// usp_Shift_SetHours writes a period's version before the "back to the hours before" version that ends it, so the
+    /// trigger cannot read that end from the table. Always written (NULL included), like the caller.
+    /// </summary>
+    public const string HoursFromKey = "ShiftHoursFrom", HoursToKey = "ShiftHoursTo";
 
     private readonly IDbConnectionFactory _factory;
     public ShiftRepository(IDbConnectionFactory factory) => _factory = factory;
@@ -31,7 +39,7 @@ public class ShiftRepository : IShiftRepository
         => Guard("attendance.usp_Shift_Create", async () =>
         {
             using var db = _factory.Create();
-            await SessionCaller.SetAsync(db, callerUserId);
+            await SetSessionAsync(db, callerUserId);
             return await db.ExecuteScalarAsync<int>(
                 "attendance.usp_Shift_Create",
                 new
@@ -52,7 +60,7 @@ public class ShiftRepository : IShiftRepository
         => Guard("attendance.usp_Shift_Update", async () =>
         {
             using var db = _factory.Create();
-            await SessionCaller.SetAsync(db, callerUserId);
+            await SetSessionAsync(db, callerUserId, effectiveFrom, effectiveTo);
             // A change that reaches back derives every day it touches again: give it time.
             await db.ExecuteAsync(
                 "attendance.usp_Shift_Update",
@@ -90,7 +98,7 @@ public class ShiftRepository : IShiftRepository
         => Guard("attendance.usp_Shift_DeleteHours", async () =>
         {
             using var db = _factory.Create();
-            await SessionCaller.SetAsync(db, callerUserId);
+            await SetSessionAsync(db, callerUserId);
             return await db.ExecuteScalarAsync<int>(
                 "attendance.usp_Shift_DeleteHours",
                 new { ShiftHoursId = shiftHoursId, CallerUserId = callerUserId },
@@ -119,6 +127,23 @@ public class ShiftRepository : IShiftRepository
         });
 
     private static DateTime? AsDate(DateOnly? date) => date?.ToDateTime(TimeOnly.MinValue);
+
+    /// <summary>
+    /// Puts the caller and the dates of a change of hours on the session, on the connection the write then uses. All
+    /// three keys are written every time, NULL included, so nothing from an earlier use of the session carries over.
+    /// </summary>
+    private static async Task SetSessionAsync(IDbConnection db, int? callerUserId, DateOnly? hoursFrom = null, DateOnly? hoursTo = null)
+    {
+        await SessionCaller.SetAsync(db, callerUserId);
+        await SetHoursPeriodAsync(db, hoursFrom, hoursTo);
+    }
+
+    /// <summary>The first and last day of a change of hours, for script 122's trigger (<see cref="HoursFromKey"/>).</summary>
+    public static async Task SetHoursPeriodAsync(IDbConnection db, DateOnly? from, DateOnly? to, IDbTransaction? transaction = null)
+    {
+        await SessionCaller.SetValueAsync(db, HoursFromKey, AsDate(from), transaction);
+        await SessionCaller.SetValueAsync(db, HoursToKey, AsDate(to), transaction);
+    }
 
     /// <summary>A database that lacks script 117 answers "no such procedure" or "too many arguments": both mean the script is missing.</summary>
     private static async Task<T> Guard<T>(string procedure, Func<Task<T>> call)
