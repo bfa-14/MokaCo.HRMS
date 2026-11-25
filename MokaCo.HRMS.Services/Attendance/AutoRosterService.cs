@@ -1,5 +1,6 @@
 using MokaCo.HRMS.Model.Attendance;
 using MokaCo.HRMS.Repository.Attendance;
+using MokaCo.HRMS.Repository.Common;
 using MokaCo.HRMS.Services.Attendance.AutoRoster;
 using MokaCo.HRMS.Services.Workflow;
 
@@ -54,6 +55,53 @@ public class AutoRosterService : IAutoRosterService
             await _repo.SaveRotationAsync(rotation, callerUserId);
             return true;
         });
+    }
+
+    /// <summary>What the leaders' read and save say while script 123 is not applied (the planner then keeps only the rotation's leads apart).</summary>
+    public const string LeadersNotAvailable =
+        "The shift leaders list is not available yet: the database update docs/123_roster_leaders.sql has not been applied.";
+
+    public async Task<RosterLeadersDto> GetLeadersAsync(int branchId, int? callerUserId)
+    {
+        if (branchId <= 0)
+            throw new WorkflowException(400, "Choose a branch.");
+
+        var rows = await LeadersCallAsync(() => _repo.GetLeadersAsync(branchId, callerUserId));
+        return new RosterLeadersDto
+        {
+            BranchId = branchId,
+            EmployeeIds = rows.Where(r => r.IsStored).Select(r => r.EmployeeId).ToList(),
+            Leaders = rows.ToList(),
+        };
+    }
+
+    /// <summary>The procedure owns the rules (people of this branch, the branch's scope); the list is sent once per person.</summary>
+    public async Task SaveLeadersAsync(RosterLeadersDto leaders, int? callerUserId)
+    {
+        if (leaders is null || leaders.BranchId <= 0)
+            throw new WorkflowException(400, "Choose a branch.");
+        var ids = (leaders.EmployeeIds ?? []).Distinct().ToList();
+        if (ids.Any(id => id <= 0))
+            throw new WorkflowException(400, "Every line of the shift leaders list needs its employee.");
+
+        await LeadersCallAsync(async () =>
+        {
+            await _repo.SaveLeadersAsync(leaders.BranchId, ids, callerUserId);
+            return true;
+        });
+    }
+
+    /// <summary>A leaders call: the procedures' sentences as their status, a missing script 123 as a 503 that says so.</summary>
+    private static async Task<T> LeadersCallAsync<T>(Func<Task<T>> call)
+    {
+        try
+        {
+            return await WorkflowSqlErrors.MapAsync(call);
+        }
+        catch (MissingScriptException)
+        {
+            throw new WorkflowException(503, LeadersNotAvailable);
+        }
     }
 
     public async Task<AutoRosterPreview> PreviewAsync(AutoRosterRequest request, int? callerUserId)
