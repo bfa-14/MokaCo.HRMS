@@ -3,6 +3,7 @@ using Dapper;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Routing;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging;
 using Moq;
 using MokaCo.HRMS.Api.Auth;
 using MokaCo.HRMS.Api.Controllers;
@@ -11,6 +12,7 @@ using MokaCo.HRMS.Model.Attendance;
 using MokaCo.HRMS.Repository.Attendance;
 using MokaCo.HRMS.Repository.Common;
 using MokaCo.HRMS.Services.Attendance;
+using MokaCo.HRMS.Services.Core;
 using MokaCo.HRMS.Services.Workflow;
 
 namespace MokaCo.HRMS.Tests.Attendance;
@@ -38,6 +40,17 @@ public class RosterLeadersTests
     private static object? Field(object? value, string name) => value?.GetType().GetProperty(name)?.GetValue(value);
 
     private static MissingScriptException Missing(string procedure) => new(Scripts.RosterLeaders123, procedure, MissingScriptException.ProcedureNotFound);
+
+    /// <summary>Keeps every line it was asked to log, with its level.</summary>
+    private sealed class ListLogger<T> : ILogger<T>
+    {
+        public List<(LogLevel Level, string Text)> Lines { get; } = [];
+        public IEnumerable<string> Warnings => Lines.Where(l => l.Level == LogLevel.Warning).Select(l => l.Text);
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            => Lines.Add((logLevel, formatter(state, exception)));
+    }
 
     /* ---- the service ---- */
 
@@ -102,12 +115,13 @@ public class RosterLeadersTests
     }
 
     [Fact]
-    public async Task Without_script_123_the_read_and_the_save_say_so()
+    public async Task Without_script_123_the_read_and_the_save_say_so_plainly_and_the_log_names_the_script()
     {
         var repo = new Mock<IAutoRosterRepository>(MockBehavior.Strict);
         repo.Setup(r => r.GetLeadersAsync(3, Caller)).ThrowsAsync(Missing("attendance.usp_AutoRoster_GetLeaders"));
         repo.Setup(r => r.SaveLeadersAsync(3, It.IsAny<IEnumerable<int>>(), Caller)).ThrowsAsync(Missing("attendance.usp_AutoRoster_SaveLeaders"));
-        var service = new AutoRosterService(repo.Object);
+        var log = new ListLogger<MissingScriptWarning>();
+        var service = new AutoRosterService(repo.Object, new MissingScriptWarning(log));
 
         var read = await Assert.ThrowsAsync<WorkflowException>(() => service.GetLeadersAsync(3, Caller));
         var save = await Assert.ThrowsAsync<WorkflowException>(() => service.SaveLeadersAsync(new RosterLeadersDto { BranchId = 3, EmployeeIds = [4] }, Caller));
@@ -117,6 +131,13 @@ public class RosterLeadersTests
             Assert.Equal(503, ex.StatusCode);
             Assert.Equal(AutoRosterService.LeadersNotAvailable, ex.Message);
         });
+        // The manager reads the sentence in the drawer: no file, no script number, no database words.
+        foreach (var jargon in new[] { "docs/", ".sql", "123", "script", "database", "procedure" })
+            Assert.DoesNotContain(jargon, AutoRosterService.LeadersNotAvailable, StringComparison.OrdinalIgnoreCase);
+        // The operator reads the server's log: one warning that names the file to apply.
+        var warning = Assert.Single(log.Warnings);
+        Assert.StartsWith($"DATABASE SCRIPT NOT APPLIED: {Scripts.RosterLeaders123}", warning);
+        Assert.Contains("attendance.usp_AutoRoster_GetLeaders", warning);
     }
 
     [Theory]
@@ -199,8 +220,11 @@ public class RosterLeadersTests
 
         Assert.Equal(403, read.StatusCode);
         Assert.Equal(NotYourBranch, Field(read.Value, "error"));
+        Assert.Null(Field(read.Value, "code"));
         Assert.Equal(503, save.StatusCode);
         Assert.Equal(AutoRosterService.LeadersNotAvailable, Field(save.Value, "error"));
+        // The code lets the web say it in the reader's language (a slow database is a 503 too, without it).
+        Assert.Equal("leaders_not_ready", Field(save.Value, "code"));
         auto.Verify(a => a.GetLeadersAsync(3, It.IsAny<int?>()), Times.Never);
     }
 

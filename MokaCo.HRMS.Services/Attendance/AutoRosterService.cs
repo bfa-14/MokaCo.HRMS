@@ -2,6 +2,7 @@ using MokaCo.HRMS.Model.Attendance;
 using MokaCo.HRMS.Repository.Attendance;
 using MokaCo.HRMS.Repository.Common;
 using MokaCo.HRMS.Services.Attendance.AutoRoster;
+using MokaCo.HRMS.Services.Core;
 using MokaCo.HRMS.Services.Workflow;
 
 namespace MokaCo.HRMS.Services.Attendance;
@@ -18,7 +19,13 @@ namespace MokaCo.HRMS.Services.Attendance;
 public class AutoRosterService : IAutoRosterService
 {
     private readonly IAutoRosterRepository _repo;
-    public AutoRosterService(IAutoRosterRepository repo) => _repo = repo;
+    private readonly MissingScriptWarning? _missingScript;
+
+    public AutoRosterService(IAutoRosterRepository repo, MissingScriptWarning? missingScript = null)
+    {
+        _repo = repo;
+        _missingScript = missingScript;
+    }
 
     public async Task<AutoRosterSetup> GetSetupAsync(int branchId, string? month, int? callerUserId)
     {
@@ -57,9 +64,18 @@ public class AutoRosterService : IAutoRosterService
         });
     }
 
-    /// <summary>What the leaders' read and save say while script 123 is not applied (the planner then keeps only the rotation's leads apart).</summary>
+    /// <summary>
+    /// What the leaders' read and save say while script 123 is not applied (the planner then keeps only the rotation's
+    /// leads apart). A manager reads it in the drawer, so it is plain words; the script's name goes to the server's log.
+    /// </summary>
     public const string LeadersNotAvailable =
-        "The shift leaders list is not available yet: the database update docs/123_roster_leaders.sql has not been applied.";
+        "The shift leaders list is not available yet. Ask your administrator to finish the update.";
+
+    /// <summary>
+    /// The same answer as a code beside the sentence, so the web can say it in the reader's language: a 503 alone could
+    /// also be the database being too slow to answer.
+    /// </summary>
+    public const string LeadersNotAvailableCode = "leaders_not_ready";
 
     public async Task<RosterLeadersDto> GetLeadersAsync(int branchId, int? callerUserId)
     {
@@ -91,15 +107,20 @@ public class AutoRosterService : IAutoRosterService
         });
     }
 
-    /// <summary>A leaders call: the procedures' sentences as their status, a missing script 123 as a 503 that says so.</summary>
-    private static async Task<T> LeadersCallAsync<T>(Func<Task<T>> call)
+    /// <summary>
+    /// A leaders call: the procedures' sentences as their status, a missing script 123 as a 503 in plain words, and the
+    /// one warning in the server's log that names the script to apply.
+    /// </summary>
+    private async Task<T> LeadersCallAsync<T>(Func<Task<T>> call)
     {
         try
         {
             return await WorkflowSqlErrors.MapAsync(call);
         }
-        catch (MissingScriptException)
+        catch (MissingScriptException missing)
         {
+            _missingScript?.FellBack(missing,
+                "the shift leaders list answers 503 and the planner keeps only the rotation list's Lead 1 / Lead 2 apart");
             throw new WorkflowException(503, LeadersNotAvailable);
         }
     }

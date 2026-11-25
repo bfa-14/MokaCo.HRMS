@@ -171,7 +171,7 @@ public class AutoRosterController : ControllerBase
         }
         catch (WorkflowException ex)
         {
-            return StatusCode(ex.StatusCode, new { error = ex.Message });
+            return LeadersRefusal(ex);
         }
     }
 
@@ -190,9 +190,19 @@ public class AutoRosterController : ControllerBase
         }
         catch (WorkflowException ex)
         {
-            return StatusCode(ex.StatusCode, new { error = ex.Message });
+            return LeadersRefusal(ex);
         }
     }
+
+    /// <summary>
+    /// A leaders refusal: its status and sentence. The 503 (script 123 not applied, the only 503 these two calls refuse
+    /// with) also carries <see cref="AutoRosterService.LeadersNotAvailableCode"/>, so the web says it in the reader's
+    /// language: the database being too slow is a 503 as well.
+    /// </summary>
+    private ObjectResult LeadersRefusal(WorkflowException ex)
+        => ex.StatusCode == StatusCodes.Status503ServiceUnavailable
+            ? StatusCode(ex.StatusCode, new { error = ex.Message, code = AutoRosterService.LeadersNotAvailableCode })
+            : StatusCode(ex.StatusCode, new { error = ex.Message });
 
     /// <summary>The drawer's staff list: on rotation, and optionally a new 6/5 anchor ("this week is a 5-day week").</summary>
     [HttpPut("rhythm")]
