@@ -32,6 +32,9 @@ public sealed record RotationSetup(DateOnly StartDate, int MorningShiftId, int E
 ///     be decided by somebody else (a hand edit, a saved day). The other lead then takes the OTHER shift, whatever
 ///     the week says.
 ///
+/// R6, the new-hire rule, applies here too: a week before the person's W0 (<see cref="PlannerInput.AlternateFrom"/>) is a
+/// 6-day week, so in a week the sheet gives two days off a new hire gets only the FIRST of the two.
+///
 /// The sheet knows nothing of the real world; the auto-roster does, and it wins: a day the run may not change
 /// (paid, past, recorded, pinned, a hand edit the mode protects), a leave day and a public holiday are handled as
 /// in the other method, and the rule fills only the days that are free. What it balances the two shifts against
@@ -64,14 +67,24 @@ public static class RotationRule
     /// <summary>A two-days-off week for this group (a 5-day week); otherwise one day off (a 6-day week).</summary>
     public static bool IsTwoOffWeek(int week, int group) => RosterCalendar.Mod(week + group, 2) == 0;
 
-    public static bool IsOff(RotationSetup setup, RotationMember member, DateOnly date)
+    /// <summary>The sheet's cell: a day off for this person on this date.</summary>
+    public static bool IsOff(RotationSetup setup, RotationMember member, DateOnly date) => IsOff(setup, member, date, null);
+
+    /// <summary>
+    /// The rule's day off, with the new-hire rule: in a week that starts before <paramref name="alternateFrom"/> (W0) a
+    /// two-days-off week keeps only its first day off - the person works six days that week.
+    /// </summary>
+    public static bool IsOff(RotationSetup setup, RotationMember member, DateOnly date, DateOnly? alternateFrom)
     {
         var w = Week(setup.StartDate, date);
         var sh = Shift(w);
         var dy = Weekday(date);
-        return IsTwoOffWeek(w, member.Group)
-            ? dy == RosterCalendar.Mod(member.PairRestDay + sh, 7) || dy == RosterCalendar.Mod(member.PairRestDay + 1 + sh, 7)
-            : dy == RosterCalendar.Mod(member.SingleRestDay + sh, 7);
+        if (!IsTwoOffWeek(w, member.Group))
+            return dy == RosterCalendar.Mod(member.SingleRestDay + sh, 7);
+        var first = dy == RosterCalendar.Mod(member.PairRestDay + sh, 7);
+        if (alternateFrom is { } w0 && RosterCalendar.WeekStart(date) < w0)
+            return first;
+        return first || dy == RosterCalendar.Mod(member.PairRestDay + 1 + sh, 7);
     }
 
     /// <summary>
@@ -117,7 +130,8 @@ public static class RotationRule
     /// <summary>
     /// The 6/5 rhythm the rule implies, in the auto-roster's own terms: anchored on the start date's week, a 5-day
     /// week there for group 0 and a 6-day week for group 1. Saved with the plan, so the week strip, the validator
-    /// and a later run of the other method all read the same alternation.
+    /// and a later run of the other method all read the same alternation. Each carries the person's W0: the weeks of
+    /// the new-hire period are 6-day weeks (<see cref="IsOff(RotationSetup, RotationMember, DateOnly, DateOnly?)"/>).
     /// </summary>
     public static IReadOnlyDictionary<int, ResolvedRhythm> ResolveRhythms(PlannerInput input)
     {
@@ -131,9 +145,10 @@ public static class RotationRule
             var workDays = member.Group == 0 ? 5 : 6;
             var isNew = !input.Rhythms.TryGetValue(employee.EmployeeId, out var stored)
                         || RosterCalendar.WorkDaysInWeek(RosterCalendar.WeekIndex(stored.AnchorWeekStart), stored.AnchorWorkDays, RosterCalendar.WeekIndex(anchor)) != workDays;
+            var w0 = input.AlternateFrom(employee.EmployeeId);
             result[employee.EmployeeId] = isNew
-                ? new ResolvedRhythm(employee.EmployeeId, anchor, workDays, true)
-                : new ResolvedRhythm(employee.EmployeeId, stored!.AnchorWeekStart, stored.AnchorWorkDays, false);
+                ? new ResolvedRhythm(employee.EmployeeId, anchor, workDays, true, w0)
+                : new ResolvedRhythm(employee.EmployeeId, stored!.AnchorWeekStart, stored.AnchorWorkDays, false, w0);
         }
         return result;
     }
@@ -148,6 +163,7 @@ public static class RotationRule
         var ordered = Ordered(setup, input.Staff.Where(s => s.OnRotation).Select(s => s.EmployeeId));
 
         var leads = ordered.Where(m => m.LeadSlot is not null).ToList();
+        var alternateFrom = ordered.ToDictionary(m => m.EmployeeId, m => input.AlternateFrom(m.EmployeeId));
 
         foreach (var date in grid.Days)
         {
@@ -182,7 +198,7 @@ public static class RotationRule
 
                 if (cell.IsPlannable)
                 {
-                    if (IsOff(setup, member, date))
+                    if (IsOff(setup, member, date, alternateFrom[member.EmployeeId]))
                     {
                         cell.State = CellState.Rest;
                         cell.ShiftId = null;

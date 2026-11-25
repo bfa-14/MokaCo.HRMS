@@ -76,7 +76,9 @@ public static class RosterPlanValidator
     /// The commit's server-side check: the rows as they stand, with <paramref name="cells"/> applied
     /// on top (upsert / delete), validated with the same rules as the preview. Ghost days are open —
     /// next month's run decides them — so they never make a week short or a run too long here.
-    /// <paramref name="rhythm"/> (the commit's rhythm rows) overrides the anchors it would resolve.
+    /// <paramref name="rhythm"/> (the commit's rhythm rows) overrides the anchors it would resolve - but never the
+    /// new-hire rule (R6): each person's W0 comes from their hire date and the setting, not from the client, so a
+    /// week of the new-hire period is judged as a 6-day week whatever anchor was sent.
     /// Cells outside the month or the branch are skipped: the procedure refuses them by name.
     /// </summary>
     public static List<AutoRosterIssue> ValidateSubmission(
@@ -92,7 +94,8 @@ public static class RosterPlanValidator
             if (!r.OnRotation)
                 rhythms.Remove(r.EmployeeId);
             else if (r.AnchorWorkDays is 5 or 6 && grid.Staff.Any(s => s.EmployeeId == r.EmployeeId))
-                rhythms[r.EmployeeId] = new ResolvedRhythm(r.EmployeeId, RosterCalendar.WeekStart(r.AnchorWeekStart), r.AnchorWorkDays, false);
+                rhythms[r.EmployeeId] = new ResolvedRhythm(
+                    r.EmployeeId, RosterCalendar.WeekStart(r.AnchorWeekStart), r.AnchorWorkDays, false, input.AlternateFrom(r.EmployeeId));
         }
 
         // Start from the rows as they are: nothing is written but what was submitted.

@@ -275,6 +275,10 @@ public static class AutoRosterInputFactory
                 : PatternRestRule.Preference,
             MinHoursBetweenShifts = Math.Max(0, Int("RosterMinHoursBetweenShifts", d.MinHoursBetweenShifts)),
             MinWeeklyRestHours = Math.Max(0, Int("RosterMinWeeklyRestHours", d.MinWeeklyRestHours)),
+            // R6: anything but a positive whole number of months is the default (3); ten years at most.
+            NewHireSixDayMonths = Int("RosterNewHireSixDayMonths", d.NewHireSixDayMonths) is var months and > 0
+                ? Math.Min(months, 120)
+                : d.NewHireSixDayMonths,
         };
 
         string? Text(string key) => map.TryGetValue(key, out var v) ? v : null;

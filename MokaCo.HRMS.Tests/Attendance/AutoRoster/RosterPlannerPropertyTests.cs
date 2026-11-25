@@ -484,11 +484,29 @@ public class RosterPlannerPropertyTests
             return WorksOn(e, d);
         }
 
+        /// <summary>
+        /// R6, read from the spec: the first Monday on or after the hire date + RosterNewHireSixDayMonths months (3 when the
+        /// setting is missing or not a positive number). Every week starting before it is a 6-day week.
+        /// </summary>
+        private DateOnly? NewHireUntil(int e)
+        {
+            if (_in.Staff.Single(s => s.EmployeeId == e).HireDate is not { } hire)
+                return null;
+            var months = _run.Input.Settings.NewHireSixDayMonths;
+            Assert.True(months > 0);
+            var end = hire.AddMonths(months);
+            while (end.DayOfWeek != DayOfWeek.Monday)
+                end = end.AddDays(1);
+            return end;
+        }
+
         private void WeeksOnQuotaOrReported()
         {
             foreach (var (e, r) in _rhythm)
             {
-                var rhythm = new ResolvedRhythm(e, r.AnchorWeekStart, r.AnchorWorkDays, r.IsNew);
+                var anchored = new ResolvedRhythm(e, r.AnchorWeekStart, r.AnchorWorkDays, r.IsNew);
+                var until = NewHireUntil(e);
+                var rhythm = (DateOnly ws) => until is { } w0 && ws < w0 ? 6 : anchored.WorkDaysIn(ws);
                 for (var ws = _in.WindowFrom; ws <= _in.WindowTo; ws = ws.AddDays(7))
                 {
                     var days = Enumerable.Range(0, 7).Select(i => ws.AddDays(i)).ToList();
@@ -498,7 +516,7 @@ public class RosterPlannerPropertyTests
 
                     var employed = days.Count(d => _in.IsEmployed(e, d));
                     var holidaysOff = days.Count(d => _cells.TryGetValue(new EmpDay(e, d), out var c) && c.State == "none" && _in.Holidays.ContainsKey(d));
-                    var quota = Math.Max(0, employed - rhythm.WorkDaysIn(ws) - (_in.Settings.HolidayCountsAsRest ? holidaysOff : 0));
+                    var quota = Math.Max(0, employed - rhythm(ws) - (_in.Settings.HolidayCountsAsRest ? holidaysOff : 0));
                     var rests = days.Count(d => RestsOn(e, d));
                     if (rests == quota)
                         continue;

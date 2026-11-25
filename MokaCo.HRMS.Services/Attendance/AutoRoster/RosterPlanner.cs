@@ -5,12 +5,25 @@ using MokaCo.HRMS.Model.Attendance;
 
 namespace MokaCo.HRMS.Services.Attendance.AutoRoster;
 
-/// <summary>An employee's 6/5 anchor as this run uses it.</summary>
-public sealed record ResolvedRhythm(int EmployeeId, DateOnly AnchorWeekStart, int AnchorWorkDays, bool IsNew)
+/// <summary>
+/// An employee's 6/5 anchor as this run uses it. <paramref name="AlternateFrom"/> is the new-hire rule's W0
+/// (<see cref="PlannerInput.AlternateFrom"/>): every week that starts before it is a 6-day week, whatever the anchor
+/// says; from it the anchor's alternation applies. Null: no new-hire period (the hire date is unknown).
+/// </summary>
+public sealed record ResolvedRhythm(int EmployeeId, DateOnly AnchorWeekStart, int AnchorWorkDays, bool IsNew, DateOnly? AlternateFrom = null)
 {
-    /// <summary>T(e,w): 6 or 5 for the week containing <paramref name="anyDayOfWeek"/>.</summary>
+    /// <summary>
+    /// T(e,w): 6 or 5 for the week containing <paramref name="anyDayOfWeek"/> — THE ONE PLACE the rhythm is decided
+    /// (the planner's quotas, the validator, the preview's counters and the setup's first week all ask here).
+    /// </summary>
     public int WorkDaysIn(DateOnly anyDayOfWeek)
-        => RosterCalendar.WorkDaysInWeek(RosterCalendar.WeekIndex(AnchorWeekStart), AnchorWorkDays, RosterCalendar.WeekIndex(anyDayOfWeek));
+        => IsNewHireWeek(anyDayOfWeek)
+            ? 6
+            : RosterCalendar.WorkDaysInWeek(RosterCalendar.WeekIndex(AnchorWeekStart), AnchorWorkDays, RosterCalendar.WeekIndex(anyDayOfWeek));
+
+    /// <summary>The week starts before W0: a 6-day week of the new-hire period.</summary>
+    public bool IsNewHireWeek(DateOnly anyDayOfWeek)
+        => AlternateFrom is { } w0 && RosterCalendar.WeekStart(anyDayOfWeek) < w0;
 }
 
 /// <summary>What <see cref="RosterPlanner.Plan"/> returns: the decided grid, the rhythms, the weekend balances and the API's preview.</summary>
@@ -290,6 +303,13 @@ public static class RosterPlanner
     /// Stored → as stored; overridden → the override; neither → anchored on the first window week the
     /// person is employed. Aligned starts on a 6-day week unless that week's facts already hold two rest
     /// rows; Staggered balances the 6- and 5-day first weeks of the whole branch (ties start on 6).
+    ///
+    /// R6, the new-hire rule, on top: every rhythm carries the person's W0 (<see cref="PlannerInput.AlternateFrom"/>),
+    /// so a week before it is a 6-day week whatever the anchor says. A person with neither a stored anchor nor an
+    /// override whose W0 is not before the first week they are employed in the window is anchored ON W0 as a 6-day
+    /// week ("one week 6 days and the next week 5"), whatever Aligned or Staggered would choose: the anchor the commit
+    /// saves is then that, and next month's run carries the same alternation on. A stored anchor or an override still
+    /// decides the weeks from W0 on — the manager's (or an earlier run's) explicit choice wins there.
     /// </summary>
     public static IReadOnlyDictionary<int, ResolvedRhythm> ResolveRhythms(PlannerInput input, RosterGrid grid)
     {
@@ -306,8 +326,9 @@ public static class RosterPlanner
         foreach (var employee in input.Staff.Where(s => s.OnRotation))
         {
             var e = employee.EmployeeId;
+            var w0 = input.AlternateFrom(e);
             input.Rhythms.TryGetValue(e, out var stored);
-            var storedRhythm = stored is null ? null : new ResolvedRhythm(e, stored.AnchorWeekStart, stored.AnchorWorkDays, false);
+            var storedRhythm = stored is null ? null : new ResolvedRhythm(e, stored.AnchorWeekStart, stored.AnchorWorkDays, false, w0);
 
             ResolvedRhythm? resolved = storedRhythm;
             if (input.RhythmOverrides.TryGetValue(e, out var o))
@@ -315,8 +336,14 @@ public static class RosterPlanner
                 var weekStart = RosterCalendar.WeekStart(o.WeekStart);
                 resolved = storedRhythm is not null && storedRhythm.WorkDaysIn(weekStart) == o.WorkDays
                     ? storedRhythm
-                    : new ResolvedRhythm(e, weekStart, o.WorkDays, true);
+                    : new ResolvedRhythm(e, weekStart, o.WorkDays, true, w0);
             }
+
+            var anchor = weeks.FirstOrDefault(ws => Enumerable.Range(0, 7).Any(i => input.IsEmployed(e, ws.AddDays(i))), firstWeek);
+
+            // A new rhythm for somebody still in (or just finishing) the new-hire period starts its alternation on W0.
+            if (resolved is null && w0 is { } start && start >= anchor)
+                resolved = new ResolvedRhythm(e, start, 6, true, w0);
 
             if (resolved is not null)
             {
@@ -325,7 +352,6 @@ public static class RosterPlanner
                 continue;
             }
 
-            var anchor = weeks.FirstOrDefault(ws => Enumerable.Range(0, 7).Any(i => input.IsEmployed(e, ws.AddDays(i))), firstWeek);
             pending.Add((employee, anchor));
         }
 
@@ -337,7 +363,7 @@ public static class RosterPlanner
                 var restFacts = Enumerable.Range(0, 7)
                     .Select(i => grid.TryGet(e, anchor.AddDays(i), out var c) ? c : null)
                     .Count(c => c is not null && c.IsFact && c.CountsAsRest);
-                result[e] = new ResolvedRhythm(e, anchor, restFacts >= 2 ? 5 : 6, true);
+                result[e] = new ResolvedRhythm(e, anchor, restFacts >= 2 ? 5 : 6, true, input.AlternateFrom(e));
             }
         }
         else
@@ -353,7 +379,7 @@ public static class RosterPlanner
                 var anchorType = RosterCalendar.Mod(RosterCalendar.WeekIndex(anchor) - firstIndex, 2) == 0
                     ? typeInFirstWeek
                     : 11 - typeInFirstWeek;
-                result[employee.EmployeeId] = new ResolvedRhythm(employee.EmployeeId, anchor, anchorType, true);
+                result[employee.EmployeeId] = new ResolvedRhythm(employee.EmployeeId, anchor, anchorType, true, input.AlternateFrom(employee.EmployeeId));
             }
         }
 

@@ -48,6 +48,12 @@ public sealed record PlannerSettings
     public int MinHoursBetweenShifts { get; init; } = 11;
     public int MinWeeklyRestHours { get; init; } = 36;
 
+    /// <summary>
+    /// RosterNewHireSixDayMonths: during this many months from the hire date an employee works a 6-day week EVERY week;
+    /// the 6/5 alternation starts at the first week after (<see cref="PlannerInput.AlternateFrom"/>).
+    /// </summary>
+    public int NewHireSixDayMonths { get; init; } = 3;
+
     public static PlannerSettings Default { get; } = new();
 }
 
@@ -257,6 +263,30 @@ public sealed class PlannerInput
         => BranchOfDay.TryGetValue(new EmpDay(employeeId, date), out var branch) && branch == BranchId;
 
     public bool IsActiveShift(int? shiftId) => shiftId is { } id && Shifts.TryGetValue(id, out var s) && s.IsActive;
+
+    /// <summary>
+    /// R6, THE NEW-HIRE RULE: W0, the first Monday on or after HireDate + <see cref="PlannerSettings.NewHireSixDayMonths"/>
+    /// months. Every Monday-Sunday week that starts before it is a 6-day week whatever any anchor says; from W0 the
+    /// person alternates 6, 5, 6, 5 (W0 itself a 6-day week unless a stored anchor or the drawer says otherwise there).
+    /// Null when the hire date is unknown: no new-hire period, the alternation alone.
+    /// </summary>
+    public DateOnly? AlternateFrom(int employeeId)
+    {
+        _alternateFrom ??= Staff
+            .GroupBy(s => s.EmployeeId)
+            .ToDictionary(g => g.Key, g => g.First().HireDate is { } hire
+                ? (DateOnly?)FirstMondayOnOrAfter(hire.AddMonths(Math.Max(1, Settings.NewHireSixDayMonths)))
+                : null);
+        return _alternateFrom.TryGetValue(employeeId, out var w0) ? w0 : null;
+    }
+
+    private Dictionary<int, DateOnly?>? _alternateFrom;
+
+    private static DateOnly FirstMondayOnOrAfter(DateOnly date)
+    {
+        var monday = RosterCalendar.WeekStart(date);
+        return monday < date ? monday.AddDays(7) : monday;
+    }
 
     public PatternDay? PatternOn(int employeeId, DateOnly date)
         => Patterns.TryGetValue((employeeId, RosterCalendar.IsoDayOfWeek(date)), out var p) ? p : null;
