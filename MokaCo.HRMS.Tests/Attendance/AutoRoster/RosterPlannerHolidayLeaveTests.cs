@@ -62,11 +62,10 @@ public class RosterPlannerHolidayLeaveTests
 
         var christmas = p.Cells.Where(c => c.WorkDate == Christmas && c.State == "work").Select(c => c.EmployeeId).Order().ToList();
         Assert.Equal(new[] { 3, 5 }, christmas);
-        Assert.All(p.Cells.Where(c => c.WorkDate == Christmas && c.State == "work"), c =>
-        {
-            Assert.Equal("WORK_HOLIDAY_COVER", c.ReasonCode);
-            Assert.Equal(RosterWorld.Day, c.ShiftId);
-        });
+        Assert.All(p.Cells.Where(c => c.WorkDate == Christmas && c.State == "work"), c => Assert.Equal("WORK_HOLIDAY_COVER", c.ReasonCode));
+        // With no shift found, every active shift is to be covered (R3): the two covers go to two different shifts
+        // (they used to share the first active one).
+        Assert.Equal(2, p.Cells.Where(c => c.WorkDate == Christmas && c.State == "work").Select(c => c.ShiftId).Distinct().Count());
 
         // After Christmas, 1, 2, 3 and 5 have each worked one; 4 and 6 (two each) are not asked again.
         var eve = p.Cells.Where(c => c.WorkDate == new DateOnly(2026, 12, 31) && c.State == "work").Select(c => c.EmployeeId).ToList();

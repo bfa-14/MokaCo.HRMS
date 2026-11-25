@@ -199,6 +199,30 @@ public class AutoRosterFactoryTests
     }
 
     [Fact]
+    public void Setup_shows_a_new_hires_first_week_as_a_6_day_week_whatever_anchor_is_stored()
+    {
+        var world = new RosterWorld().WithStaff(1);
+        world.Add(2, hire: new DateOnly(2026, 11, 2));
+        world.Anchor(2, new DateOnly(2026, 11, 30), 5);   // stored for a week of the new-hire period: not applied there
+        world.Add(3, hire: new DateOnly(2026, 11, 2));
+
+        var setup = AutoRosterSetupFactory.Create(world.Context(Dec), Dec);
+        Assert.Equal(6, setup.Staff.Single(s => s.EmployeeId == 2).FirstWeekWorkDays);
+        Assert.Equal(5, setup.Staff.Single(s => s.EmployeeId == 2).AnchorWorkDays);
+        Assert.Equal(6, setup.Staff.Single(s => s.EmployeeId == 3).FirstWeekWorkDays);
+    }
+
+    [Fact]
+    public void The_new_hire_setting_is_read_with_its_default()
+    {
+        Assert.Equal(3, PlannerSettings.Default.NewHireSixDayMonths);
+        Assert.Equal(3, AutoRosterInputFactory.ReadSettings([]).NewHireSixDayMonths);
+        Assert.Equal(2, AutoRosterInputFactory.ReadSettings([new AutoRosterSettingRow { SettingKey = "rosternewhiresixdaymonths", SettingValue = " 2 " }]).NewHireSixDayMonths);
+        Assert.Equal(120, AutoRosterInputFactory.ReadSettings([new AutoRosterSettingRow { SettingKey = "RosterNewHireSixDayMonths", SettingValue = "9999" }]).NewHireSixDayMonths);
+        Assert.Equal(3, AutoRosterInputFactory.ReadSettings([new AutoRosterSettingRow { SettingKey = "RosterNewHireSixDayMonths", SettingValue = "0" }]).NewHireSixDayMonths);
+    }
+
+    [Fact]
     public void Saved_parameters_are_camel_case_without_draft_cells_and_unreadable_ones_are_ignored()
     {
         var commit = new AutoRosterCommitRequest

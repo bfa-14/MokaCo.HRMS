@@ -76,7 +76,9 @@ public static class RosterPlanValidator
     /// The commit's server-side check: the rows as they stand, with <paramref name="cells"/> applied
     /// on top (upsert / delete), validated with the same rules as the preview. Ghost days are open —
     /// next month's run decides them — so they never make a week short or a run too long here.
-    /// <paramref name="rhythm"/> (the commit's rhythm rows) overrides the anchors it would resolve.
+    /// <paramref name="rhythm"/> (the commit's rhythm rows) overrides the anchors it would resolve - but never the
+    /// new-hire rule (R6): each person's W0 comes from their hire date and the setting, not from the client, so a
+    /// week of the new-hire period is judged as a 6-day week whatever anchor was sent.
     /// Cells outside the month or the branch are skipped: the procedure refuses them by name.
     /// </summary>
     public static List<AutoRosterIssue> ValidateSubmission(
@@ -92,7 +94,8 @@ public static class RosterPlanValidator
             if (!r.OnRotation)
                 rhythms.Remove(r.EmployeeId);
             else if (r.AnchorWorkDays is 5 or 6 && grid.Staff.Any(s => s.EmployeeId == r.EmployeeId))
-                rhythms[r.EmployeeId] = new ResolvedRhythm(r.EmployeeId, RosterCalendar.WeekStart(r.AnchorWeekStart), r.AnchorWorkDays, false);
+                rhythms[r.EmployeeId] = new ResolvedRhythm(
+                    r.EmployeeId, RosterCalendar.WeekStart(r.AnchorWeekStart), r.AnchorWorkDays, false, input.AlternateFrom(r.EmployeeId));
         }
 
         // Start from the rows as they are: nothing is written but what was submitted.
@@ -362,7 +365,7 @@ public static class RosterPlanValidator
             }
             else if (input.WorksOutsideWindow(e, d) && input.RowOf(e, d) is { ShiftId: { } shiftId })
             {
-                shift = input.Shifts.TryGetValue(shiftId, out var s) ? s : null;
+                shift = input.HoursOn(shiftId, d);
             }
 
             if (shift is not null)
@@ -389,8 +392,9 @@ public static class RosterPlanValidator
         return longest;
     }
 
+    /// <summary>The shift of a working day with the hours in force ON that day (R1).</summary>
     private static ShiftInfo? ShiftOf(PlannerInput input, GridCell c)
-        => c.ShiftId is { } id && input.Shifts.TryGetValue(id, out var s) ? s : null;
+        => c.ShiftId is { } id ? input.HoursOn(id, c.Date) : null;
 
     /* ---- staffing (D8) and the shifts to cover (D16): rest days beat staffing, so these are warnings ---- */
 
@@ -436,8 +440,9 @@ public static class RosterPlanValidator
     }
 
     /// <summary>
-    /// Two shift leaders on the same shift while another shift the day must cover has none: the planner never
-    /// does that, so it is a day somebody decided by hand (or a saved day). A warning - the manager may mean it.
+    /// Two shift leaders on the same shift. The planner does that only when more leaders work that day than the day has
+    /// shifts to cover (the warning then says so), so otherwise it is a day somebody decided by hand (or a saved day).
+    /// A warning - the manager may mean it.
     /// </summary>
     private static void CheckLeads(PlannerInput input, RosterGrid grid, List<AutoRosterIssue> issues)
     {
@@ -451,10 +456,14 @@ public static class RosterPlanValidator
             var leads = grid.CellsOn(date)
                 .Where(c => input.ShiftLeads.Contains(c.EmployeeId) && c.InBranch && c.CountsAsWorkForRun && c.ShiftId is not null)
                 .ToList();
+            var shifts = input.CoverRulesFor(date).Count;
             foreach (var group in leads.GroupBy(c => c.ShiftId!.Value).Where(g => g.Count() >= 2).OrderBy(g => g.Key))
             {
                 var name = input.Shifts.TryGetValue(group.Key, out var s) ? s.Name : $"shift {group.Key}";
-                var issue = Issue(Warning, LeadsSameShift, null, date, $"{group.Count()} shift leaders are on {name}; each shift should keep one.");
+                var message = shifts > 0 && leads.Count > shifts
+                    ? $"{leads.Count} shift leaders work on {RosterPlanner.Day(date)} and the day has only {shifts} shift(s) to cover: {group.Count()} are on {name}."
+                    : $"{group.Count()} shift leaders are on {name}; each shift should keep one.";
+                var issue = Issue(Warning, LeadsSameShift, null, date, message);
                 issue.ShiftId = group.Key;
                 issues.Add(issue);
             }

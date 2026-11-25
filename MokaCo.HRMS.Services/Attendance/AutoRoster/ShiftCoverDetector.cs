@@ -10,9 +10,10 @@ namespace MokaCo.HRMS.Services.Attendance.AutoRoster;
 ///   - the weekly patterns of the staff on rotation: an active shift a pattern names on two weekdays
 ///     or more (a new branch has patterns before it has a roster).
 /// Each gets a minimum of one, EVERY day (the rule is "every day the morning and the evening are
-/// covered"; a past day without an evening is what it fixes, not a reason to skip it). Nothing found
-/// means no shift to cover: the drawer says so and the manager ticks the shifts by hand.
-/// Pure and deterministic, like the planner.
+/// covered"; a past day without an evening is what it fixes, not a reason to skip it). Nothing found -
+/// a new branch with no roster and no patterns - means EVERY active shift (R3: "the rosters must cover
+/// daily all the shifts"): the drawer shows them all ticked and the manager unticks what the branch
+/// does not run. Pure and deterministic, like the planner.
 /// </summary>
 public static class ShiftCoverDetector
 {
@@ -59,7 +60,10 @@ public static class ShiftCoverDetector
         var regular = daysOf
             .Where(x => x.Value.Count >= MinDays && x.Value.Count >= MinShareOfDays * worked.Count)
             .Select(x => x.Key)
-            .Union(weekdaysOf.Where(x => x.Value.Count >= MinPatternWeekdays).Select(x => x.Key));
+            .Union(weekdaysOf.Where(x => x.Value.Count >= MinPatternWeekdays).Select(x => x.Key))
+            .ToList();
+        if (regular.Count == 0)
+            regular = input.Shifts.Values.Where(s => s.IsActive).Select(s => s.ShiftId).ToList();
 
         return regular
             .Select(id => input.Shifts[id])

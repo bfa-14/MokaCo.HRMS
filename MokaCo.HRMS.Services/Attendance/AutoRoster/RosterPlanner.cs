@@ -5,12 +5,25 @@ using MokaCo.HRMS.Model.Attendance;
 
 namespace MokaCo.HRMS.Services.Attendance.AutoRoster;
 
-/// <summary>An employee's 6/5 anchor as this run uses it.</summary>
-public sealed record ResolvedRhythm(int EmployeeId, DateOnly AnchorWeekStart, int AnchorWorkDays, bool IsNew)
+/// <summary>
+/// An employee's 6/5 anchor as this run uses it. <paramref name="AlternateFrom"/> is the new-hire rule's W0
+/// (<see cref="PlannerInput.AlternateFrom"/>): every week that starts before it is a 6-day week, whatever the anchor
+/// says; from it the anchor's alternation applies. Null: no new-hire period (the hire date is unknown).
+/// </summary>
+public sealed record ResolvedRhythm(int EmployeeId, DateOnly AnchorWeekStart, int AnchorWorkDays, bool IsNew, DateOnly? AlternateFrom = null)
 {
-    /// <summary>T(e,w): 6 or 5 for the week containing <paramref name="anyDayOfWeek"/>.</summary>
+    /// <summary>
+    /// T(e,w): 6 or 5 for the week containing <paramref name="anyDayOfWeek"/> — THE ONE PLACE the rhythm is decided
+    /// (the planner's quotas, the validator, the preview's counters and the setup's first week all ask here).
+    /// </summary>
     public int WorkDaysIn(DateOnly anyDayOfWeek)
-        => RosterCalendar.WorkDaysInWeek(RosterCalendar.WeekIndex(AnchorWeekStart), AnchorWorkDays, RosterCalendar.WeekIndex(anyDayOfWeek));
+        => IsNewHireWeek(anyDayOfWeek)
+            ? 6
+            : RosterCalendar.WorkDaysInWeek(RosterCalendar.WeekIndex(AnchorWeekStart), AnchorWorkDays, RosterCalendar.WeekIndex(anyDayOfWeek));
+
+    /// <summary>The week starts before W0: a 6-day week of the new-hire period.</summary>
+    public bool IsNewHireWeek(DateOnly anyDayOfWeek)
+        => AlternateFrom is { } w0 && RosterCalendar.WeekStart(anyDayOfWeek) < w0;
 }
 
 /// <summary>What <see cref="RosterPlanner.Plan"/> returns: the decided grid, the rhythms, the weekend balances and the API's preview.</summary>
@@ -52,6 +65,14 @@ public sealed class RosterPlan
 /// day are seeded before the water-fill, and leftover slots start from a day that turns with the week
 /// instead of always Monday; and a weekend day goes only to someone within one day of the most owed
 /// competitor.
+///
+/// The owner's rules of November 2026 (docs: the shift-roster spec), each made where its comment says:
+/// R6 a new hire works 6-day weeks for RosterNewHireSixDayMonths months, then 6, 5, 6, 5 (<see cref="ResolvedRhythm"/>);
+/// R4 the shift leaders are placed first, one per shift, and their rest days avoid days without a leader
+/// (<see cref="Run"/>.SeparateLeads, the weekday cost, the weekend step); R3 every shift to cover keeps its
+/// minimum reachable on every day, weekends included (the water-fill's room, the cost, the repair); R5 each
+/// day's people are spread evenly over its shifts (Balance); R1 the turnaround and weekly-rest maths read
+/// the hours in force on each date (<see cref="PlannerInput.HoursOn"/>).
 /// </summary>
 public static class RosterPlanner
 {
@@ -64,8 +85,11 @@ public static class RosterPlanner
     public const string ReasonHolidayOff = "HOLIDAY_OFF";
     public const string ReasonShiftCover = "WORK_SHIFT_COVER";
 
-    /// <summary>A shift leader moved off the shift the other leader is on (each shift keeps one).</summary>
+    /// <summary>A shift leader moved off the shift the other leader is on (each shift keeps one), or the person who changed places with them.</summary>
     public const string ReasonLeadApart = "WORK_LEAD_APART";
+
+    /// <summary>R5: moved to another shift the day must cover so the shifts' head-counts stay even (or follow the stored targets).</summary>
+    public const string ReasonShiftBalance = "WORK_SHIFT_BALANCE";
 
     private const int Saturday = 5;
     private const int Sunday = 6;
@@ -290,6 +314,13 @@ public static class RosterPlanner
     /// Stored → as stored; overridden → the override; neither → anchored on the first window week the
     /// person is employed. Aligned starts on a 6-day week unless that week's facts already hold two rest
     /// rows; Staggered balances the 6- and 5-day first weeks of the whole branch (ties start on 6).
+    ///
+    /// R6, the new-hire rule, on top: every rhythm carries the person's W0 (<see cref="PlannerInput.AlternateFrom"/>),
+    /// so a week before it is a 6-day week whatever the anchor says. A person with neither a stored anchor nor an
+    /// override whose W0 is not before the first week they are employed in the window is anchored ON W0 as a 6-day
+    /// week ("one week 6 days and the next week 5"), whatever Aligned or Staggered would choose: the anchor the commit
+    /// saves is then that, and next month's run carries the same alternation on. A stored anchor or an override still
+    /// decides the weeks from W0 on — the manager's (or an earlier run's) explicit choice wins there.
     /// </summary>
     public static IReadOnlyDictionary<int, ResolvedRhythm> ResolveRhythms(PlannerInput input, RosterGrid grid)
     {
@@ -306,8 +337,9 @@ public static class RosterPlanner
         foreach (var employee in input.Staff.Where(s => s.OnRotation))
         {
             var e = employee.EmployeeId;
+            var w0 = input.AlternateFrom(e);
             input.Rhythms.TryGetValue(e, out var stored);
-            var storedRhythm = stored is null ? null : new ResolvedRhythm(e, stored.AnchorWeekStart, stored.AnchorWorkDays, false);
+            var storedRhythm = stored is null ? null : new ResolvedRhythm(e, stored.AnchorWeekStart, stored.AnchorWorkDays, false, w0);
 
             ResolvedRhythm? resolved = storedRhythm;
             if (input.RhythmOverrides.TryGetValue(e, out var o))
@@ -315,8 +347,14 @@ public static class RosterPlanner
                 var weekStart = RosterCalendar.WeekStart(o.WeekStart);
                 resolved = storedRhythm is not null && storedRhythm.WorkDaysIn(weekStart) == o.WorkDays
                     ? storedRhythm
-                    : new ResolvedRhythm(e, weekStart, o.WorkDays, true);
+                    : new ResolvedRhythm(e, weekStart, o.WorkDays, true, w0);
             }
+
+            var anchor = weeks.FirstOrDefault(ws => Enumerable.Range(0, 7).Any(i => input.IsEmployed(e, ws.AddDays(i))), firstWeek);
+
+            // A new rhythm for somebody still in (or just finishing) the new-hire period starts its alternation on W0.
+            if (resolved is null && w0 is { } start && start >= anchor)
+                resolved = new ResolvedRhythm(e, start, 6, true, w0);
 
             if (resolved is not null)
             {
@@ -325,7 +363,6 @@ public static class RosterPlanner
                 continue;
             }
 
-            var anchor = weeks.FirstOrDefault(ws => Enumerable.Range(0, 7).Any(i => input.IsEmployed(e, ws.AddDays(i))), firstWeek);
             pending.Add((employee, anchor));
         }
 
@@ -337,7 +374,7 @@ public static class RosterPlanner
                 var restFacts = Enumerable.Range(0, 7)
                     .Select(i => grid.TryGet(e, anchor.AddDays(i), out var c) ? c : null)
                     .Count(c => c is not null && c.IsFact && c.CountsAsRest);
-                result[e] = new ResolvedRhythm(e, anchor, restFacts >= 2 ? 5 : 6, true);
+                result[e] = new ResolvedRhythm(e, anchor, restFacts >= 2 ? 5 : 6, true, input.AlternateFrom(e));
             }
         }
         else
@@ -353,7 +390,7 @@ public static class RosterPlanner
                 var anchorType = RosterCalendar.Mod(RosterCalendar.WeekIndex(anchor) - firstIndex, 2) == 0
                     ? typeInFirstWeek
                     : 11 - typeInFirstWeek;
-                result[employee.EmployeeId] = new ResolvedRhythm(employee.EmployeeId, anchor, anchorType, true);
+                result[employee.EmployeeId] = new ResolvedRhythm(employee.EmployeeId, anchor, anchorType, true, input.AlternateFrom(employee.EmployeeId));
             }
         }
 
@@ -654,33 +691,53 @@ public static class RosterPlanner
             var onDuty = new int[7];
             var min = new int?[7];
             var target = new int?[7];
-            _cover = new WeekCover();
+            var weekCover = _cover = new WeekCover();
             for (var i = 0; i < 7; i++)
             {
                 var date = ws.AddDays(i);
                 var rules = _in.ShiftRulesFor(date).ToList();
                 foreach (var rule in rules)
                     _cover.Min[(i, rule.ShiftId!.Value)] = rule.MinOnDuty;
+                _cover.Shifts[i] = rules.Count;
 
+                // R3: who the shift cover will be able to move that day (Cover runs on the month's days from today),
+                // and the shifts the rows it cannot move already fill.
+                var covered = _in.InMonth(date) && date >= _in.Today;
+                var fixedOn = new Dictionary<int, int>();
                 foreach (var c in _grid.CellsOn(date))
                 {
                     if (!c.InBranch || !c.Employed)
                         continue;
                     int? shift = null;
+                    var canMove = false;
                     if (pMaskOf.TryGetValue(c.EmployeeId, out var mask) && (mask >> i & 1) == 1)
                     {
                         onDuty[i]++;
                         shift = StartShift(c);
                         _cover.StartOf[(c.EmployeeId, i)] = shift;
+                        canMove = true;
                     }
                     else if (c.CountsAsWorkForRun)
                     {
                         onDuty[i]++;
                         shift = c.ShiftId ?? StartShift(c);
+                        canMove = !c.IsFact && c.ShiftId is null && c.Leave == LeaveKind.None;
+                    }
+                    else
+                    {
+                        continue;
                     }
                     if (shift is { } on && _cover.Min.ContainsKey((i, on)))
                         _cover.Duty[(i, on)] = _cover.Duty.GetValueOrDefault((i, on)) + 1;
+                    if (canMove && covered)
+                        _cover.Movable[i]++;
+                    else if (shift is { } held)
+                        fixedOn[held] = fixedOn.GetValueOrDefault(held) + 1;
+                    if (_in.ShiftLeads.Contains(c.EmployeeId))
+                        _cover.Leads[i]++;
                 }
+                if (covered)
+                    _cover.Deficit[i] = rules.Sum(r => Math.Max(0, r.MinOnDuty - fixedOn.GetValueOrDefault(r.ShiftId!.Value)));
 
                 (min[i], target[i]) = _in.StaffingFor(date);
                 var coverMin = rules.Sum(r => r.MinOnDuty);
@@ -716,6 +773,14 @@ public static class RosterPlanner
             }
             Array.Copy(seeded, slots, 7);
 
+            // The room a day has for one more rest: above its minimum on duty and - R3, weekends included - above what
+            // its shifts still need from the people the cover can move (rows it cannot move may all sit on one shift).
+            int Room(int i)
+            {
+                var room = onDuty[i] - slots[i] - (min[i] ?? 0);
+                return weekCover.Deficit[i] > 0 ? Math.Min(room, weekCover.Movable[i] - slots[i] - weekCover.Deficit[i]) : room;
+            }
+
             var firstDay = RosterCalendar.Mod(weekIndex, 7);
             for (var n = 0; n < total; n++)
             {
@@ -730,8 +795,8 @@ public static class RosterPlanner
                         best = i;
                         continue;
                     }
-                    var key = onDuty[i] - slots[i] - (min[i] ?? 0);
-                    var bestKey = onDuty[best] - slots[best] - (min[best] ?? 0);
+                    var key = Room(i);
+                    var bestKey = Room(best);
                     if (key > bestKey || (key == bestKey && slots[i] < slots[best]))
                         best = i;
                 }
@@ -766,18 +831,51 @@ public static class RosterPlanner
                     .Where(p => p.Remaining > 0 && (p.Chosen >> x & 1) == 0 && (p.PMask >> x & 1) == 1)
                     .Where(p => !p.HasRows || p.Options.Any(o => (o >> x & 1) == 1))
                     .ToList();
-                var mostOwed = competitors.Count == 0 ? 0 : competitors.Max(p => WeekendLedger.Key(Ledger.Owed(p.EmployeeId, kind)));
-                var eligible = competitors
-                    .Where(p => p.Options.Any(o => (o >> x & 1) == 1))
-                    .Where(p => WeekendLedger.Key(Ledger.Owed(p.EmployeeId, kind)) > mostOwed - 1 + 1e-6)
-                    .OrderByDescending(p => WeekendLedger.Key(Ledger.Owed(p.EmployeeId, kind)))
-                    .ThenByDescending(p => WeekendLedger.Key(Ledger.OwedTotal(p.EmployeeId)))
-                    .ThenByDescending(p => _weekendStreak.TryGetValue(p.EmployeeId, out var s) ? s : 0)
-                    .ThenBy(p => p.Rotation)
-                    .ThenBy(p => p.EmployeeId)
-                    .ToList();
+                List<PersonWeek> FairShare(List<PersonWeek> pool)
+                {
+                    var mostOwed = pool.Count == 0 ? 0 : pool.Max(p => WeekendLedger.Key(Ledger.Owed(p.EmployeeId, kind)));
+                    return pool
+                        .Where(p => p.Options.Any(o => (o >> x & 1) == 1))
+                        .Where(p => WeekendLedger.Key(Ledger.Owed(p.EmployeeId, kind)) > mostOwed - 1 + 1e-6)
+                        .OrderByDescending(p => WeekendLedger.Key(Ledger.Owed(p.EmployeeId, kind)))
+                        .ThenByDescending(p => WeekendLedger.Key(Ledger.OwedTotal(p.EmployeeId)))
+                        .ThenByDescending(p => _weekendStreak.TryGetValue(p.EmployeeId, out var s) ? s : 0)
+                        .ThenBy(p => p.Rotation)
+                        .ThenBy(p => p.EmployeeId)
+                        .ToList();
+                }
 
-                foreach (var p in eligible.Take(Math.Max(0, free)))
+                // R4, soft: a shift leader whose day off would leave the day without any leader - while another leader
+                // works it, so it can be helped - waits for another weekend (the ledger makes them the most owed next
+                // time). The fair share is then worked out WITHOUT them, so the people a deferred leader would have
+                // kept out are in it again and somebody else takes the slot. A leader is never deferred when they are
+                // the only one working that day, and a slot nobody else can take goes to the deferred leader after
+                // all: keeping leaders apart never costs the branch a weekend day off.
+                var deferred = new List<PersonWeek>();
+                List<PersonWeek> picks;
+                for (;;)
+                {
+                    picks = [];
+                    var leadRests = _cover?.LeadRests[x] ?? 0;
+                    PersonWeek? wait = null;
+                    foreach (var p in FairShare(competitors.Where(p => !deferred.Contains(p)).ToList()))
+                    {
+                        if (picks.Count >= free)
+                            break;
+                        if (LeavesNoLead(p.EmployeeId, x, leadRests))
+                        {
+                            wait = p;
+                            break;
+                        }
+                        picks.Add(p);
+                        if (_in.ShiftLeads.Contains(p.EmployeeId))
+                            leadRests++;
+                    }
+                    if (wait is null)
+                        break;
+                    deferred.Add(wait);
+                }
+                foreach (var p in picks.Concat(deferred).Take(Math.Max(0, free)))
                 {
                     var owed = Math.Round(Ledger.Owed(p.EmployeeId, kind), 2);
                     Choose(p, x, ReasonWeekendOwed, RosterPlanner.Args(("owed", owed)), placed);
@@ -922,6 +1020,8 @@ public static class RosterPlanner
             placed[day]++;
             if (_cover is { } cover && cover.StartOf.TryGetValue((p.EmployeeId, day), out var start) && start is { } shift)
                 cover.Placed[(day, shift)] = cover.Placed.GetValueOrDefault((day, shift)) + 1;
+            if (_cover is { } leads && _in.ShiftLeads.Contains(p.EmployeeId))
+                leads.LeadRests[day]++;
             p.Options = p.Options.Where(o => (o & p.Chosen) == p.Chosen).ToList();
         }
 
@@ -942,9 +1042,12 @@ public static class RosterPlanner
 
         /// <summary>
         /// The weekday cost (§2.5 step 5). Weights, largest first: 100 per person a day would be below
-        /// its minimum, 15 per day a run goes past the preferred maximum, 12 per person the shift the
-        /// person starts on would be below its minimum (D16: it would take a move to cover it), 10 for a
-        /// rest above the day's slot count; bonuses 5 for a 5-day week's adjacent pair and 3 for a pattern rest day; and
+        /// its minimum (or below what its shifts still need from the people the cover can move, R3 -
+        /// the larger of the two shortfalls, never both), 15 per day a run goes past the preferred maximum,
+        /// 12 per person the shift the person starts on would be below its minimum (D16: it would take a
+        /// move to cover it), 10 for a rest above the day's slot count, 8 for a shift leader's rest that
+        /// leaves the day without a leader or a working day where more leaders work than the day has shifts
+        /// (R4); bonuses 5 for a 5-day week's adjacent pair and 3 for a pattern rest day; and
         /// small nudges toward the day with the most spare staff and a short run left at Sunday. Keeping
         /// the generator's saved rests is not a bonus here: <see cref="BuildPerson"/> already narrowed
         /// the options to them, which no weight could guarantee.
@@ -962,8 +1065,11 @@ public static class RosterPlanner
                 if (tmp[i] >= slots[i])
                     cost += 10;
                 var after = onDuty[i] - tmp[i] - 1;
-                if (min[i] is { } m && after < m)
-                    cost += 100 * (m - after);   // deeper below the minimum costs more: spread a shortage, never pile it up
+                var below = min[i] is { } m && after < m ? m - after : 0;
+                if (_cover is { } need && need.Deficit[i] > 0)
+                    below = Math.Max(below, need.Deficit[i] - (need.Movable[i] - tmp[i] - 1));
+                if (below > 0)
+                    cost += 100 * below;   // deeper below the minimum costs more: spread a shortage, never pile it up
                 cost -= 0.01 * (after - (target[i] ?? min[i] ?? 0));
                 tmp[i]++;
 
@@ -992,6 +1098,20 @@ public static class RosterPlanner
                         cost -= 5;
                         break;
                     }
+                }
+            }
+
+            // R4, soft: a leader rests where it leaves another leader on duty, and works where the leaders do not
+            // outnumber the shifts (so nobody has to share).
+            if (_cover is { } lead && _in.ShiftLeads.Contains(p.EmployeeId))
+            {
+                for (var i = 0; i < 7; i++)
+                {
+                    if ((p.PMask >> i & 1) == 0 || (p.Chosen >> i & 1) == 1 || lead.Shifts[i] == 0)
+                        continue;
+                    var working = lead.Leads[i] - lead.LeadRests[i];
+                    if ((add >> i & 1) == 1 ? working - 1 <= 0 : working > lead.Shifts[i])
+                        cost += 8;
                 }
             }
 
@@ -1025,11 +1145,24 @@ public static class RosterPlanner
             return (overCap, overPreferred, run);
         }
 
+        /// <summary>
+        /// Step 6. A day below its minimum - or, R3, whose shifts are left short because too few of the people the cover
+        /// can move are on duty (one shift's minimum, not only the day's total) - takes back a rest that can move to a day
+        /// that stays at or above both its own.
+        /// </summary>
         private void Repair(List<PersonWeek> persons, int[] onDuty, int?[] min, int[] placed)
         {
             var duty = new int[7];
+            var movable = new int[7];
+            var deficit = new int[7];
             for (var i = 0; i < 7; i++)
+            {
                 duty[i] = onDuty[i] - placed[i];
+                movable[i] = (_cover?.Movable[i] ?? 0) - placed[i];
+                deficit[i] = _cover?.Deficit[i] ?? 0;
+            }
+            bool Short(int i) => (min[i] is { } m && duty[i] < m) || (deficit[i] > 0 && movable[i] < deficit[i]);
+            bool CanGive(int j) => duty[j] - 1 >= (min[j] ?? 0) && (deficit[j] == 0 || movable[j] - 1 >= deficit[j]);
 
             // Only the target month's days: a ghost day is the next month's to decide and no run saves it,
             // so a repair that read it — a rest moved onto it, or a ghost day "below its minimum" — would
@@ -1043,7 +1176,7 @@ public static class RosterPlanner
                 var moved = false;
                 for (var i = 0; i < 7 && !moved; i++)
                 {
-                    if (!inMonth[i] || min[i] is not { } m || duty[i] >= m)
+                    if (!inMonth[i] || !Short(i))
                         continue;
 
                     // A rest the generator saved on this very day is moved last: a re-planned rest moves first.
@@ -1052,7 +1185,7 @@ public static class RosterPlanner
                                  .ThenBy(p => p.Rotation).ThenBy(p => p.EmployeeId))
                     {
                         var targets = Enumerable.Range(0, 7)
-                            .Where(j => j != i && inMonth[j] && (p.Chosen >> j & 1) == 0 && duty[j] - 1 >= (min[j] ?? 0))
+                            .Where(j => j != i && inMonth[j] && (p.Chosen >> j & 1) == 0 && CanGive(j))
                             .OrderBy(j => j >= Saturday ? 1 : 0)
                             .ThenByDescending(j => duty[j] - (min[j] ?? 0))
                             .ThenBy(j => j);
@@ -1068,6 +1201,8 @@ public static class RosterPlanner
                             p.Args[i] = null;
                             duty[i]++;
                             duty[j]--;
+                            movable[i]++;
+                            movable[j]--;
                             moved = true;
                             break;
                         }
@@ -1216,13 +1351,36 @@ public static class RosterPlanner
             public readonly Dictionary<(int Day, int Shift), int> Duty = new();
             public readonly Dictionary<(int Day, int Shift), int> Placed = new();
             public readonly Dictionary<(int Employee, int Day), int?> StartOf = new();
+
+            /// <summary>R3: the people the shift cover can move that day if no more rests were placed (planner-decided working days).</summary>
+            public readonly int[] Movable = new int[7];
+
+            /// <summary>R3: what the day's shifts still need beyond the rows the cover cannot move (Σ minimum − fixed, per shift).</summary>
+            public readonly int[] Deficit = new int[7];
+
+            /// <summary>R4: the shift leaders who would work that day, and how many of them were given it off so far.</summary>
+            public readonly int[] Leads = new int[7];
+            public readonly int[] LeadRests = new int[7];
+
+            /// <summary>The shifts the day must cover.</summary>
+            public readonly int[] Shifts = new int[7];
         }
 
         /// <summary>
+        /// R4: this person is a shift leader and their day off (with <paramref name="leadRests"/> leaders already off) would
+        /// leave a day with shifts to cover without any leader although two or more would work it - a day off that another
+        /// leader's day could make room for. With one leader working (one leader in the branch, the other on leave, off
+        /// rotation or gone) nothing can be helped: false.
+        /// </summary>
+        private bool LeavesNoLead(int e, int day, int leadRests)
+            => _cover is { } c && _in.ShiftLeads.Contains(e) && c.Shifts[day] > 0 && c.Leads[day] >= 2 && c.Leads[day] - leadRests - 1 <= 0;
+
+        /// <summary>
         /// Day by day, oldest first (a move looks at the shift the day before): every working day still
-        /// without a shift starts on the person's own (<see cref="StartShift"/>), then each shift the day
-        /// must cover (D16) is brought up to its minimum, and then towards its target, by moving people
-        /// from a shift that can spare them (<see cref="Cover"/>).
+        /// without a shift starts on the person's own (<see cref="StartShift"/>), then the day's working
+        /// shift leaders are placed one per shift (R4), each shift the day must cover (D16) is brought up to
+        /// its minimum, and then towards its target, by moving people from a shift that can spare them, and
+        /// the rest are spread evenly over the shifts (R5) (<see cref="Cover"/>).
         /// </summary>
         public void AssignShifts()
         {
@@ -1278,15 +1436,21 @@ public static class RosterPlanner
         /// (moved to cover it, or put there by hand) stays on it today when going back to their own would
         /// leave less than the minimum hours between the two shifts — a morning person who covered an
         /// evening does not start at seven the next morning — provided the shift they leave can spare them.
-        /// Then the shift furthest below its minimum is served first; it takes the cheapest person
+        /// Then the working SHIFT LEADERS are placed, one per shift (<see cref="SeparateLeads"/>, R4). Then
+        /// the shift furthest below its minimum is served first; it takes the cheapest person
         /// (<see cref="MoveCost"/>) from a shift above its own minimum — or from a shift nobody has to
-        /// cover. Then, the same way, a shift below its target takes someone from a shift above its own
-        /// target (or minimum), and never into a turnaround shorter than the minimum. Only working days the
-        /// run decides are moved, never a fact, a draft edit or a leave day's row. A shift that still cannot
-        /// be covered is reported by the validator (SHIFT_UNCOVERED, SHORT_STAFFED).
+        /// cover; a leader is taken only when nobody else can go, and onto a shift without one if possible.
+        /// Then, the same way, a shift below its target takes someone from a shift above its own target (or
+        /// minimum), and never into a turnaround shorter than the minimum. Then the people left are SPREAD
+        /// over the shifts to cover so their head-counts differ by one at most, or follow the targets'
+        /// proportions (<see cref="Balance"/>, R5). Only working days the run decides are moved, never a
+        /// fact, a draft edit or a leave day's row. A shift that still cannot be covered is reported by the
+        /// validator (SHIFT_UNCOVERED, SHORT_STAFFED).
         /// </summary>
         private void Cover(DateOnly date, List<GridCell> open)
         {
+            // Nothing to cover that day (a closed holiday, or every shift stored with minimum 0: the manager's "no shift
+            // needs covering"): nobody is moved, leaders included - the validator still reports two leaders together.
             var rules = _in.CoverRulesFor(date);
             if (rules.Count == 0)
                 return;
@@ -1300,24 +1464,32 @@ public static class RosterPlanner
 
             var movable = open.Where(c => c.Leave == LeaveKind.None).ToList();
             var start = movable.ToDictionary(c => c.EmployeeId, c => c.ShiftId);
+            var movedBy = new Dictionary<int, string>();
             int Count(int shift) => count.GetValueOrDefault(shift);
             bool CanSpare(int shift) => !min.TryGetValue(shift, out var m) || Count(shift) > m;
-
-            var minGap = TimeSpan.FromHours(_in.Settings.MinHoursBetweenShifts);
-            foreach (var c in movable.OrderBy(c => c.EmployeeId))
+            void MoveBy(GridCell c, int to, string reason)
             {
-                var yesterday = date.AddDays(-1);
-                if (c.ShiftId is not { } current
-                    || ShiftOn(c.EmployeeId, yesterday) is not { } before
-                    || !min.ContainsKey(before.Shift.ShiftId)
-                    || before.Shift.ShiftId == current
-                    || before.Shift.ShiftId == HomeShift(c.EmployeeId, yesterday)
-                    || !CanSpare(current)
-                    || _in.Shifts[current].StartOn(date) - before.Shift.EndOn(yesterday) >= minGap)
-                    continue;
-                Move(c, before.Shift.ShiftId, count);
+                Move(c, to, count);
+                movedBy[c.EmployeeId] = reason;
             }
 
+            // Staying is fine when the shift left can spare them, or when somebody else can take their place there without
+            // a short rest of their own (the minimums below then move that person).
+            bool OthersCanFill(int shift, GridCell except) => movable.Any(o =>
+                o != except && o.ShiftId is { } from && from != shift && CanSpare(from) && !MoveCost(o, shift, date).Turnaround);
+            foreach (var c in movable.OrderBy(c => c.EmployeeId))
+            {
+                if (c.ShiftId is not { } current
+                    || StayOn(c.EmployeeId, date, current) is not { } stay
+                    || !min.ContainsKey(stay)
+                    || !(CanSpare(current) || OthersCanFill(current, c)))
+                    continue;
+                MoveBy(c, stay, ReasonShiftCover);
+            }
+
+            SeparateLeads(date, movable, LeaderShifts(date, rules), count, min, MoveBy);
+
+            bool NotLead(GridCell c) => !_in.ShiftLeads.Contains(c.EmployeeId);
             var stuck = new HashSet<int>();
             while (rules.Select(r => r.ShiftId!.Value)
                        .Where(sh => !stuck.Contains(sh) && Count(sh) < min[sh])
@@ -1325,11 +1497,15 @@ public static class RosterPlanner
                        .Select(sh => (int?)sh)
                        .FirstOrDefault() is { } to)
             {
-                var mover = BestMover(date, movable, to, CanSpare, strict: false);
+                // A leader moves only when nobody else can (the minimum outranks keeping them apart), and onto a
+                // shift without a leader when that is enough.
+                var mover = BestMover(date, movable, to, CanSpare, strict: false, NotLead)
+                            ?? (LeadsOn(date, to).Count == 0 ? BestMover(date, movable, to, CanSpare, strict: false) : null)
+                            ?? BestMover(date, movable, to, CanSpare, strict: false);
                 if (mover is null)
                     stuck.Add(to);
                 else
-                    Move(mover, to, count);
+                    MoveBy(mover, to, ReasonShiftCover);
             }
 
             stuck.Clear();
@@ -1341,74 +1517,279 @@ public static class RosterPlanner
             {
                 var mover = BestMover(date, movable, to,
                     from => min.ContainsKey(from) && Count(from) > (target.TryGetValue(from, out var t) ? t : min[from]),
-                    strict: true);
+                    strict: true, NotLead);
                 if (mover is null)
                     stuck.Add(to);
                 else
-                    Move(mover, to, count);
+                    MoveBy(mover, to, ReasonShiftCover);
             }
 
-            SeparateLeads(date, movable, rules.Select(r => r.ShiftId!.Value).ToList(), count);
+            Balance(date, movable, rules, count, min, MoveBy);
 
             foreach (var c in movable)
             {
-                if (c.ShiftId == start[c.EmployeeId] || c.ReasonCode is not (null or ReasonShiftCover))
+                if (c.ShiftId == start[c.EmployeeId] || c.ReasonCode is not (null or ReasonShiftCover or ReasonShiftBalance or ReasonLeadApart))
                     continue;
                 var name = c.ShiftId is { } id && _in.Shifts.TryGetValue(id, out var info) ? info.Name : null;
-                c.ReasonCode = ReasonShiftCover;
+                c.ReasonCode = movedBy.TryGetValue(c.EmployeeId, out var reason) ? reason : ReasonShiftCover;
                 c.ReasonArgs = RosterPlanner.Args(("shift", name ?? string.Empty));
             }
         }
 
+        /// <summary>The shift leaders working <paramref name="shift"/> in the branch that day, as decided so far.</summary>
+        private List<GridCell> LeadsOn(DateOnly date, int shift) => _grid.CellsOn(date)
+            .Where(c => _in.ShiftLeads.Contains(c.EmployeeId) && c.InBranch && c.CountsAsWorkForRun && c.ShiftId == shift)
+            .ToList();
+
         /// <summary>
-        /// TWO SHIFT LEADERS NEVER SHARE A SHIFT (<see cref="PlannerInput.ShiftLeads"/>). After the cover, while a
-        /// shift to cover holds two leaders and another holds none, one of them - one whose day this run decides -
-        /// changes places with somebody on the shift without a leader, so both shifts keep their numbers; with nobody
-        /// to change places with, the leader simply moves. The pair that makes no new turnaround is taken first.
-        /// A day where both leaders were placed by somebody else is left alone and reported (LEADS_SAME_SHIFT).
+        /// The shifts the day's leaders are spread over: the shifts it must cover; and when it covers fewer than two,
+        /// those plus every other active shift somebody works in the branch that day (one evening to cover and a
+        /// morning that is worked anyway still keep two leaders apart).
         /// </summary>
-        private void SeparateLeads(DateOnly date, List<GridCell> movable, List<int> shifts, Dictionary<int, int> count)
+        private List<int> LeaderShifts(DateOnly date, IReadOnlyList<StaffingRule> rules)
+        {
+            var shifts = rules.Select(r => r.ShiftId!.Value).ToList();
+            if (shifts.Count >= 2)
+                return shifts;
+            var used = _grid.CellsOn(date)
+                .Where(c => c.InBranch && c.CountsAsWorkForRun && c.ShiftId is { } id && _in.IsActiveShift(id) && !shifts.Contains(id))
+                .Select(c => c.ShiftId!.Value)
+                .Distinct()
+                .OrderBy(id => _in.Shifts[id].StartTime)
+                .ThenBy(id => id);
+            return shifts.Concat(used).ToList();
+        }
+
+        /// <summary>
+        /// R4 — TWO SHIFT LEADERS NEVER SHARE A SHIFT (<see cref="PlannerInput.ShiftLeads"/>), placed FIRST, before the
+        /// minimums and the balance. While a shift holds two leaders or more and another of the day's shifts
+        /// (<see cref="LeaderShifts"/>) holds none, one of them - one whose day this run decides - goes to the shift
+        /// without a leader: alone when the shift it leaves keeps its minimum (and is the fuller of the two), otherwise
+        /// changing places with somebody from there, so both keep their numbers. With nobody to change places with
+        /// and a minimum the move would break, the leaders stay together: a leader move never takes a shift below its
+        /// minimum, and never makes a turnaround that nothing can undo later, nor, onto a shift nobody has to cover, a
+        /// turnaround or a short weekly rest at all (<see cref="MoveCost"/>), for the leader or the person changing
+        /// places. The cheapest move is taken (a likely turnaround costs, so a safe move comes first). So two leaders
+        /// share a shift only when more of them work than the day has shifts, when no move is safe, or when somebody
+        /// else placed them (all reported, LEADS_SAME_SHIFT). A day with no shift to cover moves nobody (<see cref="Cover"/>
+        /// returns first).
+        /// </summary>
+        private void SeparateLeads(DateOnly date, List<GridCell> movable, List<int> shifts, Dictionary<int, int> count,
+            Dictionary<int, int> min, Action<GridCell, int, string> moveBy)
         {
             if (_in.ShiftLeads.Count < 2 || shifts.Count < 2)
                 return;
+            int Count(int shift) => count.GetValueOrDefault(shift);
 
-            List<GridCell> LeadsOn(int shift) => _grid.CellsOn(date)
-                .Where(c => _in.ShiftLeads.Contains(c.EmployeeId) && c.InBranch && c.CountsAsWorkForRun && c.ShiftId == shift)
-                .ToList();
+            // A move is refused when it makes a turnaround for certain, or when it goes onto a shift nobody has to cover and
+            // breaks either rest rule: nobody is kept on such a shift the next day, so a night worked for one day is followed
+            // by the person's own morning. On a shift to cover, a turnaround that is only likely or a short weekly rest still
+            // just costs (MoveCost): Cover keeps the person on that shift when going back would be too short.
+            bool Unsafe(int to, (double Cost, bool Turnaround, bool ShortRest, bool Certain) move)
+                => (move.Turnaround && move.Certain) || (!min.ContainsKey(to) && (move.Turnaround || move.ShortRest));
 
-            for (var guard = 0; guard < shifts.Count; guard++)
+            for (var guard = 0; guard < 2 * shifts.Count; guard++)
             {
-                var crowded = shifts.Select(sh => (Shift: sh, Leads: LeadsOn(sh))).FirstOrDefault(x => x.Leads.Count >= 2);
+                var crowded = shifts.Select(sh => (Shift: sh, Leads: LeadsOn(date, sh)))
+                    .Where(x => x.Leads.Count >= 2)
+                    .OrderByDescending(x => x.Leads.Count)
+                    .FirstOrDefault();
                 if (crowded.Leads is null)
                     return;
-                var free = shifts.Where(sh => LeadsOn(sh).Count == 0).ToList();
+                var free = shifts.Where(sh => LeadsOn(date, sh).Count == 0).ToList();
                 if (free.Count == 0)
                     return;
 
+                var canGoAlone = !min.TryGetValue(crowded.Shift, out var crowdedMin) || Count(crowded.Shift) - 1 >= crowdedMin;
                 (GridCell Lead, GridCell? Other, int To, double Cost)? best = null;
                 foreach (var lead in crowded.Leads.Where(movable.Contains).OrderBy(c => c.EmployeeId))
                     foreach (var to in free)
                     {
-                        var (leadCost, _) = MoveCost(lead, to, date);
-                        var partners = movable
+                        // Never an unsafe move, for the leader or whoever changes places with them: leaders that cannot be
+                        // moved safely stay together, reported.
+                        var leadMove = MoveCost(lead, to, date);
+                        if (Unsafe(to, leadMove))
+                            continue;
+                        var leadCost = leadMove.Cost;
+                        var partner = movable
                             .Where(c => c.ShiftId == to && !_in.ShiftLeads.Contains(c.EmployeeId))
-                            .Select(c => (Cell: (GridCell?)c, Cost: MoveCost(c, crowded.Shift, date).Cost))
-                            .OrderBy(x => x.Cost).ThenBy(x => x.Cell!.EmployeeId)
-                            .ToList();
-                        var partner = partners.Count > 0 ? partners[0] : (Cell: null, Cost: 0d);
-                        var cost = leadCost + partner.Cost;
-                        if (best is null || cost < best.Value.Cost - 1e-9)
-                            best = (lead, partner.Cell, to, cost);
+                            .Select(c => (Cell: c, Move: MoveCost(c, crowded.Shift, date)))
+                            .Where(x => !Unsafe(crowded.Shift, x.Move))
+                            .Select(x => (x.Cell, x.Move.Cost))
+                            .OrderBy(x => x.Cost).ThenBy(x => x.Cell.EmployeeId)
+                            .Select(x => ((GridCell Cell, double Cost)?)x)
+                            .FirstOrDefault();
+                        (GridCell? Other, double Cost) option;
+                        if (canGoAlone && (partner is null || Count(crowded.Shift) > Count(to)))
+                            option = (null, leadCost);
+                        else if (partner is { } swap)
+                            option = (swap.Cell, leadCost + swap.Cost);
+                        else
+                            continue;
+                        if (best is null || option.Cost < best.Value.Cost - 1e-9)
+                            best = (lead, option.Other, to, option.Cost);
                     }
                 if (best is not { } pick)
                     return;
 
-                Move(pick.Lead, pick.To, count);
-                pick.Lead.ReasonCode = ReasonLeadApart;
-                pick.Lead.ReasonArgs = null;
+                moveBy(pick.Lead, pick.To, ReasonLeadApart);
                 if (pick.Other is { } other)
-                    Move(other, crowded.Shift, count);
+                    moveBy(other, crowded.Shift, ReasonLeadApart);
             }
+        }
+
+        /// <summary>
+        /// R5 — DIVIDE THE PEOPLE ACROSS THE SHIFTS. After the leaders, the minimums and the targets, the day's working
+        /// people are spread over the shifts it must cover so their head-counts differ by one at most - or, when targets
+        /// are stored, follow the targets' proportions (a shift without a target weighs its minimum). The fullest shift
+        /// gives somebody to the emptiest while that brings them closer (or keeps them as close, for somebody going back
+        /// to the shift the generator saved for them: the minimum may have taken a different person this time). Only a working day this run decides moves, never
+        /// a shift leader (already placed), never somebody on a shift that is not to be covered, never into a turnaround
+        /// shorter than the minimum, and never below the minimum of the shift left, and never somebody who would then be held on
+        /// that shift tomorrow (going back would be a turnaround) when tomorrow's share of it is already taken. Who moves (<see cref="BalanceCost"/>):
+        /// whoever was on that shift the day before, then whoever it is the home shift of, then whoever moved the least
+        /// this month - so over the month the moves are shared.
+        /// </summary>
+        private void Balance(DateOnly date, List<GridCell> movable, IReadOnlyList<StaffingRule> rules, Dictionary<int, int> count,
+            Dictionary<int, int> min, Action<GridCell, int, string> moveBy)
+        {
+            if (rules.Count < 2)
+                return;
+            var shifts = rules.Select(r => r.ShiftId!.Value).ToList();
+            var proportional = rules.Any(r => r.TargetOnDuty is not null);
+            var weight = rules.ToDictionary(r => r.ShiftId!.Value, r => proportional ? Math.Max(r.TargetOnDuty ?? 0, r.MinOnDuty) : 1d);
+            var totalWeight = weight.Values.Sum();
+            if (totalWeight <= 0)
+                return;
+            int Count(int shift) => count.GetValueOrDefault(shift);
+            var people = shifts.Sum(Count);
+            double Surplus(int shift) => Count(shift) - people * weight[shift] / totalWeight;
+            var order = shifts.Select((sh, i) => (sh, i)).ToDictionary(x => x.sh, x => x.i);
+            var ring = Math.Max(1, _planned.Count);
+
+            // Tomorrow in mind: somebody moved today onto a shift they cannot leave tomorrow (going back to their own would
+            // be a turnaround) is held on it. Such a move is made only while tomorrow's share of that shift is not already
+            // taken - otherwise today's even split becomes tomorrow's lopsided one, with nobody allowed to move back.
+            var tomorrow = date.AddDays(1);
+            var tomorrowRules = _in.InMonth(tomorrow) && tomorrow >= _in.Today ? _in.CoverRulesFor(tomorrow) : [];
+            var tomorrowShifts = tomorrowRules.Select(r => r.ShiftId!.Value).ToHashSet();
+            var minGap = TimeSpan.FromHours(_in.Settings.MinHoursBetweenShifts);
+            int? HeldOn(GridCell next, int? today)
+            {
+                var own = StartShift(next);
+                if (today is not { } held || held == own || own is not { } home
+                    || _in.HoursOn(held, date) is not { } then || _in.HoursOn(home, tomorrow) is not { } back)
+                    return own;
+                return back.StartOn(tomorrow) - then.EndOn(date) < minGap ? held : own;
+            }
+            (int On, double Share) Tomorrow(int shift, GridCell mover, int to)
+            {
+                int on = 0, all = 0;
+                foreach (var next in _grid.CellsOn(tomorrow))
+                {
+                    if (!next.InBranch || !next.CountsAsWorkForRun)
+                        continue;
+                    // Tomorrow's shift as Cover will start it: a fixed one; the mover held on `to`; anybody else held on
+                    // today's shift, or on the one before their rest days (StayOn); else their own.
+                    int? projected = next.ShiftId;
+                    if (projected is null && next.Leave == LeaveKind.None)
+                    {
+                        var own = StartShift(next);
+                        projected = _grid[next.EmployeeId, date] == mover
+                            ? HeldOn(next, to)
+                            : own is { } home ? StayOn(next.EmployeeId, tomorrow, home) ?? own : null;
+                    }
+                    projected ??= StartShift(next);
+                    if (projected is not { } s1 || !tomorrowShifts.Contains(s1))
+                        continue;
+                    all++;
+                    if (s1 == shift)
+                        on++;
+                }
+                var w = tomorrowRules.FirstOrDefault(r => r.ShiftId == shift) is { } rule
+                    ? (proportional ? Math.Max(rule.TargetOnDuty ?? 0, rule.MinOnDuty) : 1d)
+                    : 0d;
+                var total = tomorrowRules.Sum(r => proportional ? Math.Max(r.TargetOnDuty ?? 0, r.MinOnDuty) : 1d);
+                return (on, total > 0 ? all * w / total : 0);
+            }
+            bool OverCommits(GridCell c, int to)
+            {
+                if (tomorrowShifts.Count < 2 || !tomorrowShifts.Contains(to)
+                    || !_grid.TryGet(c.EmployeeId, tomorrow, out var next) || !next.CountsAsWorkForRun
+                    || next.ShiftId is not null || next.IsFact || HeldOn(next, to) != to || StartShift(next) == to)
+                    return false;
+                var (on, share) = Tomorrow(to, c, to);
+                return on > Math.Ceiling(share - 1e-9);
+            }
+
+            for (var guard = 0; guard <= movable.Count * shifts.Count; guard++)
+            {
+                GridCell? mover = null;
+                var moveTo = 0;
+                foreach (var from in shifts.OrderByDescending(Surplus).ThenBy(sh => order[sh]))
+                {
+                    if (min.TryGetValue(from, out var m) && Count(from) - 1 < m)
+                        continue;
+                    foreach (var to in shifts.OrderBy(Surplus).ThenBy(sh => order[sh]))
+                    {
+                        // A move that evens the two out; or one that leaves them as even as they were and puts somebody
+                        // back on the shift the generator saved for them (ReplanAuto: a regenerate moves nobody else).
+                        var gap = Surplus(from) - Surplus(to);
+                        if (to == from || gap < 1 - 1e-9)
+                            continue;
+                        var evens = gap > 1 + 1e-9;
+                        var bestCost = double.MaxValue;
+                        foreach (var c in movable
+                                     .Where(c => c.ShiftId == from && !_in.ShiftLeads.Contains(c.EmployeeId))
+                                     .Where(c => evens || SavedShift(c) == to)
+                                     .OrderBy(c => RosterCalendar.Mod(_ordinal[c.EmployeeId] + date.DayNumber, ring))
+                                     .ThenBy(c => c.EmployeeId))
+                        {
+                            var (cost, refused) = BalanceCost(c, to, date);
+                            if (refused || cost >= bestCost - 1e-9 || (evens && OverCommits(c, to)))
+                                continue;
+                            mover = c;
+                            bestCost = cost;
+                        }
+                        if (mover is not null)
+                        {
+                            moveTo = to;
+                            break;
+                        }
+                    }
+                    if (mover is not null)
+                        break;
+                }
+                if (mover is null)
+                    return;
+                moveBy(mover, moveTo, ReasonShiftBalance);
+            }
+        }
+
+        /// <summary>
+        /// What a balancing move costs: <see cref="MoveCost"/> - REFUSED when it makes a turnaround or a weekly rest shorter than
+        /// the minimum (evening the shifts out never breaks a rest rule) - less 6 for the shift worked the day before (a run of
+        /// days on one shift is kept) and 3 for the person's home shift, plus 4 for leaving the shift worked the day before and 2
+        /// for leaving the home shift.
+        /// </summary>
+        private (double Cost, bool Refused) BalanceCost(GridCell cell, int to, DateOnly date)
+        {
+            var (cost, turnaround, shortRest, _) = MoveCost(cell, to, date);
+            var refused = turnaround || shortRest;
+            var from = cell.ShiftId!.Value;
+            if (ShiftOn(cell.EmployeeId, date.AddDays(-1)) is { } before)
+            {
+                if (before.Shift.ShiftId == to)
+                    cost -= 6;
+                else if (before.Shift.ShiftId == from)
+                    cost += 4;
+            }
+            var home = HomeShift(cell.EmployeeId, date);
+            if (home == to)
+                cost -= 3;
+            else if (home == from)
+                cost += 2;
+            return (cost, refused);
         }
 
         /// <summary>
@@ -1418,31 +1799,53 @@ public static class RosterPlanner
         /// </summary>
         private void StayAfterCover(DateOnly date, List<GridCell> open)
         {
-            var minGap = TimeSpan.FromHours(_in.Settings.MinHoursBetweenShifts);
-            var yesterday = date.AddDays(-1);
             foreach (var c in open.Where(c => c.Kind == CellKind.Ghost && c.Leave == LeaveKind.None))
-            {
-                if (c.ShiftId is { } current
-                    && ShiftOn(c.EmployeeId, yesterday) is { } before
-                    && before.Shift.ShiftId != current
-                    && before.Shift.ShiftId != HomeShift(c.EmployeeId, yesterday)
-                    && _in.Shifts[current].StartOn(date) - before.Shift.EndOn(yesterday) < minGap)
-                    c.ShiftId = before.Shift.ShiftId;
-            }
+                if (c.ShiftId is { } current && StayOn(c.EmployeeId, date, current) is { } stay)
+                    c.ShiftId = stay;
         }
 
-        /// <summary>The cheapest person to move onto <paramref name="to"/> from a shift <paramref name="canSpare"/> allows; ties turn with the day.</summary>
-        private GridCell? BestMover(DateOnly date, List<GridCell> movable, int to, Func<int, bool> canSpare, bool strict)
+        /// <summary>
+        /// The shift somebody starting on <paramref name="current"/> today should stay on instead: the one they worked on their
+        /// last working day, when that was not their own shift (moved to cover or balance it, or put there by hand) and going
+        /// back to their own today would leave too short a rest — less than the minimum hours between two shifts after the
+        /// day before, or, after one or two rest days, less than the minimum weekly rest (an evening, a day off, then a
+        /// seven o'clock morning is a 32-hour rest). Null: go back to their own.
+        /// </summary>
+        private int? StayOn(int e, DateOnly date, int current)
+        {
+            if (_in.HoursOn(current, date) is not { } now)
+                return null;
+            var yesterday = date.AddDays(-1);
+            if (ShiftOn(e, yesterday) is { } before)
+            {
+                return before.Shift.ShiftId != current
+                       && before.Shift.ShiftId != HomeShift(e, yesterday)
+                       && now.StartOn(date) - before.Shift.EndOn(yesterday) < TimeSpan.FromHours(_in.Settings.MinHoursBetweenShifts)
+                    ? before.Shift.ShiftId
+                    : null;
+            }
+
+            // After rest days: the last shift before them (a ghost day is the next month's to decide: unknown).
+            return LastShiftBeforeRest(e, date) is { } last
+                   && last.Shift.ShiftId != current
+                   && last.Shift.ShiftId != HomeShift(e, last.Date)
+                   && now.StartOn(date) - last.Shift.EndOn(last.Date) < TimeSpan.FromHours(_in.Settings.MinWeeklyRestHours)
+                ? last.Shift.ShiftId
+                : null;
+        }
+
+        /// <summary>The cheapest person (of those <paramref name="who"/> allows) to move onto <paramref name="to"/> from a shift <paramref name="canSpare"/> allows; ties turn with the day.</summary>
+        private GridCell? BestMover(DateOnly date, List<GridCell> movable, int to, Func<int, bool> canSpare, bool strict, Func<GridCell, bool>? who = null)
         {
             GridCell? best = null;
             var bestCost = double.MaxValue;
             var people = Math.Max(1, _planned.Count);
             foreach (var c in movable
-                         .Where(c => c.ShiftId is { } from && from != to && canSpare(from))
+                         .Where(c => c.ShiftId is { } from && from != to && canSpare(from) && (who is null || who(c)))
                          .OrderBy(c => RosterCalendar.Mod(_ordinal[c.EmployeeId] + date.DayNumber, people))
                          .ThenBy(c => c.EmployeeId))
             {
-                var (cost, turnaround) = MoveCost(c, to, date);
+                var (cost, turnaround, _, _) = MoveCost(c, to, date);
                 if (strict && turnaround)
                     continue;
                 if (cost < bestCost - 1e-9)
@@ -1457,9 +1860,11 @@ public static class RosterPlanner
         /// <summary>
         /// What moving a person onto shift <paramref name="to"/> costs, largest first:
         ///   - 50 for a TURNAROUND: less than RosterMinHoursBetweenShifts after the shift worked the day
-        ///     before, or before the one the day after when the person could not stay on this shift then;
+        ///     before, or before the one the day after when the person could not stay on this shift then
+        ///     (a day this run does not decide cannot be stayed on);
         ///   - 20 when the next day is a rest and the shift after it would start less than
-        ///     RosterMinWeeklyRestHours after this one ends (an evening, one day off, then a morning);
+        ///     RosterMinWeeklyRestHours after this one ends (an evening, one day off, then a morning), and
+        ///     20 the same way when the day before was a rest and the last shift before it ended too late;
         ///   - 10 for leaving a shift nobody has to cover (a night worker covering a morning is the last resort);
         ///   - 8 for leaving the shift the generator saved there — and −8 for going back to it, so a
         ///     regenerate moves the same people as before;
@@ -1467,20 +1872,35 @@ public static class RosterPlanner
         ///     tomorrow too (going back would be a turnaround: <see cref="Cover"/> keeps them on it);
         ///   - 3 per day the person already worked off their own shift this month (moves are shared);
         ///   - 2 for a shift the person has not worked in the last eight weeks.
+        /// The flags: <c>Turnaround</c> and <c>ShortRest</c> for the two rest rules above, and <c>Certain</c> for a turnaround
+        /// nothing can undo later (with the day before, or with a day after that cannot be stayed on) - the others are only
+        /// likely: the stay step of <see cref="Cover"/> keeps a person on a shift to cover when going back would be too short.
         /// </summary>
-        private (double Cost, bool Turnaround) MoveCost(GridCell cell, int to, DateOnly date)
+        private (double Cost, bool Turnaround, bool ShortRest, bool Certain) MoveCost(GridCell cell, int to, DateOnly date)
         {
             var e = cell.EmployeeId;
             var from = cell.ShiftId!.Value;
-            var shift = _in.Shifts[to];
+            var shift = _in.HoursOn(to, date)!;   // R1: the hours in force that day
             var minGap = TimeSpan.FromHours(_in.Settings.MinHoursBetweenShifts);
             double cost = 0;
             var turnaround = false;
+            var shortRest = false;
+            var certain = false;
 
-            if (ShiftOn(e, date.AddDays(-1)) is { } before && shift.StartOn(date) - before.Shift.EndOn(before.Date) < minGap)
+            if (ShiftOn(e, date.AddDays(-1)) is { } before)
             {
-                turnaround = true;
-                cost += 50;
+                if (shift.StartOn(date) - before.Shift.EndOn(before.Date) < minGap)
+                {
+                    turnaround = true;
+                    certain = true;   // the day before is decided already
+                    cost += 50;
+                }
+            }
+            else if (LastShiftBeforeRest(e, date) is { } last
+                     && shift.StartOn(date) - last.Shift.EndOn(last.Date) < TimeSpan.FromHours(_in.Settings.MinWeeklyRestHours))
+            {
+                cost += 20;   // the rest days just taken would come out shorter than the weekly rest (an evening, a day off, a morning)
+                shortRest = true;
             }
 
             var next = date.AddDays(1);
@@ -1488,12 +1908,20 @@ public static class RosterPlanner
             {
                 if (after.Shift.StartOn(next) - shift.EndOn(date) < minGap)
                 {
-                    if (CanStayOn(to, next, after.Shift.ShiftId))
+                    // Staying on this shift tomorrow is possible only on a day this run still decides (not a saved row,
+                    // a draft edit or a leave day's row with its own shift).
+                    var decides = next > _in.WindowTo || _grid[e, next] is { IsFact: false, ShiftId: null, Leave: LeaveKind.None };
+                    if (decides && CanStayOn(to, next, after.Shift.ShiftId))
                         cost += 4;
                     else
                     {
                         turnaround = true;
                         cost += 50;
+
+                        // Certain when nothing can keep them on it tomorrow: a day this run does not decide, or a shift
+                        // tomorrow does not cover (Cover keeps nobody there). A shift left tomorrow that cannot spare them
+                        // only as the day stands so far may still be helped by the time tomorrow is planned.
+                        certain = !decides || _in.CoverRulesFor(next).All(r => r.ShiftId != to);
                     }
                 }
             }
@@ -1501,6 +1929,7 @@ public static class RosterPlanner
                      && back.Shift.StartOn(back.Date) - shift.EndOn(date) < TimeSpan.FromHours(_in.Settings.MinWeeklyRestHours))
             {
                 cost += 20;
+                shortRest = true;
             }
 
             if (!_in.CoverRulesFor(date).Any(r => r.ShiftId == from))
@@ -1515,7 +1944,7 @@ public static class RosterPlanner
             cost += 3 * _moves.GetValueOrDefault(e);
             if (!Knows(e, to))
                 cost += 2;
-            return (cost, turnaround);
+            return (cost, turnaround, shortRest, certain);
         }
 
         /// <summary>
@@ -1534,6 +1963,23 @@ public static class RosterPlanner
                 return true;
             var on = _grid.CellsOn(date).Count(c => c.InBranch && c.CountsAsWorkForRun && (c.ShiftId ?? StartShift(c)) == leaving);
             return on - 1 >= rule.MinOnDuty;
+        }
+
+        /// <summary>
+        /// The last shift worked before a run of rest days ending the day before <paramref name="date"/> (null when that day is
+        /// not a rest, or nothing is known). A ghost day is unknown, rest or work: it is the next month's to decide and may be
+        /// decided differently by the next run, so nothing here hangs on it (a regenerate must move nobody).
+        /// </summary>
+        private (ShiftInfo Shift, DateOnly Date)? LastShiftBeforeRest(int e, DateOnly date)
+        {
+            for (var d = date.AddDays(-1); d >= date.AddDays(-4) && d >= _in.WindowFrom; d = d.AddDays(-1))
+            {
+                if (ShiftOn(e, d) is { } worked)
+                    return d == date.AddDays(-1) ? null : worked;
+                if (_grid[e, d] is not { Kind: not CellKind.Ghost, CountsAsRest: true })
+                    return null;
+            }
+            return null;
         }
 
         /// <summary>The first shift worked after a run of rest days starting on <paramref name="date"/> (null when the day is not a rest, or nothing is known).</summary>
@@ -1558,7 +2004,8 @@ public static class RosterPlanner
         }
 
         /// <summary>
-        /// The shift someone works on a day, for the turnaround: a window day as decided so far (a working
+        /// The shift someone works on a day, for the turnaround — with the hours in force ON that day (R1,
+        /// <see cref="PlannerInput.HoursOn"/>): a window day as decided so far (a working
         /// day still without a shift: the one it starts on), else the saved row around the window. A ghost
         /// day is the next month's to decide — it is never saved, and may be decided differently by the
         /// next run — so it counts as unknown here: who covers a shift must not hang on it, or a regenerate
@@ -1578,7 +2025,7 @@ public static class RosterPlanner
             {
                 id = _in.WorksOutsideWindow(e, date) ? _in.RowOf(e, date)?.ShiftId : null;
             }
-            return id is { } shiftId && _in.Shifts.TryGetValue(shiftId, out var info) ? (info, date) : null;
+            return id is { } shiftId && _in.HoursOn(shiftId, date) is { } info ? (info, date) : null;
         }
 
         /// <summary>The shift the generator saved on this working day (ReplanAuto, the row unchanged since), if it is still active.</summary>

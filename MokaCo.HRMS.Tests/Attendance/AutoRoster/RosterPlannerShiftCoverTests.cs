@@ -89,16 +89,26 @@ public class RosterPlannerShiftCoverTests
     }
 
     [Fact]
-    public void With_no_roster_and_no_pattern_no_shift_is_covered()
+    public void With_no_roster_and_no_pattern_every_active_shift_is_covered()
     {
+        // R3 ("the rosters must cover daily all the shifts"): a new branch has nothing to read its shifts from, so
+        // every active shift is covered - it used to be none. The drawer shows them all, and the manager unticks
+        // what the branch does not run.
         var world = new RosterWorld().WithStaff(3);
         var run = world.Plan(Dec);
 
         Assert.True(run.Input.ShiftCoverDetected);
-        Assert.Empty(run.Input.ShiftCover);
-        Assert.All(run.Preview.PerDay, d => Assert.Empty(d.Shifts));
-        Assert.Empty(run.Preview.Issues.WithCode("SHIFT_UNCOVERED"));
-        Assert.DoesNotContain(run.Preview.Cells, c => c.ReasonCode == "WORK_SHIFT_COVER");
+        Assert.Equal([RosterWorld.Morning, RosterWorld.Day, RosterWorld.Evening, RosterWorld.Night], run.Input.ShiftCover.Select(r => r.ShiftId!.Value));
+        Assert.All(run.Input.ShiftCover, r => Assert.Equal(1, r.MinOnDuty));
+        Assert.All(run.Preview.PerDay, d => Assert.Equal(4, d.Shifts.Count));
+
+        var setup = AutoRosterSetupFactory.Create(world.Context(Dec), Dec);
+        Assert.True(setup.ShiftCoverDetected);
+        Assert.Equal([RosterWorld.Morning, RosterWorld.Day, RosterWorld.Evening, RosterWorld.Night], setup.ShiftCover.Select(r => r.ShiftId!.Value));
+
+        // Three people cannot hold four shifts: the shift left empty is reported every day, and nobody loses a rest day for it.
+        Assert.All(run.Preview.PerDay, d => Assert.Contains(run.Preview.Issues, i => i.Date == d.Date && i.Code == "SHIFT_UNCOVERED"));
+        Assert.All(run.Preview.PerEmployee, e => Assert.All(e.Weeks, w => Assert.True(w.Ok)));
     }
 
     [Fact]
@@ -136,9 +146,11 @@ public class RosterPlannerShiftCoverTests
         Assert.NotEmpty(eveningOff);
         foreach (var d in eveningOff)
         {
+            // R5: the evening now also gets its share of the day's people, so besides who covers it (WORK_SHIFT_COVER)
+            // others are moved there to even the shifts out (WORK_SHIFT_BALANCE).
             var cover = p.Cells.Where(c => c.WorkDate == d && c.EmployeeId != 6 && c.State == "work" && c.ShiftId == RosterWorld.Evening).ToList();
             Assert.NotEmpty(cover);
-            Assert.All(cover, c => Assert.Equal("WORK_SHIFT_COVER", c.ReasonCode));
+            Assert.All(cover, c => Assert.Contains(c.ReasonCode, new[] { "WORK_SHIFT_COVER", "WORK_SHIFT_BALANCE" }));
             Assert.All(cover, c => Assert.Contains("Evening", c.ReasonArgs));
         }
 
@@ -248,9 +260,19 @@ public class RosterPlannerShiftCoverTests
             .Select(e => new DraftCellDto { EmployeeId = e, WorkDate = day, ShiftId = RosterWorld.Morning })
             .ToList();
 
+        // R3: the rest days are now chosen so the evening keeps somebody: with the five mornings fixed by hand, the
+        // evening person's day off moves to another day of the week, and the drafts stay exactly as drawn.
         var p = world.Plan(Dec, "FillEmpty", r => r.DraftCells = drafts).Preview;
         Assert.All(Enumerable.Range(1, 5), e => Assert.Equal(RosterWorld.Morning, p.Cell(e, day).ShiftId));
-        Assert.Contains(p.Issues, i => i.Date == day && i.Code == "SHIFT_UNCOVERED" && i.Message.Contains("Evening"));
+        Assert.Equal(RosterWorld.Evening, p.Cell(6, day).ShiftId);
+        Assert.DoesNotContain(p.Issues, i => i.Date == day && i.Code == "SHIFT_UNCOVERED");
+        Assert.True(p.Week(6, RosterCalendar.WeekStart(day)).Ok);
+
+        // When the evening person's day off is fixed by hand too, nobody can cover the evening: it is reported.
+        drafts.Add(new DraftCellDto { EmployeeId = 6, WorkDate = day, IsRestDay = true });
+        var fixedOff = world.Plan(Dec, "FillEmpty", r => r.DraftCells = drafts).Preview;
+        Assert.All(Enumerable.Range(1, 5), e => Assert.Equal(RosterWorld.Morning, fixedOff.Cell(e, day).ShiftId));
+        Assert.Contains(fixedOff.Issues, i => i.Date == day && i.Code == "SHIFT_UNCOVERED" && i.Message.Contains("Evening"));
     }
 
     /* ---- the commit, and running it again ---- */

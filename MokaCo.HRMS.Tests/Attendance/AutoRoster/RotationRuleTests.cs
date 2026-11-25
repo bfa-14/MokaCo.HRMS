@@ -322,6 +322,68 @@ public class RotationRuleTests
             listed.Preview.Cells.Select(c => (c.EmployeeId, c.WorkDate, c.State, c.ShiftId)));
     }
 
+    /* ---- R6: a new hire's weeks are 6-day weeks in the fixed rotation too ---- */
+
+    [Fact]
+    public void In_a_new_hires_first_months_a_two_days_off_week_keeps_only_its_first_day_off()
+    {
+        // Person 3 (group 0, pair from Thursday): week 0 is a two-days-off week, Thursday 3 and Friday 4 December on the
+        // sheet. Hired on 1 November, they are in their first three months: only the Thursday stays a day off.
+        var world = new RosterWorld { Today = new DateOnly(2026, 11, 1), Rotation = Stored() }.WithStaff(People.Length);
+        world.People[3].Hire = new DateOnly(2026, 11, 1);
+        var run = world.Plan(new DateOnly(2026, 12, 1), configure: r => r.Method = "Rotation");
+        var p = run.Preview;
+
+        Assert.Equal("rest", p.Cell(3, new DateOnly(2026, 12, 3)).State);
+        Assert.Equal("work", p.Cell(3, new DateOnly(2026, 12, 4)).State);
+        Assert.All(p.PerEmployee.Single(e => e.EmployeeId == 3).Weeks, w =>
+        {
+            Assert.Equal(6, w.WorkDays);
+            Assert.True(w.Ok, $"week of {w.WeekStart}: {w.Rests} rests for {w.Quota}");
+        });
+        Assert.DoesNotContain(p.Issues, i => i.EmployeeId == 3 && i.Code is "RHYTHM_SHORT" or "RHYTHM_OVER");
+
+        // Everybody else follows the sheet, and person 3's one-day-off weeks are the sheet's too.
+        Assert.Equal("OFF", RotationRule.Column(Setup(), RotationRule.Ordered(Setup(), Enumerable.Range(1, 7)), new DateOnly(2026, 12, 4))[2]);
+        Assert.True(RotationRule.IsOff(Setup(), Setup().Members[3], new DateOnly(2026, 12, 4)));
+        Assert.False(RotationRule.IsOff(Setup(), Setup().Members[3], new DateOnly(2026, 12, 4), new DateOnly(2027, 2, 1)));
+        Assert.True(RotationRule.IsOff(Setup(), Setup().Members[3], new DateOnly(2026, 12, 3), new DateOnly(2027, 2, 1)));
+
+        // The commit judges those weeks the same way.
+        var issues = world.Commit(run);
+        Assert.DoesNotContain(issues, i => i.EmployeeId == 3 && i.Code is "RHYTHM_SHORT" or "RHYTHM_OVER");
+    }
+
+    /* ---- R4: the branch's stored leaders in the fixed rotation ---- */
+
+    [Fact]
+    public void A_stored_leader_who_is_not_lead_1_or_2_keeps_off_a_shift_that_has_a_leader_when_the_other_has_none()
+    {
+        // Thursday 3 December on the sheet: Lead 1 and person 6 on the morning, Lead 2 off, the evening without a leader.
+        // With person 6 a stored leader, they change places with the first person of the list on the evening (person 4).
+        var world = new RosterWorld { Today = new DateOnly(2026, 11, 1), Rotation = Stored() }.WithStaff(People.Length);
+        world.ShiftLeaders.Add(6);
+        var p = world.Plan(new DateOnly(2026, 12, 1), configure: r => r.Method = "Rotation").Preview;
+
+        var thursday = new DateOnly(2026, 12, 3);
+        Assert.Equal(RosterWorld.Morning, ShiftOf(p, 1, thursday));
+        Assert.Equal(RosterWorld.Evening, ShiftOf(p, 6, thursday));
+        Assert.Equal(RosterWorld.Morning, ShiftOf(p, 4, thursday));
+        Assert.Equal(RosterPlanner.ReasonLeadApart, p.Cell(6, thursday).ReasonCode);
+
+        foreach (var d in December)
+        {
+            var shifts = new[] { 1, 2, 6 }.Select(e => ShiftOf(p, e, d)).Where(s => s is not null).ToList();
+            if (shifts.GroupBy(s => s).Any(g => g.Count() >= 2))
+                Assert.Equal(2, shifts.Distinct().Count());   // only when all three work: both shifts keep a leader
+        }
+
+        // Without stored leaders the rotation is the sheet, untouched.
+        var plain = new RosterWorld { Today = new DateOnly(2026, 11, 1), Rotation = Stored() }.WithStaff(People.Length)
+            .Plan(new DateOnly(2026, 12, 1), configure: r => r.Method = "Rotation").Preview;
+        Assert.DoesNotContain(plain.Cells, c => c.ReasonCode == RosterPlanner.ReasonLeadApart);
+    }
+
     [Fact]
     public void The_rotation_must_be_set_up_before_it_can_plan()
     {
