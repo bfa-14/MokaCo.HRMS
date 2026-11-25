@@ -50,6 +50,9 @@ public static class Scripts
     /// <summary>A booking waiting for its online deposit is held from creation, announced only when paid, released when not.</summary>
     public const string UnpaidNeverStays121 = "docs/121_booking_unpaid_never_stays.sql";
 
+    /// <summary>The shift change log (who changed a shift's hours, name or active, from what to what, and when), kept for good.</summary>
+    public const string ShiftChangeLog122 = "docs/122_shift_change_log.sql";
+
     /// <summary>
     /// QA3 DEPLOY GUARD: every numbered script this build of the API calls, in apply order, each with the
     /// object it is checked by. SchemaCheck looks for them at startup; while one is missing the log names
@@ -92,5 +95,7 @@ public static class Scripts
         new(DepositBeforeConfirm120, "booking.fn_NewBookingStatus"),
         // As for 120: the function is the only object it adds; check-scripts.sql reads the procedure's own text.
         new(UnpaidNeverStays121, "booking.fn_DepositHoldUntil"),
+        // The last object the script creates; the change log's triggers come before it.
+        new(ShiftChangeLog122, "attendance.usp_Shift_GetChanges"),
     ];
 }

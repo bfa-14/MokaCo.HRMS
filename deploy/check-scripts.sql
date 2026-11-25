@@ -69,7 +69,8 @@ INSERT INTO @S (No, Script, Applied, CheckedBy) VALUES
  (118, N'118_booking_whish.sql',                   IIF(OBJECT_ID('booking.usp_Booking_SetWhishPayer') IS NOT NULL, 1, 0), N'booking.usp_Booking_SetWhishPayer'),
  (119, N'119_payment_gateways.sql',                IIF(OBJECT_ID('booking.usp_GatewayTest_List') IS NOT NULL, 1, 0), N'booking.usp_GatewayTest_List'),
  (120, N'120_booking_deposit_before_confirm.sql',  IIF(OBJECT_ID('booking.fn_NewBookingStatus') IS NOT NULL AND CHARINDEX(N'fn_NewBookingStatus', ISNULL(OBJECT_DEFINITION(OBJECT_ID('booking.usp_Booking_Create')), N'')) > 0, 1, 0), N'usp_Booking_Create calls booking.fn_NewBookingStatus'),
- (121, N'121_booking_unpaid_never_stays.sql',      IIF(OBJECT_ID('booking.fn_DepositHoldUntil') IS NOT NULL AND CHARINDEX(N'fn_DepositHoldUntil', ISNULL(OBJECT_DEFINITION(OBJECT_ID('booking.usp_Booking_Create')), N'')) > 0, 1, 0), N'usp_Booking_Create calls booking.fn_DepositHoldUntil');
+ (121, N'121_booking_unpaid_never_stays.sql',      IIF(OBJECT_ID('booking.fn_DepositHoldUntil') IS NOT NULL AND CHARINDEX(N'fn_DepositHoldUntil', ISNULL(OBJECT_DEFINITION(OBJECT_ID('booking.usp_Booking_Create')), N'')) > 0, 1, 0), N'usp_Booking_Create calls booking.fn_DepositHoldUntil'),
+ (122, N'122_shift_change_log.sql',                IIF(OBJECT_ID('attendance.usp_Shift_GetChanges') IS NOT NULL AND OBJECT_ID('attendance.tr_SHIFT_HOURS_ChangeLog') IS NOT NULL, 1, 0), N'attendance.usp_Shift_GetChanges and the shift change log triggers');
 
 INSERT INTO @S (No, Script, Applied, Admin, CheckedBy) VALUES
  (91, N'91_admin_reseed_identities.sql',          IIF(OBJECT_ID('dbo.usp_Admin_ReseedIdentities') IS NOT NULL, 1, 0), 1, N'admin tool'),
