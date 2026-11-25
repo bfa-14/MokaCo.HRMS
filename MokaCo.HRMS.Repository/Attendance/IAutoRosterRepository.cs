@@ -53,6 +53,12 @@ public interface IAutoRosterRepository
     /// </summary>
     Task<IReadOnlyList<RosterLeaderDto>> GetLeadersAsync(int branchId, int? callerUserId);
 
+    /// <summary>
+    /// attendance.usp_AutoRoster_GetLeaderCandidates (script 123): who may be added to the branch's own list - its people
+    /// today, still employed - by name.
+    /// </summary>
+    Task<IReadOnlyList<RosterLeaderCandidateDto>> GetLeaderCandidatesAsync(int branchId, int? callerUserId);
+
     /// <summary>attendance.usp_AutoRoster_SaveLeaders (script 123): replaces the branch's own list; an empty list clears it.</summary>
     Task SaveLeadersAsync(int branchId, IEnumerable<int> employeeIds, int? callerUserId);
 

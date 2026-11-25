@@ -49,8 +49,9 @@
    night before. After changing the hours of an overnight shift, check the nights around the change on Daily
    attendance.
 
-   Each redefined procedure must be the version this script was written from (parameters and text); otherwise the
-   script refuses before changing anything. MARKER for the deploy guard: attendance.usp_Shift_GetChanges, the LAST
+   Each redefined procedure must be the version this script was written from (parameters and text), and an object
+   that already carries one of the NEW names (the table, the three triggers, usp_Shift_GetChanges) must be this
+   script's own; otherwise the script refuses before changing anything. MARKER for the deploy guard: attendance.usp_Shift_GetChanges, the LAST
    object the script creates. Needs 100, 110 and 117. Pure ASCII; QUOTED_IDENTIFIER ON; re-runnable.
    Apply with: sqlcmd -S <server> -U <login> -C -I -b -d <database> -i docs/122_shift_change_log.sql
    ============================================================================ */
@@ -65,6 +66,45 @@ IF OBJECT_ID('attendance.SHIFT_HOURS') IS NULL OR OBJECT_ID('attendance.fn_Shift
    OR OBJECT_ID('attendance.usp_Correction_Create') IS NULL OR OBJECT_ID('attendance.usp_DayReport_Create') IS NULL
 BEGIN
     RAISERROR('122_shift_change_log.sql needs scripts 100, 110 and 117 (attendance.SHIFT_HOURS, fn_ShiftHoursOn, usp_Shift_SetHours, usp_Shift_RederiveDays, usp_Correction_Create, usp_DayReport_Create). Apply them first. Nothing was applied.', 16, 1);
+    SET NOEXEC ON;
+END
+GO
+
+/* PRODUCTION HOLDS OBJECTS THE REPOSITORY NEVER HAD. Nothing below may replace one of them, or hang a trigger or an
+   index on one: an object that already carries one of this script's NEW names must be this script's own - the table
+   with its columns, a trigger on its own table whose text says "script 122", the procedure whose text says so.
+   Anything else stops the script here, naming it, with nothing applied. (The three procedures it redefines are
+   checked in section 0.) tr_SHIFT_CHANGE_KeepForever was first written without the words "script 122": its first
+   text, "kept for good", is recognised too. */
+DECLARE @foreign NVARCHAR(MAX) = NULL;
+DECLARE @own TABLE (Name NVARCHAR(128) NOT NULL, OnTable NVARCHAR(128) NULL, AlsoKnownBy NVARCHAR(100) NULL);
+INSERT INTO @own (Name, OnTable, AlsoKnownBy) VALUES
+    (N'attendance.SHIFT_CHANGE', NULL, NULL),                                  -- a table: known by its columns below
+    (N'attendance.tr_SHIFT_CHANGE_KeepForever', N'attendance.SHIFT_CHANGE', N'%kept for good%'),
+    (N'attendance.tr_SHIFT_HOURS_ChangeLog', N'attendance.SHIFT_HOURS', NULL),
+    (N'attendance.tr_SHIFT_ChangeLog', N'attendance.SHIFT', NULL),
+    (N'attendance.usp_Shift_GetChanges', NULL, NULL);
+
+SELECT @foreign = STRING_AGG(o.Name, N', ')
+FROM @own o
+WHERE OBJECT_ID(o.Name) IS NOT NULL
+  AND CASE
+        WHEN o.Name = N'attendance.SHIFT_CHANGE'
+            THEN IIF(OBJECTPROPERTY(OBJECT_ID(o.Name), 'IsUserTable') = 1
+                     AND COL_LENGTH(o.Name, N'ShiftId') IS NOT NULL AND COL_LENGTH(o.Name, N'DaysCount') IS NOT NULL
+                     AND COL_LENGTH(o.Name, N'OldGraceMinutes') IS NOT NULL, 0, 1)
+        WHEN o.OnTable IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM sys.triggers t WHERE t.object_id = OBJECT_ID(o.Name) AND t.parent_id = OBJECT_ID(o.OnTable))
+            THEN 1
+        WHEN ISNULL(OBJECT_DEFINITION(OBJECT_ID(o.Name)), N'') LIKE N'%script 122%'
+             OR (o.AlsoKnownBy IS NOT NULL AND ISNULL(OBJECT_DEFINITION(OBJECT_ID(o.Name)), N'') LIKE o.AlsoKnownBy)
+            THEN 0
+        ELSE 1
+      END = 1;
+
+IF NULLIF(@foreign, N'') IS NOT NULL
+BEGIN
+    RAISERROR('122_shift_change_log.sql: this database already has object(s) with a name this script uses, which it did not create: %s. Nothing was applied; the script must be renamed around them first.', 16, 1, @foreign);
     SET NOEXEC ON;
 END
 GO
@@ -131,6 +171,7 @@ INSTEAD OF DELETE
 AS
 BEGIN
     SET NOCOUNT ON;
+    /* script 122 */
     IF NOT EXISTS (SELECT 1 FROM deleted) RETURN;
     RAISERROR('The shift change log is kept for good: its rows are never deleted.', 16, 1);
 END;

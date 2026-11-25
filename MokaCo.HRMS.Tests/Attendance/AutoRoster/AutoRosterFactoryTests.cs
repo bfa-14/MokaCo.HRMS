@@ -233,6 +233,10 @@ public class AutoRosterFactoryTests
         Assert.Equal(2, AutoRosterInputFactory.ReadSettings([new AutoRosterSettingRow { SettingKey = "rosternewhiresixdaymonths", SettingValue = " 2 " }]).NewHireSixDayMonths);
         Assert.Equal(120, AutoRosterInputFactory.ReadSettings([new AutoRosterSettingRow { SettingKey = "RosterNewHireSixDayMonths", SettingValue = "9999" }]).NewHireSixDayMonths);
         Assert.Equal(3, AutoRosterInputFactory.ReadSettings([new AutoRosterSettingRow { SettingKey = "RosterNewHireSixDayMonths", SettingValue = "0" }]).NewHireSixDayMonths);
+        // The drawer says it in words ("for their first 2 months"): the setup sends the value the planner uses.
+        Assert.Equal(2, AutoRosterInputFactory.ToDto(AutoRosterInputFactory.ReadSettings(
+            [new AutoRosterSettingRow { SettingKey = "RosterNewHireSixDayMonths", SettingValue = "2" }])).RosterNewHireSixDayMonths);
+        Assert.Equal(3, AutoRosterInputFactory.ToDto(PlannerSettings.Default).RosterNewHireSixDayMonths);
     }
 
     [Fact]
