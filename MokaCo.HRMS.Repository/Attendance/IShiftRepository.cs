@@ -17,6 +17,9 @@ public interface IShiftRepository
     /// <summary>Takes one change of hours back; the days it covered are derived again.</summary>
     Task<int> DeleteHoursAsync(int shiftHoursId, int? callerUserId);
 
+    /// <summary>The shift's change log (script 122), newest first.</summary>
+    Task<IEnumerable<ShiftChange>> GetChangesAsync(int shiftId);
+
     /// <summary>Puts on attendance.SHIFT the hours in force today (a change dated ahead takes its place on its day). Returns the shifts updated.</summary>
     Task<int> SyncCurrentAsync();
 }

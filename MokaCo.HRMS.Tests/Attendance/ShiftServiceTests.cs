@@ -1,5 +1,6 @@
 using MokaCo.HRMS.Model.Attendance;
 using MokaCo.HRMS.Repository.Attendance;
+using MokaCo.HRMS.Repository.Common;
 using MokaCo.HRMS.Services.Attendance;
 using MokaCo.HRMS.Services.Workflow;
 using Moq;
@@ -70,5 +71,34 @@ public class ShiftServiceTests
         var result = await new ShiftService(repo.Object).DeleteHoursAsync(9, Caller);
 
         Assert.Equal(12, result.DaysRederived);
+    }
+
+    /* ---- script 122: the change log ---- */
+    [Fact]
+    public async Task The_change_log_is_the_procedures_newest_first()
+    {
+        var rows = new[]
+        {
+            new ShiftChange { ShiftChangeId = 9, ShiftId = 5, Action = ShiftChange.Actions.HoursChanged, ChangedBy = "Reda" },
+            new ShiftChange { ShiftChangeId = 3, ShiftId = 5, Action = ShiftChange.Actions.Created },
+        };
+        var repo = new Mock<IShiftRepository>(MockBehavior.Strict);
+        repo.Setup(r => r.GetChangesAsync(5)).ReturnsAsync(rows);
+
+        var log = await new ShiftService(repo.Object).GetChangesAsync(5);
+
+        Assert.Equal([9, 3], log.Select(c => c.ShiftChangeId));
+    }
+
+    [Fact]
+    public async Task Without_script_122_the_change_log_is_empty_not_an_error()
+    {
+        var repo = new Mock<IShiftRepository>(MockBehavior.Strict);
+        repo.Setup(r => r.GetChangesAsync(5))
+            .ThrowsAsync(new MissingScriptException(Scripts.ShiftChangeLog122, "attendance.usp_Shift_GetChanges", MissingScriptException.ProcedureNotFound));
+
+        var log = await new ShiftService(repo.Object).GetChangesAsync(5);
+
+        Assert.Empty(log);
     }
 }
