@@ -26,7 +26,43 @@ public class AutoRosterRepository : IAutoRosterRepository
     private readonly IDbConnectionFactory _factory;
     public AutoRosterRepository(IDbConnectionFactory factory) => _factory = factory;
 
+    /// <summary>
+    /// How far past the window the dated shift hours are read: the procedure reads the rows up to WindowTo plus the
+    /// RosterMaxConsecutiveWorkDays cap, which it clamps to 1..31 - so 31 days always reach the last row it gives.
+    /// </summary>
+    public const int ShiftHoursDaysAfterWindow = 31;
+
+    /// <summary>
+    /// The context (usp_AutoRoster_GetContext), then the two lists script 123 adds beside it: the branch's shift
+    /// leaders and every dated version of the shifts from the history's first day to past the window. Each of the
+    /// two is read on its own and guarded: while script 123 is not applied it is empty, and the planner works as it
+    /// did before (leaders from the rotation list only, today's shift hours).
+    /// </summary>
     public async Task<AutoRosterContext> GetContextAsync(int branchId, DateOnly monthDate, int? lookbackWeeks, int? callerUserId)
+    {
+        var context = await ReadContextAsync(branchId, monthDate, lookbackWeeks, callerUserId);
+        context.ShiftLeaders = await OrEmptyWhenMissingAsync(async () =>
+            (await GetLeadersAsync(branchId, callerUserId)).Select(l => l.EmployeeId).Distinct().ToList());
+        context.ShiftHours = await OrEmptyWhenMissingAsync(async () => (await GetShiftHoursAsync(
+            DateOnly.FromDateTime(context.Header.HistoryFrom),
+            DateOnly.FromDateTime(context.Header.WindowTo).AddDays(ShiftHoursDaysAfterWindow))).ToList());
+        return context;
+    }
+
+    /// <summary>A list of a script that may not be applied yet: empty then, as before the script.</summary>
+    private static async Task<List<T>> OrEmptyWhenMissingAsync<T>(Func<Task<List<T>>> read)
+    {
+        try
+        {
+            return await read();
+        }
+        catch (MissingScriptException)
+        {
+            return [];
+        }
+    }
+
+    private async Task<AutoRosterContext> ReadContextAsync(int branchId, DateOnly monthDate, int? lookbackWeeks, int? callerUserId)
     {
         using var db = _factory.Create();
         using var grid = await db.QueryMultipleAsync(
@@ -194,6 +230,38 @@ public class AutoRosterRepository : IAutoRosterRepository
                     LeadSlot = m.LeadSlot, SortOrder = m.SortOrder,
                 }).ToList(),
             };
+        });
+
+    public Task<IReadOnlyList<RosterLeaderDto>> GetLeadersAsync(int branchId, int? callerUserId)
+        => MissingScriptException.GuardAsync(Scripts.RosterLeaders123, "attendance.usp_AutoRoster_GetLeaders", async () =>
+        {
+            using var db = _factory.Create();
+            var rows = await db.QueryAsync<RosterLeaderDto>(
+                "attendance.usp_AutoRoster_GetLeaders",
+                new { BranchId = branchId, CallerUserId = callerUserId },
+                commandType: CommandType.StoredProcedure);
+            return (IReadOnlyList<RosterLeaderDto>)rows.AsList();
+        });
+
+    public Task SaveLeadersAsync(int branchId, IEnumerable<int> employeeIds, int? callerUserId)
+        => MissingScriptException.GuardAsync(Scripts.RosterLeaders123, "attendance.usp_AutoRoster_SaveLeaders", async () =>
+        {
+            using var db = _factory.Create();
+            await db.ExecuteAsync(
+                "attendance.usp_AutoRoster_SaveLeaders",
+                new { BranchId = branchId, EmployeeIdsJson = JsonSerializer.Serialize(employeeIds, JsonOptions), CallerUserId = callerUserId },
+                commandType: CommandType.StoredProcedure);
+        });
+
+    public Task<IReadOnlyList<AutoRosterShiftHoursRow>> GetShiftHoursAsync(DateOnly fromDate, DateOnly toDate)
+        => MissingScriptException.GuardAsync(Scripts.RosterLeaders123, "attendance.usp_AutoRoster_GetShiftHours", async () =>
+        {
+            using var db = _factory.Create();
+            var rows = await db.QueryAsync<AutoRosterShiftHoursRow>(
+                "attendance.usp_AutoRoster_GetShiftHours",
+                new { FromDate = AsDate(fromDate), ToDate = AsDate(toDate) },
+                commandType: CommandType.StoredProcedure);
+            return (IReadOnlyList<AutoRosterShiftHoursRow>)rows.AsList();
         });
 
     public Task SaveRotationAsync(RosterRotationDto rotation, int? callerUserId)
