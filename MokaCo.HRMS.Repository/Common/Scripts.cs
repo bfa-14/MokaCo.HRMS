@@ -51,6 +51,12 @@ public static class Scripts
     public const string UnpaidNeverStays121 = "docs/121_booking_unpaid_never_stays.sql";
 
     /// <summary>
+    /// The auto-roster's shift leaders for every method (the branch's own list beside the rotation's Lead 1 / Lead 2),
+    /// the shifts' dated hours over the planning window, and the setting RosterNewHireSixDayMonths.
+    /// </summary>
+    public const string RosterLeaders123 = "docs/123_roster_leaders.sql";
+
+    /// <summary>
     /// QA3 DEPLOY GUARD: every numbered script this build of the API calls, in apply order, each with the
     /// object it is checked by. SchemaCheck looks for them at startup; while one is missing the log names
     /// it and /health says "schema":"behind" (deploy-test.sh refuses that, deploy-api.sh warns). A new
@@ -92,5 +98,7 @@ public static class Scripts
         new(DepositBeforeConfirm120, "booking.fn_NewBookingStatus"),
         // As for 120: the function is the only object it adds; check-scripts.sql reads the procedure's own text.
         new(UnpaidNeverStays121, "booking.fn_DepositHoldUntil"),
+        // The last procedure the script creates: a run that stopped half-way still reads as missing.
+        new(RosterLeaders123, "attendance.usp_AutoRoster_GetLeaders"),
     ];
 }
