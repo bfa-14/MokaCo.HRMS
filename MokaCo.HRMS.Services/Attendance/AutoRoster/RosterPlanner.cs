@@ -425,6 +425,7 @@ public static class RosterPlanner
         private readonly int? _defaultShift;
         private readonly int? _firstActiveShift;
         private readonly Dictionary<int, int?> _frequent = new();
+        private (int? Shift, Dictionary<DateOnly, int?> Days)? _guessed;
         private readonly Dictionary<int, HashSet<int>> _known = new();
         private readonly Dictionary<int, int> _moves = new();
         private WeekCover? _cover;
@@ -722,14 +723,14 @@ public static class RosterPlanner
                     if (pMaskOf.TryGetValue(c.EmployeeId, out var mask) && (mask >> i & 1) == 1)
                     {
                         onDuty[i]++;
-                        shift = StartShift(c);
+                        shift = CarriedShift(c) ?? StartShift(c);
                         _cover.StartOf[(c.EmployeeId, i)] = shift;
                         canMove = true;
                     }
                     else if (c.CountsAsWorkForRun)
                     {
                         onDuty[i]++;
-                        shift = c.ShiftId ?? StartShift(c);
+                        shift = c.ShiftId ?? CarriedShift(c) ?? StartShift(c);
                         canMove = !c.IsFact && c.ShiftId is null && c.Leave == LeaveKind.None;
                     }
                     else
@@ -1453,10 +1454,32 @@ public static class RosterPlanner
 
         /// <summary>
         /// The shift a working day starts from: the weekly pattern's for that weekday, else the person's
-        /// most frequent shift before the window (<see cref="MostFrequentShift"/>), else the drawer's default, else the
-        /// first shift the day must cover, else the first active shift (§2.6). Coverage may move the person off it.
+        /// most frequent shift before the window (<see cref="MostFrequentShift"/>), else the drawer's default, else a
+        /// shift the branch covers (<see cref="GuessedShift"/>) (§2.6). Coverage may move the person off it.
         /// </summary>
         private int? StartShift(GridCell cell) => HomeShift(cell.EmployeeId, cell.Date);
+
+        /// <summary>
+        /// For the rest days, which are placed before any shift is chosen: the shift somebody will start on instead of their own
+        /// because of the shift last KNOWN before the days not decided yet (last month's saved rows, a locked day), when it is a
+        /// shift to cover that day. A morning person who worked last month's last evening is held on the evening on the first
+        /// day not decided yet, if they work it (<see cref="StayOn"/>: the morning would come too soon); and a leader moved onto
+        /// an earlier shift stays there (<see cref="LeaderStaysOn"/>). Counted on their own shift, the rest days could leave the
+        /// shift they cannot go back to at its minimum without them, and the shift cover would have to send them back: a
+        /// turnaround across the month's end. Only that first day: whether a later one is held depends on the rest days still
+        /// to be placed, and counting the person away from their own shift all week misleads the rest days more than it helps.
+        /// Null: their own shift.
+        /// </summary>
+        private int? CarriedShift(GridCell cell)
+        {
+            var e = cell.EmployeeId;
+            var known = cell.Date.AddDays(-1);
+            while (known >= _in.WindowFrom && known >= cell.Date.AddDays(-7) && _grid[e, known] is { IsPlannable: true, State: CellState.None })
+                known = known.AddDays(-1);
+            var carried = LeaderStaysOn(e, known.AddDays(1))
+                          ?? (known == cell.Date.AddDays(-1) && HomeShift(e, cell.Date) is { } own ? StayOn(e, cell.Date, own) : null);
+            return carried is { } shift && _in.CoverRulesFor(cell.Date).Any(r => r.ShiftId == shift) ? carried : null;
+        }
 
         private int? HomeShift(int e, DateOnly date)
         {
@@ -1466,15 +1489,59 @@ public static class RosterPlanner
             if (!_frequent.TryGetValue(e, out var frequent))
                 _frequent[e] = frequent = MostFrequentShift(e);
 
-            if ((frequent ?? _defaultShift) is { } known)
-                return known;
+            return frequent ?? _defaultShift ?? GuessedShift(date);
+        }
 
-            // Somebody with nothing to go by (a new hire with no rows and no pattern) starts on the first active shift only when
-            // the branch covers it that day; otherwise on the first shift it does cover. The lowest-numbered shift may be one the
-            // branch never runs, and Cover and Balance only spread people who are on a shift to cover: the new hire would stay
-            // there for good (next month's most frequent shift). The drawer's default still wins.
-            var cover = _in.CoverRulesFor(date);
-            return cover.Count == 0 || cover.Any(r => r.ShiftId == _firstActiveShift) ? _firstActiveShift : cover[0].ShiftId;
+        /// <summary>
+        /// The start shift of somebody with nothing to go by (no pattern, no rows before the window, no drawer default: a new
+        /// hire). The lowest-numbered active shift may be one the branch never runs, and Cover and Balance only spread people who
+        /// are on a shift to cover, so the new hire would stay there for good (next month's most frequent shift). So: the shift
+        /// the branch covers on the most days of the window (ties: the first active shift, then the earliest start), the SAME
+        /// every day - a guess that changed with the weekday's cover would put an evening on Sunday before a morning on Monday.
+        /// On a day that shift is not covered, the first shift covered that day, but only when that run of days makes no
+        /// turnaround with the days around it; otherwise the person keeps the guessed shift.
+        /// </summary>
+        private int? GuessedShift(DateOnly date)
+        {
+            if (_guessed is null)
+            {
+                var days = _grid.Days;
+                var covered = days.ToDictionary(d => d, d => _in.CoverRulesFor(d).Select(r => r.ShiftId!.Value).ToList());
+                var guess = covered.Values.SelectMany(s => s).GroupBy(s => s)
+                    .OrderByDescending(g => g.Count())
+                    .ThenBy(g => g.Key == _firstActiveShift ? 0 : 1)
+                    .ThenBy(g => _in.Shifts[g.Key].StartTime)
+                    .ThenBy(g => g.Key)
+                    .Select(g => (int?)g.Key)
+                    .FirstOrDefault() ?? _firstActiveShift;
+                var byDay = new Dictionary<DateOnly, int?>();
+                var minGap = TimeSpan.FromHours(_in.Settings.MinHoursBetweenShifts);
+                bool TooClose(int? a, DateOnly dayA, int? b)
+                    => a is { } x && b is { } y && x != y && _in.HoursOn(x, dayA) is { } first && _in.HoursOn(y, dayA.AddDays(1)) is { } second
+                       && second.StartOn(dayA.AddDays(1)) - first.EndOn(dayA) < minGap;
+                for (var i = 0; i < days.Count; i++)
+                {
+                    if (guess is null || covered[days[i]].Count == 0 || covered[days[i]].Contains(guess.Value))
+                    {
+                        byDay[days[i]] = guess;
+                        continue;
+                    }
+                    // A run of days the guess is not covered on: each takes the first shift covered that day, unless the
+                    // run would then start or end (or change inside) with a turnaround.
+                    var end = i;
+                    while (end + 1 < days.Count && covered[days[end + 1]].Count > 0 && !covered[days[end + 1]].Contains(guess.Value))
+                        end++;
+                    var run = Enumerable.Range(i, end - i + 1).Select(k => (int?)covered[days[k]][0]).ToList();
+                    var turnaround = TooClose(guess, days[i].AddDays(-1), run[0]) || TooClose(run[^1], days[end], guess)
+                                     || Enumerable.Range(0, run.Count - 1).Any(k => TooClose(run[k], days[i + k], run[k + 1]));
+                    for (var k = i; k <= end; k++)
+                        byDay[days[k]] = turnaround ? guess : run[k - i];
+                    i = end;
+                }
+                _guessed = (guess, byDay);
+            }
+            var (all, perDay) = _guessed.Value;
+            return perDay.TryGetValue(date, out var shift) ? shift : all;
         }
 
         /// <summary>
@@ -1531,6 +1598,23 @@ public static class RosterPlanner
                     || !(CanSpare(current) || OthersCanFill(current, c)))
                     continue;
                 MoveBy(c, stay, ReasonShiftCover);
+            }
+
+            // R4: a leader moved onto a shift earlier than their own to keep the leaders apart stays on it on their next working
+            // days (LeaderStaysOn), while it is still a shift to cover and holds no other leader - on a day they are the only
+            // leader working too. Sent home, they would need moving again when the other leader is back, often right after one
+            // rest day: that move leaves the week without its weekly rest (an evening, a day off, then a morning: 32 hours), so it
+            // is refused, and both leaders would share the evening until one of them has two days off.
+            foreach (var c in movable.Where(c => _in.ShiftLeads.Contains(c.EmployeeId)).OrderBy(c => c.EmployeeId))
+            {
+                if (c.ShiftId is not { } current
+                    || LeaderStaysOn(c.EmployeeId, date) is not { } stay
+                    || stay == current
+                    || !min.ContainsKey(stay)
+                    || LeadsOn(date, stay).Count > 0
+                    || !(CanSpare(current) || OthersCanFill(current, c)))
+                    continue;
+                MoveBy(c, stay, ReasonLeadApart);
             }
 
             SeparateLeads(date, movable, LeaderShifts(date, rules), count, min, MoveBy);
@@ -1836,7 +1920,8 @@ public static class RosterPlanner
         /// it again (<see cref="StayOn"/>) - each working day this run decides, in the month, whose own shift is another one that
         /// would start too soon after their last day on <paramref name="shift"/> (less than the minimum hours after a working day,
         /// less than the minimum weekly rest after rest days), while <paramref name="shift"/> is still a shift to cover. Read from
-        /// the rest days, which are all decided before any shift is.
+        /// the rest days, which are all decided before any shift is. A hold still in force at the month's end goes on into the next
+        /// month: that month's run counts the person on the shift they are held on when it places its rest days (<see cref="CarriedShift"/>).
         /// </summary>
         private List<DateOnly> HeldAfter(int e, DateOnly date, int shift)
         {
@@ -1872,7 +1957,7 @@ public static class RosterPlanner
         /// <summary>
         /// The days after the one being balanced as Cover will start them if nobody else moves: each working person on a fixed
         /// or decided shift, else - while held (<see cref="HeldAfter"/> from their last working day so far) - the shift they are
-        /// held on, else their own. <see cref="Spreads"/> tells how far apart a day's shifts would be, as projected and with one person moved.
+        /// held on, else a leader on the earlier shift they stay on (<see cref="LeaderStaysOn"/>), else their own. <see cref="Spreads"/> tells how far apart a day's shifts would be, as projected and with one person moved.
         /// </summary>
         private sealed class Ahead
         {
@@ -1884,6 +1969,7 @@ public static class RosterPlanner
             {
                 _run = run;
                 var input = run._in;
+                var leads = new Dictionary<int, int>();
                 foreach (var person in run._grid.Staff)
                 {
                     var e = person.EmployeeId;
@@ -1895,15 +1981,23 @@ public static class RosterPlanner
                         continue;
                     foreach (var d in run.HeldAfter(e, l.Date, l.Shift))
                         _shift[(e, d)] = l.Shift;
+                    if (run.LeaderStaysOn(e, date.AddDays(1)) is { } stay)
+                        leads[e] = stay;
                 }
                 for (var d = date.AddDays(1); d <= input.MonthEnd && d <= input.WindowTo; d = d.AddDays(1))
                 {
                     var count = _count[d] = new Dictionary<int, int>();
+                    var rules = input.CoverRulesFor(d);
                     foreach (var c in run._grid.CellsOn(d))
                     {
                         if (!c.InBranch || !c.CountsAsWorkForRun)
                             continue;
-                        if ((c.ShiftId ?? (_shift.TryGetValue((c.EmployeeId, d), out var held) ? held : run.StartShift(c))) is not { } s)
+                        // A fixed or decided shift; else held; else a leader's stay on an earlier shift (Cover); else their own.
+                        var projected = c.ShiftId
+                                        ?? (_shift.TryGetValue((c.EmployeeId, d), out var held) ? held
+                                            : leads.TryGetValue(c.EmployeeId, out var lead) && rules.Any(r => r.ShiftId == lead) ? lead
+                                            : run.StartShift(c));
+                        if (projected is not { } s)
                             continue;
                         _shift[(c.EmployeeId, d)] = s;
                         count[s] = count.GetValueOrDefault(s) + 1;
@@ -1993,6 +2087,29 @@ public static class RosterPlanner
                 : null;
         }
 
+        /// <summary>
+        /// R4: the shift a shift leader stays on today - the one of their last working day (the day before, or the last one before
+        /// their rest days), when that was a shift starting EARLIER than their own (moved there to keep the leaders apart, or
+        /// saved so last month) and the branch has more than one leader. Null: their own shift.
+        /// Only an earlier shift: the move onto it is the hard one to make again - right after a day on their own shift it is a
+        /// turnaround, after one rest day a short weekly rest - while the way back is always open, so a leader sent home would
+        /// soon be stuck beside the other one. A leader moved onto a LATER shift goes home when the rest rules allow
+        /// (<see cref="StayOn"/>): moving them out again later is always possible, and leaving the earlier shifts their leaders
+        /// keeps every later clash one that such a move can fix.
+        /// The saved rows carry no reason, so any such shift counts: next month the leader starts where this month left them,
+        /// and once the most frequent shift before the window (<see cref="MostFrequentShift"/>) is that one, it is their own.
+        /// </summary>
+        private int? LeaderStaysOn(int e, DateOnly date)
+        {
+            if (_in.ShiftLeads.Count < 2 || !_in.ShiftLeads.Contains(e))
+                return null;
+            var last = ShiftOn(e, date.AddDays(-1)) ?? LastShiftBeforeRest(e, date);
+            return last is { } l && HomeShift(e, l.Date) is { } home && l.Shift.ShiftId != home
+                   && _in.HoursOn(home, l.Date) is { } own && l.Shift.StartTime < own.StartTime
+                ? l.Shift.ShiftId
+                : null;
+        }
+
         /// <summary>The cheapest person (of those <paramref name="who"/> allows) to move onto <paramref name="to"/> from a shift <paramref name="canSpare"/> allows; ties turn with the day.</summary>
         private GridCell? BestMover(DateOnly date, List<GridCell> movable, int to, Func<int, bool> canSpare, bool strict, Func<GridCell, bool>? who = null)
         {
@@ -2023,7 +2140,8 @@ public static class RosterPlanner
         ///     (a day this run does not decide cannot be stayed on);
         ///   - 20 when the next day is a rest and the shift after it would start less than
         ///     RosterMinWeeklyRestHours after this one ends (an evening, one day off, then a morning), and
-        ///     20 the same way when the day before was a rest and the last shift before it ended too late;
+        ///     20 the same way when the day before was a rest and the last shift before it ended too late,
+        ///     or when the move leaves a week without a rest of that length at all (<see cref="TakesWeeklyRest"/>);
         ///   - 10 for leaving a shift nobody has to cover (a night worker covering a morning is the last resort);
         ///   - 8 for leaving the shift the generator saved there — and −8 for going back to it, so a
         ///     regenerate moves the same people as before;
@@ -2046,12 +2164,22 @@ public static class RosterPlanner
             var shortRest = false;
             var certain = false;
 
-            if (ShiftOn(e, date.AddDays(-1)) is { } before)
+            // The day before as decided. A ghost day before the month (the previous month's run decides it; nothing is saved
+            // there yet) is read as worked on the person's own shift, as ShortWeeklyRest reads a day nobody has decided: read as
+            // nothing, an evening person was moved onto the morning right after it - a turnaround if that day is worked, a
+            // 32-hour weekly rest if it is a rest. Only likely, not certain: the previous month's run may yet decide it otherwise,
+            // so it keeps the balancing from such a move but does not on its own keep two leaders together.
+            var dayBefore = date.AddDays(-1);
+            var decided = ShiftOn(e, dayBefore);
+            var known = decided
+                        ?? (dayBefore < _in.MonthStart && Unknown(e, dayBefore) && HomeShift(e, dayBefore) is { } own
+                            && _in.HoursOn(own, dayBefore) is { } ownHours ? (ownHours, dayBefore) : null);
+            if (known is { } before)
             {
                 if (shift.StartOn(date) - before.Shift.EndOn(before.Date) < minGap)
                 {
                     turnaround = true;
-                    certain = true;   // the day before is decided already
+                    certain = decided is not null;   // the day before is decided already
                     cost += 50;
                 }
             }
@@ -2087,6 +2215,14 @@ public static class RosterPlanner
             }
             else if (FirstShiftAfterRest(e, next) is { } back
                      && back.Shift.StartOn(back.Date) - shift.EndOn(date) < TimeSpan.FromHours(_in.Settings.MinWeeklyRestHours))
+            {
+                cost += 20;
+                shortRest = true;
+            }
+
+            // Long enough rests can still leave a week without one: the validator gives a rest to the week its middle falls
+            // in, so an evening before Sunday and Monday off moves a morning person's long rest into the next week.
+            if (!shortRest && !turnaround && TakesWeeklyRest(e, date, from, to))
             {
                 cost += 20;
                 shortRest = true;
@@ -2174,6 +2310,23 @@ public static class RosterPlanner
             return LongestRestInWeek(week, d => d == date ? shift
                 : worked is not null && worked.TryGetValue(d, out var id) ? _in.HoursOn(id, d)
                 : ShiftOn(e, d)?.Shift ?? (Unknown(e, d) && HomeShift(e, d) is { } own ? _in.HoursOn(own, d) : null)) < weekly;
+        }
+
+        /// <summary>
+        /// Working <paramref name="to"/> instead of <paramref name="from"/> on <paramref name="date"/> leaves a week without a rest
+        /// of the weekly minimum that it had: the rests either side of the day change length, and their middle - which decides
+        /// the week a rest belongs to, as the validator reads it - may cross Sunday night. Days are read as in
+        /// <see cref="ShortWeeklyRest"/> (a day nobody has decided: worked on the person's own shift).
+        /// </summary>
+        private bool TakesWeeklyRest(int e, DateOnly date, int from, int to)
+        {
+            var weekly = TimeSpan.FromHours(_in.Settings.MinWeeklyRestHours);
+            ShiftInfo? Read(DateOnly d) => ShiftOn(e, d)?.Shift ?? (Unknown(e, d) && HomeShift(e, d) is { } own ? _in.HoursOn(own, d) : null);
+            foreach (var week in new[] { date.AddDays(-3), date, date.AddDays(3) }.Select(RosterCalendar.WeekStart).Distinct())
+                if (LongestRestInWeek(week, d => d == date ? _in.HoursOn(from, d) : Read(d)) >= weekly
+                    && LongestRestInWeek(week, d => d == date ? _in.HoursOn(to, d) : Read(d)) < weekly)
+                    return true;
+            return false;
         }
 
         /// <summary>

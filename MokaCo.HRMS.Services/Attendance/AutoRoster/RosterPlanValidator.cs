@@ -317,6 +317,18 @@ public static class RosterPlanValidator
     private static void CheckShiftTiming(PlannerInput input, RosterGrid grid, int e, List<AutoRosterIssue> issues)
     {
         var minBetween = TimeSpan.FromHours(input.Settings.MinHoursBetweenShifts);
+
+        // The window's first day after the saved day before it. Only a month that starts on a Monday writes that day, and the
+        // previous month's run never sees it, so this is the one run that can report the turnaround.
+        var firstDay = grid[e, input.WindowFrom];
+        var dayBefore = input.WindowFrom.AddDays(-1);
+        if (firstDay.IsWritten && firstDay.CountsAsWorkForRun && ShiftOf(input, firstDay) is { } firstShift
+            && input.WorksOutsideWindow(e, dayBefore) && input.RowOf(e, dayBefore) is { ShiftId: { } beforeId }
+            && input.HoursOn(beforeId, dayBefore) is { } beforeShift
+            && firstShift.StartOn(firstDay.Date) - beforeShift.EndOn(dayBefore) is var firstGap && firstGap < minBetween)
+            issues.Add(Issue(Warning, Turnaround, e, firstDay.Date,
+                $"{Hours(firstGap)} hours between {beforeShift.Name} and {firstShift.Name}; the minimum is {input.Settings.MinHoursBetweenShifts}."));
+
         for (var d = input.WindowFrom; d < input.WindowTo; d = d.AddDays(1))
         {
             var a = grid[e, d];

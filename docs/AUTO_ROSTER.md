@@ -146,8 +146,10 @@ rested. `owed(e,x) = earned − rested`. Rest rows on leave days are ignored.
 ### 2.6 Shifts for working days, and the shifts to cover (D16)
 
 **Start shift** of a working day: pattern shift for that weekday (active) → else the employee's most
-frequent shift in the 4 weeks before the window → else the drawer's default shift → else the first
-active shift. Overnight shifts belong to their start day. Inactive shifts are never written.
+frequent shift in the 8 weeks before the window, the last 4 counting double → else the drawer's default
+shift → else a shift the branch covers: the one covered on the most days of the window, the same every day
+(on a day it is not covered, the shift covered that day, unless that makes a turnaround with the days around
+it). Overnight shifts belong to their start day. Inactive shifts are never written.
 
 **Shifts to cover** (`PlannerInput.ShiftCover`): the branch's stored per-shift staffing rows when it has
 any; otherwise found by `ShiftCoverDetector` — an active shift worked in the branch on at least a quarter
@@ -483,5 +485,7 @@ from the request, so the commit checks by the same list the preview planned with
 leaders (`PlannerInput.ShiftLeads`, read from the stored list whichever method plans). Two leaders are never
 planned onto the same shift: under the rotation, when one lead's day was decided by somebody else, the other takes
 the other shift whatever the week says; under Fair, after the cover, a leader on a shift that holds two changes
-places with somebody on the shift that holds none (`WORK_LEAD_APART`), so both shifts keep their numbers. A day
-where both leaders were placed by hand is left alone and reported (`LEADS_SAME_SHIFT`, a warning).
+places with somebody on the shift that holds none (`WORK_LEAD_APART`), so both shifts keep their numbers. A leader
+moved onto an earlier shift stays on it on their next working days while it is a shift to cover and holds no other
+leader: sent home, they would need moving again, often right after one day off, when the move would break the weekly
+rest. A day where both leaders were placed by hand is left alone and reported (`LEADS_SAME_SHIFT`, a warning).

@@ -337,6 +337,117 @@ public class RosterPlannerBalanceTests
     }
 
     [Fact]
+    public void A_new_hire_with_nothing_to_go_by_keeps_one_shift_when_the_cover_changes_with_the_weekday()
+    {
+        // The evening is covered every day, the morning only Monday to Friday. Two new hires with no rows, no weekly pattern
+        // and no default shift start on the shift covered on the most days - the evening - every day: a start shift that
+        // followed each day's cover would put them on the evening on Sunday and the morning on Monday, 8 hours apart.
+        var world = new RosterWorld { Today = new DateOnly(2026, 11, 25) };
+        for (var id = 1; id <= 8; id++)
+        {
+            world.Add(id);
+            History(world, id, id % 2 == 1 ? RosterWorld.Morning : RosterWorld.Evening, Dec);
+        }
+        world.Add(9, hire: new DateOnly(2026, 11, 30));
+        world.Add(10, hire: new DateOnly(2026, 11, 30));
+        world.Min(1, shiftId: RosterWorld.Evening);
+        for (var weekday = 1; weekday <= 5; weekday++)
+            world.Min(1, dayOfWeek: weekday, shiftId: RosterWorld.Morning);
+
+        var p = world.Plan(Dec).Preview;
+
+        Assert.DoesNotContain(p.Issues, i => i.Code == "TURNAROUND" && i.EmployeeId is 9 or 10);
+        var worked = p.Cells.Where(c => c.EmployeeId is 9 or 10 && c.WorkDate.Month == 12 && c.State == "work").ToList();
+        Assert.NotEmpty(worked);
+        Assert.All(worked, c => Assert.True(c.ShiftId is RosterWorld.Morning or RosterWorld.Evening, $"{c.WorkDate}: shift {c.ShiftId}"));
+    }
+
+    [Theory]
+    [InlineData(RosterWorld.Day, true)]        // 09:00-17:00 at the weekend: no turnaround either side, so they take it
+    [InlineData(RosterWorld.Evening, false)]   // 15:00-23:00 on Sunday, then Monday's 07:00: they keep the morning
+    public void On_days_the_guessed_shift_is_not_covered_a_new_hire_takes_the_shift_covered_only_without_a_turnaround(int weekendShift, bool takesIt)
+    {
+        // The morning is covered Monday to Friday, another shift only at the weekend (two people work it already). A new hire
+        // with nothing to go by starts on the morning (covered on the most days); at the weekend on the shift covered then,
+        // unless Sunday's shift would end too close to Monday's morning: then on the morning, unless the weekend's minimum
+        // needs them there.
+        var world = new RosterWorld { Today = new DateOnly(2026, 11, 25) };
+        for (var id = 1; id <= 6; id++)
+        {
+            world.Add(id);
+            History(world, id, id <= 4 ? RosterWorld.Morning : weekendShift, Dec);
+        }
+        world.Add(9, hire: new DateOnly(2026, 11, 30));
+        for (var weekday = 1; weekday <= 5; weekday++)
+            world.Min(1, dayOfWeek: weekday, shiftId: RosterWorld.Morning);
+        world.Min(1, dayOfWeek: 6, shiftId: weekendShift);
+        world.Min(1, dayOfWeek: 7, shiftId: weekendShift);
+
+        var p = world.Plan(Dec).Preview;
+
+        Assert.DoesNotContain(p.Issues, i => i.Code == "TURNAROUND" && i.EmployeeId == 9);
+        var days = p.Cells.Where(c => c.EmployeeId == 9 && c.WorkDate.Month == 12 && c.State == "work").ToList();
+        var weekend = days.Where(c => c.WorkDate.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday).ToList();
+        Assert.NotEmpty(weekend);
+        Assert.All(days.Except(weekend), c => Assert.Equal(RosterWorld.Morning, c.ShiftId));
+        if (takesIt)
+        {
+            Assert.All(weekend, c => Assert.Equal(weekendShift, c.ShiftId));
+        }
+        else
+        {
+            Assert.Contains(weekend, c => c.ShiftId == RosterWorld.Morning);
+            Assert.All(weekend.Where(c => c.ShiftId != RosterWorld.Morning), c => Assert.Equal(RosterPlanner.ReasonShiftCover, c.ReasonCode));
+        }
+    }
+
+    [Fact]
+    public void Somebody_held_on_the_evening_by_last_months_last_day_is_counted_there_when_the_rest_days_are_placed()
+    {
+        // Five people (1, 3 and 5 on the morning, 2 and 4 on the evening), a minimum of one on each - a small branch.
+        // Employees 1 and 3 covered the evening on the last three days of January (saved). On Monday 1 February the morning
+        // would be too soon after Sunday's evening, so whoever of them works that day stays on the evening. The rest days are
+        // placed before any shift is chosen: counted on their own shift, they could leave the morning with nobody but them,
+        // and the shift cover would have to send one back - an 8-hour turnaround across the month's end.
+        var feb = new DateOnly(2027, 2, 1);
+        var world = new RosterWorld { Today = new DateOnly(2027, 1, 25) };
+        var (from, _) = RosterCalendar.Window(feb);
+        for (var id = 1; id <= 5; id++)
+        {
+            world.Add(id);
+            var rng = new Random(id * 7919 + 6 * 104729);
+            for (var k = 0; k < 8; k++)
+            {
+                var ws = from.AddDays(-56 + 7 * k);
+                var first = rng.Next(7);
+                var fiveDays = (k + id + 6) % 2 == 1;
+                for (var i = 0; i < 7; i++)
+                {
+                    if (i == first || (fiveDays && i == (first + 1) % 7))
+                        world.Rest(id, ws.AddDays(i));
+                    else
+                        world.Work(id, ws.AddDays(i), id % 2 == 1 ? RosterWorld.Morning : RosterWorld.Evening);
+                }
+            }
+        }
+        foreach (var id in new[] { 1, 3 })
+            foreach (var d in new[] { new DateOnly(2027, 1, 29), new DateOnly(2027, 1, 30), new DateOnly(2027, 1, 31) })
+                world.Work(id, d, RosterWorld.Evening);
+        world.Min(1, shiftId: RosterWorld.Morning);
+        world.Min(1, shiftId: RosterWorld.Evening);
+
+        var p = world.Plan(feb).Preview;
+
+        foreach (var id in new[] { 1, 3 })
+        {
+            var monday = p.Cell(id, feb);
+            Assert.True(monday.State != "work" || monday.ShiftId == RosterWorld.Evening, $"employee {id}: {monday.State} {monday.ShiftId}");
+        }
+        Assert.DoesNotContain(p.Issues, i => i.Code == "TURNAROUND" && i.Date == feb);
+        Assert.DoesNotContain(p.Issues, i => i.Code == "SHIFT_UNCOVERED" && i.Date == feb);
+    }
+
+    [Fact]
     public void A_rest_on_the_first_day_of_the_month_reads_the_shift_saved_the_day_before()
     {
         // Employee 1, a morning person, covered the evening on the last three days of January (saved rows) and rests on
