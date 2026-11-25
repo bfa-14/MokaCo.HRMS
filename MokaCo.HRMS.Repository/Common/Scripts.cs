@@ -95,7 +95,8 @@ public static class Scripts
         new(DepositBeforeConfirm120, "booking.fn_NewBookingStatus"),
         // As for 120: the function is the only object it adds; check-scripts.sql reads the procedure's own text.
         new(UnpaidNeverStays121, "booking.fn_DepositHoldUntil"),
-        // The last object the script creates; the change log's triggers come before it.
+        // The last object the script creates; the change log's triggers come before it. As for 120: check-scripts.sql
+        // also reads the three procedures it redefines, so re-running script 100, 110 or 117 shows 122 as missing again.
         new(ShiftChangeLog122, "attendance.usp_Shift_GetChanges"),
     ];
 }
