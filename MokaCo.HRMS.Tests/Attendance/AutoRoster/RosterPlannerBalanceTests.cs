@@ -245,4 +245,123 @@ public class RosterPlannerBalanceTests
         Assert.DoesNotContain(early.Issues, i => i.Code == "TURNAROUND");
         Assert.DoesNotContain(late.Issues, i => i.Code == "TURNAROUND");
     }
+
+    /* ---- R5 over several months: a move holds the person, and the home shift does not drift ---- */
+
+    /// <summary>Eight weeks before the window of <paramref name="month"/> on one shift, 6- and 5-day weeks taking turns, the rest days moving through the week.</summary>
+    private static void History(RosterWorld world, int id, int shift, DateOnly month)
+    {
+        var (from, _) = RosterCalendar.Window(month);
+        var start = from.AddDays(-56);
+        for (var k = 0; k < 8; k++)
+        {
+            var ws = start.AddDays(7 * k);
+            var first = (id * 3 + k * 2) % 7;
+            var fiveDays = (k + id) % 2 == 1;
+            for (var i = 0; i < 7; i++)
+            {
+                if (i == first || (fiveDays && i == (first + 1) % 7))
+                    world.Rest(id, ws.AddDays(i));
+                else
+                    world.Work(id, ws.AddDays(i), shift);
+            }
+        }
+    }
+
+    [Fact]
+    public void An_evenly_split_branch_stays_even_over_three_months()
+    {
+        // Four people on the morning, four on the evening, a minimum of one on each, no leaders; December, January and
+        // February planned and saved one after the other. A balancing move holds the person on the evening (going back the
+        // next morning, or after one day off, is too short a rest): the planner counts that hold, so the evening does not
+        // fill up with people nobody may move back, and the home shifts are the same in February as in December.
+        var world = new RosterWorld { Today = new DateOnly(2026, 11, 25) };
+        for (var id = 1; id <= 8; id++)
+        {
+            world.Add(id);
+            History(world, id, id % 2 == 1 ? RosterWorld.Morning : RosterWorld.Evening, Dec);
+        }
+        world.Min(1, shiftId: RosterWorld.Morning);
+        world.Min(1, shiftId: RosterWorld.Evening);
+
+        var months = new[] { Dec, new DateOnly(2027, 1, 1), new DateOnly(2027, 2, 1) };
+        foreach (var month in months)
+        {
+            var (run, issues) = world.PlanAndCommit(month);
+            Assert.False(RosterPlanValidator.HasErrors(issues));
+            Assert.DoesNotContain(run.Preview.Issues, i => i.Code is "TURNAROUND" or "WEEKLY_REST_HOURS" or "SHIFT_UNCOVERED");
+        }
+
+        var days = RosterCalendar.Days(Dec, new DateOnly(2027, 2, 28)).ToList();
+        int On(DateOnly d, int shift) => Enumerable.Range(1, 8).Count(e => world.RowAt(e, d) is { IsWork: true } r && r.ShiftId == shift);
+        var apart = days.Select(d => Math.Abs(On(d, RosterWorld.Morning) - On(d, RosterWorld.Evening))).ToList();
+        Assert.True(apart.Max() <= 2, $"a day {apart.Max()} apart");
+        Assert.True(apart.Count(a => a <= 1) >= 85, $"within one on {apart.Count(a => a <= 1)} of {days.Count} days");
+
+        // Each person still works their own shift on most of their days in February.
+        var february = RosterCalendar.Days(months[2], new DateOnly(2027, 2, 28)).ToList();
+        Assert.All(Enumerable.Range(1, 8), e =>
+        {
+            var own = e % 2 == 1 ? RosterWorld.Morning : RosterWorld.Evening;
+            var worked = february.Where(d => world.IsWork(e, d)).ToList();
+            Assert.True(worked.Count(d => world.RowAt(e, d)!.Value.ShiftId == own) * 2 > worked.Count, $"employee {e}");
+        });
+    }
+
+    [Fact]
+    public void A_new_hire_with_nothing_to_go_by_starts_on_a_shift_the_branch_covers()
+    {
+        // Seven people on the morning and the evening; two new hires with no rows and no weekly pattern, and no default shift
+        // in the drawer. The lowest-numbered active shift (Day) is one the branch never runs: they start on a shift it covers,
+        // so the balancing spreads them, and January learns a real shift for them.
+        var world = new RosterWorld { Today = new DateOnly(2026, 11, 25) };
+        for (var id = 1; id <= 7; id++)
+        {
+            world.Add(id);
+            History(world, id, id % 2 == 1 ? RosterWorld.Morning : RosterWorld.Evening, Dec);
+        }
+        world.Add(8, hire: new DateOnly(2026, 12, 9));
+        world.Add(9, hire: new DateOnly(2026, 12, 14));
+        world.Min(1, shiftId: RosterWorld.Morning);
+        world.Min(1, shiftId: RosterWorld.Evening);
+
+        world.PlanAndCommit(Dec);
+        world.PlanAndCommit(new DateOnly(2027, 1, 1));
+
+        var days = RosterCalendar.Days(Dec, new DateOnly(2027, 1, 31)).ToList();
+        var shifts = new[] { 8, 9 }.SelectMany(e => days.Where(d => world.IsWork(e, d)).Select(d => world.RowAt(e, d)!.Value.ShiftId)).ToList();
+        Assert.NotEmpty(shifts);
+        Assert.All(shifts, s => Assert.True(s is RosterWorld.Morning or RosterWorld.Evening, $"shift {s}"));
+        Assert.Contains(RosterWorld.Morning, shifts);
+        Assert.Contains(RosterWorld.Evening, shifts);
+    }
+
+    [Fact]
+    public void A_rest_on_the_first_day_of_the_month_reads_the_shift_saved_the_day_before()
+    {
+        // Employee 1, a morning person, covered the evening on the last three days of January (saved rows) and rests on
+        // Monday 1 February, the only rest of a 6-day week. Back on the morning on Tuesday would be 32 hours after the Sunday
+        // evening - the week's longest rest, under the minimum of 36: the planner keeps him on the evening, as it would in
+        // the middle of the month.
+        var feb = new DateOnly(2027, 2, 1);
+        var world = new RosterWorld { Today = new DateOnly(2027, 1, 25) };
+        for (var id = 1; id <= 8; id++)
+        {
+            world.Add(id);
+            History(world, id, id % 2 == 1 ? RosterWorld.Morning : RosterWorld.Evening, feb);
+        }
+        world.Min(1, shiftId: RosterWorld.Morning);
+        world.Min(1, shiftId: RosterWorld.Evening);
+        foreach (var d in new[] { new DateOnly(2027, 1, 29), new DateOnly(2027, 1, 30), new DateOnly(2027, 1, 31) })
+            world.Work(1, d, RosterWorld.Evening);
+        world.Rest(1, feb);
+        world.Anchor(1, feb, 6);
+
+        var p = world.Plan(feb).Preview;
+
+        var tuesday = p.Cell(1, feb.AddDays(1));
+        Assert.Equal(("work", RosterWorld.Evening), (tuesday.State, tuesday.ShiftId));
+        Assert.Equal(RosterPlanner.ReasonShiftCover, tuesday.ReasonCode);
+        Assert.DoesNotContain(p.Issues, i => i.Code == "WEEKLY_REST_HOURS" && i.EmployeeId == 1);
+    }
 }

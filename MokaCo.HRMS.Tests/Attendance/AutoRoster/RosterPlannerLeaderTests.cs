@@ -304,6 +304,41 @@ public class RosterPlannerLeaderTests
     }
 
     [Fact]
+    public void A_leader_is_never_moved_into_a_week_without_its_weekly_rest()
+    {
+        // Both leaders' own shift is the evening. On Saturday 12 December both work it: Lead 1 worked the evening on Thursday
+        // and rests on Friday, the only rest of his 6-day week; Lead 2 worked the evening on Friday. Moving Lead 1 to the
+        // morning would leave him 32 hours of rest that week (the minimum is 36); moving Lead 2 would be an 8-hour
+        // turnaround. Both rests are decided already, so nothing later could mend them: the leaders stay together, reported.
+        var saturday = new DateOnly(2026, 12, 12);
+        var week = new DateOnly(2026, 12, 7);
+        var world = new RosterWorld { Today = new DateOnly(2026, 11, 1) }.WithStaff(8);
+        for (var e = 1; e <= 8; e++)
+            History(world, e, e is 1 or 2 || e % 2 == 0 ? RosterWorld.Evening : RosterWorld.Morning);
+        world.Min(1, shiftId: RosterWorld.Morning);
+        world.Min(1, shiftId: RosterWorld.Evening);
+        world.ShiftLeaders.AddRange([1, 2]);
+        for (var i = 0; i < 7; i++)
+        {
+            var d = week.AddDays(i);
+            if (d == saturday)
+                continue;   // the planner's: a working day, the week's rest being saved
+            if (d.DayOfWeek == DayOfWeek.Friday) world.Rest(1, d); else world.Work(1, d, RosterWorld.Evening);
+            if (d.DayOfWeek == DayOfWeek.Sunday) world.Rest(2, d); else world.Work(2, d, RosterWorld.Evening);
+        }
+        world.Anchor(1, week, 6);
+        world.Anchor(2, week, 6);
+
+        var p = world.Plan(Dec).Preview;
+
+        Assert.Equal(RosterWorld.Evening, ShiftOf(p, 1, saturday));
+        Assert.Equal(RosterWorld.Evening, ShiftOf(p, 2, saturday));
+        var issue = Assert.Single(p.Issues, i => i.Date == saturday && i.Code == RosterPlanValidator.LeadsSameShift);
+        Assert.Equal(RosterWorld.Evening, issue.ShiftId);
+        Assert.DoesNotContain(p.Issues, i => i.Code is RosterPlanValidator.WeeklyRestHours or RosterPlanValidator.Turnaround && i.EmployeeId is 1 or 2);
+    }
+
+    [Fact]
     public void With_one_shift_to_cover_two_leaders_are_still_kept_apart_over_the_shifts_the_day_uses()
     {
         // Only the evening is stored as a shift to cover; the mornings are worked anyway. Both leaders' own shift is the morning.
