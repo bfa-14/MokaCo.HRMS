@@ -34,6 +34,15 @@ public interface IAutoRosterService
 
     /// <summary>Saves the branch's fixed rotation: start date (a Monday), the morning and evening shift, the list.</summary>
     Task SaveRotationAsync(RosterRotationDto rotation, int? callerUserId);
+
+    /// <summary>
+    /// The branch's shift leaders (script 123): its own list, and everybody who counts as a leader - that list and
+    /// the rotation list's Lead 1 / Lead 2 - with their names. A 503 with a sentence while the script is not applied.
+    /// </summary>
+    Task<RosterLeadersDto> GetLeadersAsync(int branchId, int? callerUserId);
+
+    /// <summary>Replaces the branch's own list of shift leaders (the rotation's leads are not touched).</summary>
+    Task SaveLeadersAsync(RosterLeadersDto leaders, int? callerUserId);
 }
 
 /// <summary>

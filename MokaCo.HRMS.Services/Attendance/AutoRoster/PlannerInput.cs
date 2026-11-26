@@ -48,6 +48,12 @@ public sealed record PlannerSettings
     public int MinHoursBetweenShifts { get; init; } = 11;
     public int MinWeeklyRestHours { get; init; } = 36;
 
+    /// <summary>
+    /// RosterNewHireSixDayMonths: during this many months from the hire date an employee works a 6-day week EVERY week;
+    /// the 6/5 alternation starts at the first week after (<see cref="PlannerInput.AlternateFrom"/>).
+    /// </summary>
+    public int NewHireSixDayMonths { get; init; } = 3;
+
     public static PlannerSettings Default { get; } = new();
 }
 
@@ -94,6 +100,13 @@ public sealed record ShiftInfo(
     public DateTime EndOn(DateOnly day)
         => day.ToDateTime(TimeOnly.MinValue) + EndTime + (CrossesMidnight || EndTime <= StartTime ? TimeSpan.FromDays(1) : TimeSpan.Zero);
 }
+
+/// <summary>
+/// One dated version of a shift's hours (attendance.SHIFT_HOURS, script 117): in force from <paramref name="EffectiveFrom"/>
+/// until the day before the shift's next version. <paramref name="Hours"/> carries the shift's name and active flag as
+/// they are today, with the times of this version.
+/// </summary>
+public sealed record ShiftVersion(DateOnly EffectiveFrom, ShiftInfo Hours);
 
 public sealed record PatternDay(int EmployeeId, int DayOfWeek, int? ShiftId, bool IsRestDay);
 
@@ -151,9 +164,10 @@ public sealed class PlannerInput
     public IReadOnlyList<int> RotationMissing { get; init; } = [];
 
     /// <summary>
-    /// The branch's SHIFT LEADERS: the people its rotation list names Lead 1 and Lead 2 (script 116), whichever method
-    /// plans. Two leaders are never planned onto the same shift on a day - each shift keeps one - and a day somebody
-    /// else decided that puts them together is reported (LEADS_SAME_SHIFT).
+    /// The branch's SHIFT LEADERS, whichever method plans: the people its rotation list names Lead 1 and Lead 2 (script
+    /// 116) and the branch's stored leaders (script 123), any number. The working leaders of a day are placed first, one
+    /// per shift; two share a shift only when more of them work than the day has shifts. A day somebody else decided
+    /// that puts two together is reported (LEADS_SAME_SHIFT).
     /// </summary>
     public IReadOnlySet<int> ShiftLeads { get; init; } = FrozenSet<int>.Empty;
 
@@ -185,7 +199,16 @@ public sealed class PlannerInput
     /// <summary>Leave (Approved, Pending, OnHold), one entry per day up to <see cref="HorizonTo"/>. A full day beats a half day.</summary>
     public IReadOnlyDictionary<EmpDay, LeaveKind> LeaveDays { get; init; } = FrozenDictionary<EmpDay, LeaveKind>.Empty;
 
+    /// <summary>The shifts as they are TODAY (attendance.SHIFT): names, active flags, and the hours when no dated version is known.</summary>
     public IReadOnlyDictionary<int, ShiftInfo> Shifts { get; init; } = FrozenDictionary<int, ShiftInfo>.Empty;
+
+    /// <summary>
+    /// R1 for rosters: every dated version of each shift in force at some point of the window, oldest first (script 117,
+    /// read through usp_AutoRoster_GetShiftHours). The turnaround and weekly-rest maths measure a date with the hours in
+    /// force ON that date (<see cref="HoursOn"/>). Empty (the script is missing): today's hours for every date.
+    /// </summary>
+    public IReadOnlyDictionary<int, IReadOnlyList<ShiftVersion>> ShiftHours { get; init; }
+        = FrozenDictionary<int, IReadOnlyList<ShiftVersion>>.Empty;
 
     /// <summary>Weekly pattern by (EmployeeId, ISO weekday).</summary>
     public IReadOnlyDictionary<(int EmployeeId, int DayOfWeek), PatternDay> Patterns { get; init; }
@@ -199,8 +222,9 @@ public sealed class PlannerInput
     /// D16 — THE SHIFTS EVERY DAY MUST COVER, as the planner and the validator read them: the branch's
     /// stored per-shift staffing rows when it has any (a row with minimum 0 is the manager's "this shift
     /// need not be covered"), otherwise the shifts the branch actually runs (<see cref="ShiftCoverDetector"/>),
-    /// each with a minimum of one. So a branch that works mornings and evenings has both covered every
-    /// day without anyone setting it up; the drawer shows what was found and the manager can change it.
+    /// each with a minimum of one - and when nothing is found, every active shift. So a branch that works
+    /// mornings and evenings has both covered every day without anyone setting it up; the drawer shows what
+    /// was found and the manager can change it.
     /// </summary>
     public IReadOnlyList<StaffingRule> ShiftCover => _shiftCover ??= Rotation is { } rotation
         // The fixed rotation runs two shifts and no other: those are the ones a day must have somebody on. What the
@@ -257,6 +281,51 @@ public sealed class PlannerInput
         => BranchOfDay.TryGetValue(new EmpDay(employeeId, date), out var branch) && branch == BranchId;
 
     public bool IsActiveShift(int? shiftId) => shiftId is { } id && Shifts.TryGetValue(id, out var s) && s.IsActive;
+
+    /// <summary>
+    /// The shift as it was ON <paramref name="date"/>: the latest dated version on or before it (the earliest one known
+    /// for an earlier date), else today's hours. Null for a shift that does not exist.
+    /// </summary>
+    public ShiftInfo? HoursOn(int shiftId, DateOnly date)
+    {
+        if (!Shifts.TryGetValue(shiftId, out var today))
+            return null;
+        if (!ShiftHours.TryGetValue(shiftId, out var versions) || versions.Count == 0)
+            return today;
+
+        var found = versions[0];
+        foreach (var v in versions)
+        {
+            if (v.EffectiveFrom > date)
+                break;
+            found = v;
+        }
+        return found.Hours;
+    }
+
+    /// <summary>
+    /// R6, THE NEW-HIRE RULE: W0, the first Monday on or after HireDate + <see cref="PlannerSettings.NewHireSixDayMonths"/>
+    /// months. Every Monday-Sunday week that starts before it is a 6-day week whatever any anchor says; from W0 the
+    /// person alternates 6, 5, 6, 5 (W0 itself a 6-day week unless a stored anchor or the drawer says otherwise there).
+    /// Null when the hire date is unknown: no new-hire period, the alternation alone.
+    /// </summary>
+    public DateOnly? AlternateFrom(int employeeId)
+    {
+        _alternateFrom ??= Staff
+            .GroupBy(s => s.EmployeeId)
+            .ToDictionary(g => g.Key, g => g.First().HireDate is { } hire
+                ? (DateOnly?)FirstMondayOnOrAfter(hire.AddMonths(Math.Max(1, Settings.NewHireSixDayMonths)))
+                : null);
+        return _alternateFrom.TryGetValue(employeeId, out var w0) ? w0 : null;
+    }
+
+    private Dictionary<int, DateOnly?>? _alternateFrom;
+
+    private static DateOnly FirstMondayOnOrAfter(DateOnly date)
+    {
+        var monday = RosterCalendar.WeekStart(date);
+        return monday < date ? monday.AddDays(7) : monday;
+    }
 
     public PatternDay? PatternOn(int employeeId, DateOnly date)
         => Patterns.TryGetValue((employeeId, RosterCalendar.IsoDayOfWeek(date)), out var p) ? p : null;

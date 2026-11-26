@@ -130,6 +130,24 @@ public class AutoRosterServiceTests
     /* ---- commit ---- */
 
     [Fact]
+    public async Task An_anchor_sent_for_a_week_of_the_new_hire_period_is_saved_as_W0_as_a_6_day_week()
+    {
+        // Employee 9 was hired on 9 September 2026: W0 is 14 December. An old draft sends the first week, 30 November, as a
+        // 5-day week. Saved as sent, next month's run would start W0 on that week's parity (a 5-day week); the commit saves W0
+        // as a 6-day week instead - what the preview resolves.
+        var h = With(3, w => w.Add(9, hire: new DateOnly(2026, 9, 9)));
+        var (_, preview, commit) = await h.PreviewAsync();
+        Assert.Equal((new DateOnly(2026, 12, 14), 6), preview.Rhythm.Where(r => r.EmployeeId == 9).Select(r => (r.AnchorWeekStart, r.AnchorWorkDays)).Single());
+        commit.Rhythm.RemoveAll(r => r.EmployeeId == 9);
+        commit.Rhythm.Add(new AutoRosterCommitRhythm { EmployeeId = 9, AnchorWeekStart = new DateOnly(2026, 11, 30), AnchorWorkDays = 5 });
+
+        await h.Service.CommitAsync(commit, Caller);
+
+        var saved = Assert.IsType<Saved>(h.LastSave).Rhythm.Single(r => r.EmployeeId == 9);
+        Assert.Equal((new DateOnly(2026, 12, 14), 6, true), (saved.AnchorWeekStart, saved.AnchorWorkDays, saved.OnRotation));
+    }
+
+    [Fact]
     public async Task The_unedited_preview_is_saved_with_its_cells_rhythm_mode_and_parameters()
     {
         var h = With(4);

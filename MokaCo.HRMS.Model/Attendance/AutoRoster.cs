@@ -392,6 +392,9 @@ public class AutoRosterSettings
     public string RosterPatternRestDays { get; set; } = "Preference";
     public int RosterMinHoursBetweenShifts { get; set; } = 11;
     public int RosterMinWeeklyRestHours { get; set; } = 36;
+
+    /// <summary>The new-hire rule (script 123): this many months of 6-day weeks from the hire date, then 6 and 5 in turn.</summary>
+    public int RosterNewHireSixDayMonths { get; set; } = 3;
 }
 
 /// <summary>A row of the drawer's staff list.</summary>
@@ -409,6 +412,26 @@ public class AutoRosterSetupStaff
 
     /// <summary>6 or 5: the type of the month's first week as the planner would use it now (stored, or the default rule).</summary>
     public int FirstWeekWorkDays { get; set; }
+
+    /// <summary>
+    /// The new-hire rule (R6): the Monday from which this person alternates 6 and 5. Every week before it is a 6-day
+    /// week. Set only while that Monday is after the month's first week (the person still has 6-day weeks to go); null
+    /// otherwise, or when the hire date is unknown.
+    /// </summary>
+    public DateOnly? SixDayWeeksUntil { get; set; }
+
+    /// <summary>
+    /// Each Monday-Sunday week of the month (the window's weeks) and its type as the planner decides it now: 6 or 5.
+    /// The roster grid judges a SAVED month by these (no preview to ask), so a new hire's 6-day weeks in a row are right.
+    /// </summary>
+    public List<AutoRosterSetupWeek> Weeks { get; set; } = new();
+}
+
+/// <summary>One week of a person's rhythm: its Monday and its type.</summary>
+public class AutoRosterSetupWeek
+{
+    public DateOnly WeekStart { get; set; }
+    public int WorkDays { get; set; }
 }
 
 public class AutoRosterSetupHoliday
@@ -513,6 +536,30 @@ public class AutoRosterContext
 
     /// <summary>0 or 1 row.</summary>
     public List<AutoRosterLastRunRow> LastRun { get; set; } = new();
+
+    /* ---- read by separate procedures (script 123), not by usp_AutoRoster_GetContext. Empty when the script is
+            not applied: the planner then works as before (leaders from the rotation list only, today's shift hours). */
+
+    /// <summary>The branch's shift leaders (attendance.usp_AutoRoster_GetLeaders): never two on the same shift on a day.</summary>
+    public List<int> ShiftLeaders { get; set; } = new();
+
+    /// <summary>
+    /// Every dated version of every shift that is in force at some point of the planning window
+    /// (attendance.usp_AutoRoster_GetShiftHours, from attendance.SHIFT_HOURS, script 117): the planner measures a
+    /// date with the hours in force ON that date, not today's.
+    /// </summary>
+    public List<AutoRosterShiftHoursRow> ShiftHours { get; set; } = new();
+}
+
+/// <summary>One dated version of a shift: in force from EffectiveFrom until the day before the shift's next version.</summary>
+public class AutoRosterShiftHoursRow
+{
+    public int ShiftId { get; set; }
+    public DateTime EffectiveFrom { get; set; }
+    public TimeSpan StartTime { get; set; }
+    public TimeSpan EndTime { get; set; }
+    public bool CrossesMidnight { get; set; }
+    public int BreakMinutes { get; set; }
 }
 
 /// <summary>Result set 1. Today is the Beirut date, read by the database so the planner never looks at a clock.</summary>

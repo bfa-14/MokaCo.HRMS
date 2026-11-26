@@ -71,6 +71,10 @@ A fact is never changed. Plannable days become **rest** or **work**.
     given 6/5 so that, together with the stored rhythms of the branch, the count of 6-day and 5-day
     first weeks differs by at most 1; ties start on 6.
 - `rhythmOverrides` from the drawer set (anchor week, work days) for an employee; they are saved on commit.
+  An override for a week before the person's W0 (the new-hire period, every week a 6-day week) is ignored:
+  the drawer no longer offers one there, and from an old draft or another caller it would only decide W0's
+  parity. W0 then starts the alternation with a 6-day week (or a stored anchor decides). The commit does the
+  same with a rhythm row anchored before W0: it saves the anchor the planner resolves (`RosterPlanValidator.RhythmToSave`).
 - Each new or overridden rhythm is returned in the preview and saved by the commit (`ROSTER_RHYTHM`).
 
 ### 2.3 Rest quota per week
@@ -135,6 +139,16 @@ for each week w in window:
      their options that stays ≥ min; else warning SHORT_STAFFED (rest days are kept). Days of the
      target month only: a ghost day is never saved, so a repair that read it would move a saved rest
      at every regenerate.
+  6b carried holds (R3): somebody whose last shift before the week's open days was not their own (last
+     month's saved evening for a morning person, a locked day, or such a hold that lasted through the
+     weeks already planned) is held on it day by day while their own would come too soon (< min hours
+     after a working day, < min weekly rest after rest days), as inside the month; how long follows from
+     the rest days just chosen. A weekday whose shift is below its minimum WITHOUT the people held
+     elsewhere takes back a rest of somebody who starts on it (not a leader, not one of the held), moved
+     to another weekday that keeps its own minimums, within the person's options (and in ReplanAuto the
+     saved rests: a regenerate moves nothing). Weekend days are left to step 4. In step 5, an option of
+     a held person that ends the hold on a day nothing can keep them on the shift (not covered that day)
+     costs 50 (turnaround) or 20 (short weekly rest).
   7 ledger: add the week's Saturday/Sunday results (facts and plan) to the owed balances.
 ```
 
@@ -146,8 +160,10 @@ rested. `owed(e,x) = earned − rested`. Rest rows on leave days are ignored.
 ### 2.6 Shifts for working days, and the shifts to cover (D16)
 
 **Start shift** of a working day: pattern shift for that weekday (active) → else the employee's most
-frequent shift in the 4 weeks before the window → else the drawer's default shift → else the first
-active shift. Overnight shifts belong to their start day. Inactive shifts are never written.
+frequent shift in the 8 weeks before the window, the last 4 counting double → else the drawer's default
+shift → else a shift the branch covers: the one covered on the most days of the window, the same every day
+(on a day it is not covered, the shift covered that day, unless that makes a turnaround with the days around
+it). Overnight shifts belong to their start day. Inactive shifts are never written.
 
 **Shifts to cover** (`PlannerInput.ShiftCover`): the branch's stored per-shift staffing rows when it has
 any; otherwise found by `ShiftCoverDetector` — an active shift worked in the branch on at least a quarter
@@ -159,18 +175,35 @@ holiday needs none; an open one (cover > 0) needs every shift its cover allows.
 draft edit or a leave day's row):
 1. someone who worked a shift to cover yesterday that was not their own (moved, or set by hand) stays on
    it when going back would be a turnaround under `RosterMinHoursBetweenShifts`, if their shift can spare
-   them (the evening's cover does not start at seven the next morning);
-2. the shift furthest below its minimum takes the cheapest person from a shift above its own minimum or a
-   shift nobody has to cover;
-3. then a shift below its target, from a shift above its own target (or minimum), never into a turnaround.
+   them (the evening's cover does not start at seven the next morning). After rest days (going back would
+   be a short weekly rest) they stay only when tomorrow, as projected, could keep them held too: otherwise
+   they would be sent back right after a held day, a turnaround, and the short weekly rest is the lesser breach;
+2. the shift furthest below its minimum takes a person from a shift above its own minimum or a shift nobody
+   has to cover: one whose move breaks no rest rule whenever there is one, then one whose breach is only
+   likely, a certain breach last; the cheapest of those;
+3. then a shift below its target, from a shift above its own target (or minimum), never into a turnaround;
+4. then the people left are spread evenly over the shifts (R5, `WORK_SHIFT_BALANCE`), never by a move that
+   breaks a rest rule - including on the day the hold the move starts ends: a night covered only at the
+   weekend holds whoever works Saturday's night on Sunday's, and on Monday nothing keeps them there (back
+   on their own shift 8-9 hours after the night, or after one day off a weekly rest of 24-33 hours).
 
 Move cost, largest first: 50 turnaround (the day before, or the day after when the person could not stay
 on the shift then); 20 an evening, one day off, then a morning under `RosterMinWeeklyRestHours`; 10 leaving
 a shift nobody has to cover; 8 leaving the shift the generator saved there (−8 going back to it: a
 regenerate moves the same people); 4 leaving the weekly pattern's shift, and 4 staying on the shift the
 next day too; 3 per day already worked off one's own shift this month (moves are shared); 2 a shift not
-worked in the last 8 weeks. Ties turn with the day. A ghost day is the next month's: it never decides who
-covers, and on the first one after the month a cover from the last day carries on.
+worked in the last 8 weeks. The day a move's hold ends counts too (`HoldAfter`): when nothing can keep the
+person on the shift that day and going back breaks a rest rule, 50 or 20 - a breach for CERTAIN in the month
+(the rest days are decided), likely on the next month's first day (read as worked on the person's own shift,
+whatever that month's rows say, so a regenerate gives the same answer once it is saved). Ties turn with the
+day. A ghost day is the next month's: it never decides who covers, and on the first one after the month a
+cover from the last day carries on. More generally, no rest check reads the next month's saved rows: the move's
+turnaround with the day after and the "evening, rest days, then a morning" check read only the month's days,
+and the weekly-rest checks (the week's longest rest, which can reach two days past the month's end) read every
+day after the month as worked on the person's own shift. That month may be saved only after this one, and a
+rule read from its rows gave a different answer once it was - a regenerate then moved people (D11). Two
+REST-DAY reads still take the next month's saved rows, as before: the cap on days in a row (`RunAfter`) and a saved
+day inside the window treated as fixed. Both give the same answer at the first run and at a regenerate.
 
 ### 2.7 Validator (`RosterPlanValidator`, also run by the commit on the submitted cells)
 
@@ -429,7 +462,9 @@ Departures (kept on purpose):
   pattern can take effect).
 
 - D16's repair works on the target month's days only, and the turnaround check never reads a ghost
-  day: both made a regenerate move people. A shift that changes only because the day before did
+  day: both made a regenerate move people. Likewise the rest checks never read the next month's saved
+  rows (§2.6): regenerating January after February was saved moved people where the night is covered
+  only at the weekend. A shift that changes only because the day before did
   (someone stays on a covered night) follows that day's change.
 
 Open:
@@ -437,6 +472,11 @@ Open:
   not send it yet.
 - `ValidateSubmission` raises WORK_WITHOUT_SHIFT for an unchanged submitted day on a retired shift
   (the SQL accepts it). The web never sends such a day.
+- `PUT api/roster/auto/rhythm` saves the rows as sent, also an anchor in a new hire's 6-day period (the preview
+  and the commit resolve such an anchor, §2.2). No page calls it.
+- Where a shift is covered only at the weekend (a weekend-only night), nobody is balanced onto it, so it stays at
+  its minimum and the other shifts are less even; turnarounds after it almost disappear (§10). Making it even needs
+  the rest-day step to give two days off after a Sunday night.
 
 
 ---
@@ -483,5 +523,58 @@ from the request, so the commit checks by the same list the preview planned with
 leaders (`PlannerInput.ShiftLeads`, read from the stored list whichever method plans). Two leaders are never
 planned onto the same shift: under the rotation, when one lead's day was decided by somebody else, the other takes
 the other shift whatever the week says; under Fair, after the cover, a leader on a shift that holds two changes
-places with somebody on the shift that holds none (`WORK_LEAD_APART`), so both shifts keep their numbers. A day
-where both leaders were placed by hand is left alone and reported (`LEADS_SAME_SHIFT`, a warning).
+places with somebody on the shift that holds none (`WORK_LEAD_APART`), so both shifts keep their numbers. A leader
+moved onto an earlier shift stays on it on their next working days while it is a shift to cover and holds no other
+leader: sent home, they would need moving again, often right after one day off, when the move would break the weekly
+rest. A day where both leaders were placed by hand is left alone and reported (`LEADS_SAME_SHIFT`, a warning).
+
+---
+
+## 10. The owner's rules (script 123, both methods)
+
+The owner asked for four things on top of the plan above. Each is a rule of the planner, so both the preview and
+a regenerate follow it, and the validator reports what could not be kept.
+
+**1. Working hours come from the shift, by date.** Every rest calculation (11 hours between shifts, the weekly
+rest, a night's end) measures a day with the hours its shift had ON that day (`usp_AutoRoster_GetShiftHours`:
+every version in force inside the window; `PlannerInput` picks the one for the date). A shift changed in March
+does not change how February is judged. The change itself is logged by script 122 (`attendance.SHIFT_CHANGE`).
+
+**2. New employees work 6-day weeks first** (R6). For `RosterNewHireSixDayMonths` months after the hire date
+(setting, default 3) every week is a 6-day week. W0 = the first Monday on or after hire date + that many months;
+from W0 the weeks go 6, 5, 6, 5, starting with 6 (`PlannerInput.AlternateFrom`, `ResolvedRhythm.WorkDaysIn`).
+A drawer override or a commit row for a week before W0 is ignored (§2.2), so the alternation always starts at W0.
+The drawer shows "New: 6-day weeks until ..." and the Roster page judges those weeks by the same rule. No hire
+date: no new-hire period.
+
+**3. Shift leaders are never on the same shift.** Leaders are a list per branch (`attendance.ROSTER_SHIFT_LEADER`,
+GET/PUT `api/roster/auto/leaders`, ATTENDANCE_MANAGE); the fixed rotation's Lead 1 and Lead 2 count too
+(`PlannerInput.ShiftLeads`). Only people working in the branch today can be chosen
+(`usp_AutoRoster_GetLeaderCandidates`; the save checks the same). After the cover, a leader on a shift that already
+holds one changes places with somebody on a shift that holds none (`WORK_LEAD_APART`), unless that breaks a rest
+rule: the rest rules come first. More leaders working on a day than shifts to cover: one warning for the month
+(`LEADS_TOO_FEW_SHIFTS`), and the manager ticks more shifts under "Shifts to cover every day". Leaders placed
+together by hand are left alone and warned (`LEADS_SAME_SHIFT`).
+
+**4. Every shift is covered every day, and people are spread over the shifts.** The shifts to cover are the
+drawer's stored staffing rows, else the shifts the branch really worked, else every active shift (§2.6, D16).
+The cover runs first (`WORK_SHIFT_COVER`); then the people left are spread evenly (`WORK_SHIFT_BALANCE`).
+A balancing move is made only when it evens out ALL the days it holds the person on the new shift: going back
+the next day can break the 11 hours or the weekly rest, so a move to the evening holds them there until a rest
+day lets them return (`HeldAfter`). One move therefore never strands someone on the evening for weeks. A person
+with no usual shift in the last 8 weeks starts on a shift the branch covers. A hold carried across the month's end
+(last month's saved evening) is protected in the new month: the morning keeps its minimum without the held person,
+by moving a weekday rest of somebody else on the morning (step 6b).
+
+**The rest days still fill the month**: the 6/5 (or 6/6/6) rhythm decides the number of rest days per week (§2.3),
+the shift rules only choose which shift a working day is on.
+
+**Known trade.** Where a shift is covered only at the weekend (a weekend-only night), moving someone onto it
+breaks a rest rule on Monday unless they then have two days off, so nobody is balanced onto it: it stays at its
+minimum, the other shifts are less even there, and turnarounds after it almost disappear (measured on 20 such
+test worlds: 317 → 60 turnarounds; days 3+ apart between the fullest and emptiest shift 24 → 234). The cover's
+minimum still forces a person there when needed, then the least-bad one (a short weekly rest before a turnaround).
+
+**Tests.** `RosterPlannerNewHireTests` (W0, 6/6/6 then 6/5, overrides before W0), `RosterPlannerLeaderTests`, `RosterLeadersTests`,
+`RosterPlannerBalanceTests` (holds, month-end holds, weekend-only nights, regenerate = 0 changes with the next
+month saved), `AutoRosterServiceTests` (leaders list, candidates, a pre-W0 anchor saved as W0).

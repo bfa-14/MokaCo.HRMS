@@ -10,7 +10,8 @@ namespace MokaCo.HRMS.Api.Controllers;
 /// Anyone with ATTENDANCE_VIEW may read them; changing one changes how days are judged, so
 /// that needs ATTENDANCE_MANAGE. A shift's hours are DATED (script 117): PUT takes the day new hours start
 /// (and optionally the day they end - the hours before then come back), GET {id}/hours is the history,
-/// DELETE {id}/hours/{shiftHoursId} takes one change back.
+/// DELETE {id}/hours/{shiftHoursId} takes one change back. GET {id}/changes is the change log (script 122): every
+/// change to the shift, with who made it and the before and after, kept for good.
 /// </summary>
 [ApiController]
 [Route("api/shifts")]
@@ -72,6 +73,14 @@ public class ShiftsController : ControllerBase
     [HttpGet("{id:int}/hours")]
     [HasPermission("ATTENDANCE_VIEW")]
     public async Task<IActionResult> GetHours(int id) => Ok(await _shifts.GetHoursAsync(id));
+
+    /// <summary>
+    /// The shift's change log, newest first: created, hours changed or taken back, renamed, switched off or on, and the
+    /// days a change could not work out again. The same permission as the hours history.
+    /// </summary>
+    [HttpGet("{id:int}/changes")]
+    [HasPermission("ATTENDANCE_VIEW")]
+    public async Task<IActionResult> GetChanges(int id) => Ok(await _shifts.GetChangesAsync(id));
 
     /// <summary>Takes one change of hours back (not the shift's first hours); the days it covered are derived again.</summary>
     [HttpDelete("{id:int}/hours/{shiftHoursId:int}")]

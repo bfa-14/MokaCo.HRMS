@@ -145,8 +145,9 @@ public class RosterPlannerRhythmTests
     }
 
     [Fact]
-    public void Someone_hired_on_a_Thursday_works_that_week_without_rest_then_starts_a_5_day_week()
+    public void Someone_hired_on_a_Thursday_works_that_week_without_rest_then_6_day_weeks()
     {
+        // R6 changed the week after the hire week: it used to be a 5-day week; the first three months are 6-day weeks.
         var world = new RosterWorld().WithStaff(3);
         world.Add(9, hire: new DateOnly(2026, 12, 10));
         var p = world.Plan(Dec).Preview;
@@ -159,13 +160,51 @@ public class RosterPlannerRhythmTests
         Assert.Equal(0, hireWeek.Rests);
         Assert.Equal(6, hireWeek.WorkDays);
 
-        var next = p.Week(9, new DateOnly(2026, 12, 14));
-        Assert.Equal(5, next.WorkDays);
-        Assert.Equal(2, next.Rests);
+        foreach (var ws in new[] { new DateOnly(2026, 12, 14), new DateOnly(2026, 12, 21), new DateOnly(2026, 12, 28) })
+        {
+            Assert.Equal(6, p.Week(9, ws).WorkDays);
+            Assert.Equal(1, p.Week(9, ws).Rests);
+        }
+
+        // The alternation is anchored on W0, the first Monday on or after 10 March 2027, as a 6-day week.
+        var rhythm = p.Rhythm.Single(r => r.EmployeeId == 9);
+        Assert.Equal(new DateOnly(2027, 3, 15), rhythm.AnchorWeekStart);
+        Assert.Equal(6, rhythm.AnchorWorkDays);
+        Assert.True(rhythm.IsNew);
+    }
+
+    /// <summary>
+    /// The 6-day period ended two weeks before the month and nobody ran the auto-roster since (no stored anchor): the
+    /// alternation still counts from W0 (6 on W0, 5 the week after, ...), not from a fresh Aligned start that would hand
+    /// out a third 6-day week in a row.
+    /// </summary>
+    [Fact]
+    public void A_new_hire_period_that_ended_just_before_the_month_keeps_the_W0_alternation()
+    {
+        var world = new RosterWorld().WithStaff(3);
+        // Hired 13 Aug 2026: W0 = the first Monday on or after 13 Nov 2026 = 16 Nov (6), 23 Nov (5), 30 Nov (6), 7 Dec (5).
+        world.Add(9, hire: new DateOnly(2026, 8, 13));
+        var p = world.Plan(Dec).Preview;
 
         var rhythm = p.Rhythm.Single(r => r.EmployeeId == 9);
-        Assert.Equal(new DateOnly(2026, 12, 7), rhythm.AnchorWeekStart);
-        Assert.True(rhythm.IsNew);
+        Assert.Equal(new DateOnly(2026, 11, 16), rhythm.AnchorWeekStart);
+        Assert.Equal(6, rhythm.AnchorWorkDays);
+        Assert.Equal(6, p.Week(9, new DateOnly(2026, 11, 30)).WorkDays);
+        Assert.Equal(5, p.Week(9, new DateOnly(2026, 12, 7)).WorkDays);
+        Assert.Equal(6, p.Week(9, new DateOnly(2026, 12, 14)).WorkDays);
+    }
+
+    /// <summary>Long-serving staff (W0 years ago) and no stored anchor keep the branch's Aligned start: a 6-day first week.</summary>
+    [Fact]
+    public void Long_serving_staff_without_an_anchor_keep_the_aligned_start()
+    {
+        var world = new RosterWorld().WithStaff(3);
+        world.Add(9, hire: new DateOnly(2019, 3, 6));
+        var p = world.Plan(Dec).Preview;
+
+        var rhythm = p.Rhythm.Single(r => r.EmployeeId == 9);
+        Assert.Equal(new DateOnly(2026, 11, 30), rhythm.AnchorWeekStart);
+        Assert.Equal(6, rhythm.AnchorWorkDays);
     }
 
     [Fact]
@@ -246,18 +285,27 @@ public class RosterPlannerRhythmTests
     }
 
     [Fact]
-    public void Staggered_gives_a_new_hire_the_type_under_represented_among_the_stored_rhythms()
+    public void Staggered_gives_somebody_new_to_the_rotation_the_type_under_represented_among_the_stored_rhythms()
     {
+        // People past their first three months (R6): a hire inside them is on 6-day weeks whatever Staggered says.
         var world = new RosterWorld().WithStaff(3);
         world.Anchor(1, new DateOnly(2026, 11, 30), 6);
         world.Anchor(2, new DateOnly(2026, 11, 30), 6);
         world.Anchor(3, new DateOnly(2026, 11, 30), 5);
-        world.Add(4, hire: new DateOnly(2026, 11, 1));
-        world.Add(5, hire: new DateOnly(2026, 11, 2));
+        world.Add(4, hire: new DateOnly(2026, 7, 1));
+        world.Add(5, hire: new DateOnly(2026, 7, 2));
+        world.Add(6, hire: new DateOnly(2026, 11, 2));
         var p = world.Plan(Dec, "FillEmpty", r => r.RhythmStart = "Staggered").Preview;
 
-        // 6,6,5 stored → the first new one starts on 5, the next on 6 (tie → 6).
+        // 6,6,5 stored, and the new hire counts as a 6 → both newcomers start on 5 (three of each).
         Assert.Equal(5, p.Week(4, new DateOnly(2026, 11, 30)).WorkDays);
-        Assert.Equal(6, p.Week(5, new DateOnly(2026, 11, 30)).WorkDays);
+        Assert.Equal(5, p.Week(5, new DateOnly(2026, 11, 30)).WorkDays);
+        Assert.All(p.PerEmployee.Single(e => e.EmployeeId == 6).Weeks, w => Assert.Equal(6, w.WorkDays));
+
+        // Without the new hire the two newcomers split as before: the first on 5, the next on 6 (tie → 6).
+        world.People.Remove(6);
+        var before = world.Plan(Dec, "FillEmpty", r => r.RhythmStart = "Staggered").Preview;
+        Assert.Equal(5, before.Week(4, new DateOnly(2026, 11, 30)).WorkDays);
+        Assert.Equal(6, before.Week(5, new DateOnly(2026, 11, 30)).WorkDays);
     }
 }

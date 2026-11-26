@@ -222,6 +222,32 @@ public class BookingHubTests
         Assert.Equal(expected, BookingLivePublisher.AwaitsPayment(booking));
     }
 
+    /// <summary>
+    /// What the bookings list and the calendar leave out unless asked: a website booking still held for its online
+    /// deposit, or released because it was not paid. Never one a person decided, never one with money on it.
+    /// </summary>
+    [Theory]
+    [InlineData("Pending", "Website", true, 0, null, null, null, true)]                                    // held, the guest is paying
+    [InlineData("Pending", "Website", false, 0, null, null, null, false)]                                  // a request staff confirm
+    [InlineData("Cancelled", "Website", false, 0, null, null, "Payment not completed.", true)]             // released: declined or given back
+    [InlineData("Cancelled", "Website", false, 0, null, null, "Payment not completed in time.", true)]     // released by the sweep
+    [InlineData("Cancelled", "Website", false, 0, 9, "Staff", "Payment not completed", false)]             // a person cancelled it
+    [InlineData("Cancelled", "Website", false, 0, null, "Guest", "Changed my mind", false)]                // the guest cancelled a real booking
+    [InlineData("Cancelled", "Website", false, 12, null, null, "Payment not completed.", false)]           // money was taken: staff must see it
+    [InlineData("Cancelled", "Website", false, 0, null, null, null, false)]
+    [InlineData("Confirmed", "Website", false, 12, null, null, null, false)]
+    [InlineData("Pending", "Manual", true, 0, null, null, null, false)]
+    public void An_unpaid_attempt_is_a_held_or_released_website_booking_with_no_money_on_it(
+        string status, string source, bool held, int paid, int? decidedBy, string? cancelledBy, string? reason, bool expected)
+    {
+        var row = new BookingRow
+        {
+            Status = status, Source = source, HoldExpiresUtc = held ? new DateTime(2026, 11, 30, 10, 15, 0, DateTimeKind.Utc) : null,
+            PaidAmount = paid, DecidedByUserId = decidedBy, CancelledBy = cancelledBy, CancelReason = reason,
+        };
+        Assert.Equal(expected, row.UnpaidAttempt);
+    }
+
     [Fact]
     public void The_two_messages_carry_the_contract_fields_under_the_contract_names()
     {

@@ -1,6 +1,8 @@
 using MokaCo.HRMS.Model.Attendance;
 using MokaCo.HRMS.Repository.Attendance;
+using MokaCo.HRMS.Repository.Common;
 using MokaCo.HRMS.Services.Attendance.AutoRoster;
+using MokaCo.HRMS.Services.Core;
 using MokaCo.HRMS.Services.Workflow;
 
 namespace MokaCo.HRMS.Services.Attendance;
@@ -17,7 +19,13 @@ namespace MokaCo.HRMS.Services.Attendance;
 public class AutoRosterService : IAutoRosterService
 {
     private readonly IAutoRosterRepository _repo;
-    public AutoRosterService(IAutoRosterRepository repo) => _repo = repo;
+    private readonly MissingScriptWarning? _missingScript;
+
+    public AutoRosterService(IAutoRosterRepository repo, MissingScriptWarning? missingScript = null)
+    {
+        _repo = repo;
+        _missingScript = missingScript;
+    }
 
     public async Task<AutoRosterSetup> GetSetupAsync(int branchId, string? month, int? callerUserId)
     {
@@ -56,6 +64,85 @@ public class AutoRosterService : IAutoRosterService
         });
     }
 
+    /// <summary>
+    /// What the leaders' read and save say while script 123 is not applied (the planner then keeps only the rotation's
+    /// leads apart). A manager reads it in the drawer, so it is plain words; the script's name goes to the server's log.
+    /// </summary>
+    public const string LeadersNotAvailable =
+        "The shift leaders list is not available yet. Ask your administrator to finish the update.";
+
+    /// <summary>
+    /// The same answer as a code beside the sentence, so the web can say it in the reader's language: a 503 alone could
+    /// also be the database being too slow to answer.
+    /// </summary>
+    public const string LeadersNotAvailableCode = "leaders_not_ready";
+
+    /// <summary>
+    /// The code beside a save refused because somebody on the list is not one of the branch's people today (or has left
+    /// the company): the web says it in the reader's language, with the person's name the sentence starts with.
+    /// </summary>
+    public const string LeaderNotInBranchCode = "leader_not_in_branch";
+
+    /// <summary>How usp_AutoRoster_SaveLeaders ends that refusal; the person's name comes before it.</summary>
+    private const string NotInBranchEnding = " is not in this branch: only its own people can be its shift leaders.";
+
+    /// <summary>The person a leaders refusal names as not being in the branch; null for any other sentence.</summary>
+    public static string? LeaderNotInBranch(string? message)
+        => message is { Length: > 0 } && message.EndsWith(NotInBranchEnding, StringComparison.Ordinal)
+               && message.Length > NotInBranchEnding.Length
+            ? message[..^NotInBranchEnding.Length]
+            : null;
+
+    public async Task<RosterLeadersDto> GetLeadersAsync(int branchId, int? callerUserId)
+    {
+        if (branchId <= 0)
+            throw new WorkflowException(400, "Choose a branch.");
+
+        var rows = await LeadersCallAsync(() => _repo.GetLeadersAsync(branchId, callerUserId));
+        var candidates = await LeadersCallAsync(() => _repo.GetLeaderCandidatesAsync(branchId, callerUserId));
+        return new RosterLeadersDto
+        {
+            BranchId = branchId,
+            EmployeeIds = rows.Where(r => r.IsStored).Select(r => r.EmployeeId).ToList(),
+            Leaders = rows.ToList(),
+            Candidates = (candidates ?? []).ToList(),
+        };
+    }
+
+    /// <summary>The procedure owns the rules (people of this branch, the branch's scope); the list is sent once per person.</summary>
+    public async Task SaveLeadersAsync(RosterLeadersDto leaders, int? callerUserId)
+    {
+        if (leaders is null || leaders.BranchId <= 0)
+            throw new WorkflowException(400, "Choose a branch.");
+        var ids = (leaders.EmployeeIds ?? []).Distinct().ToList();
+        if (ids.Any(id => id <= 0))
+            throw new WorkflowException(400, "Every line of the shift leaders list needs its employee.");
+
+        await LeadersCallAsync(async () =>
+        {
+            await _repo.SaveLeadersAsync(leaders.BranchId, ids, callerUserId);
+            return true;
+        });
+    }
+
+    /// <summary>
+    /// A leaders call: the procedures' sentences as their status, a missing script 123 as a 503 in plain words, and the
+    /// one warning in the server's log that names the script to apply.
+    /// </summary>
+    private async Task<T> LeadersCallAsync<T>(Func<Task<T>> call)
+    {
+        try
+        {
+            return await WorkflowSqlErrors.MapAsync(call);
+        }
+        catch (MissingScriptException missing)
+        {
+            _missingScript?.FellBack(missing,
+                "the shift leaders list answers 503 and the planner keeps only the rotation list's Lead 1 / Lead 2 apart");
+            throw new WorkflowException(503, LeadersNotAvailable);
+        }
+    }
+
     public async Task<AutoRosterPreview> PreviewAsync(AutoRosterRequest request, int? callerUserId)
         => RosterPlanner.Preview(await InputAsync(request, callerUserId));
 
@@ -69,13 +156,15 @@ public class AutoRosterService : IAutoRosterService
     public async Task<AutoRosterCommitResult> CommitAsync(AutoRosterCommitRequest request, int? callerUserId)
     {
         var input = await InputAsync(request, callerUserId);
-        var issues = RosterPlanValidator.ValidateSubmission(input, request.Cells, request.Rhythm);
+        // R6: an anchor sent for a week of the new-hire period is saved as the planner resolves it (RhythmToSave).
+        var rhythm = RosterPlanValidator.RhythmToSave(input, request.Rhythm);
+        var issues = RosterPlanValidator.ValidateSubmission(input, request.Cells, rhythm);
         if (RosterPlanValidator.HasErrors(issues))
             throw new AutoRosterRefusedException(RefusalSentence(issues), issues);
 
         // The mode as parsed, so the run row says "ReplanAuto" however the client spelled it.
         return await WorkflowSqlErrors.MapAsync(() => _repo.CommitAsync(
-            input.BranchId, input.MonthStart, input.Mode.ToString(), request.Cells, request.Rhythm,
+            input.BranchId, input.MonthStart, input.Mode.ToString(), request.Cells, rhythm,
             AutoRosterSetupFactory.SerializeParams(request), issues.Count, callerUserId));
     }
 
