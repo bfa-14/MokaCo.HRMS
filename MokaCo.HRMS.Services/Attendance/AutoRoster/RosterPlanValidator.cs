@@ -80,12 +80,35 @@ public static class RosterPlanValidator
     }
 
     /// <summary>
+    /// The rhythm rows a commit saves (R6): the client's, except that a row anchored on a week before the person's W0 (a week of
+    /// the new-hire period - an old draft's "first week" override, or a preview from before the rule) is replaced by the anchor
+    /// the planner resolves for them (<see cref="RosterPlanner.ResolveRhythms(PlannerInput)"/>: the stored one, or W0 as a 6-day
+    /// week). Such a row changes nothing before W0, where every week is a 6-day week, but saved as it is it would decide the
+    /// alternation from W0 - next month's run would start W0 on whatever parity that old week gives. Rows for W0 or later, and
+    /// rows taking somebody off the rotation, are saved as sent.
+    /// </summary>
+    public static List<AutoRosterCommitRhythm> RhythmToSave(PlannerInput input, IEnumerable<AutoRosterCommitRhythm>? rhythm)
+    {
+        var rows = (rhythm ?? []).ToList();
+        if (!rows.Any(r => r.OnRotation && RosterPlanner.IsNewHireWeek(input.AlternateFrom(r.EmployeeId), r.AnchorWeekStart)))
+            return rows;
+        var resolved = RosterPlanner.ResolveRhythms(input);
+        return rows.Select(r =>
+        {
+            if (!r.OnRotation || input.AlternateFrom(r.EmployeeId) is not { } w0 || !RosterPlanner.IsNewHireWeek(w0, r.AnchorWeekStart))
+                return r;
+            var (week, days) = resolved.TryGetValue(r.EmployeeId, out var own) ? (own.AnchorWeekStart, own.AnchorWorkDays) : (w0, 6);
+            return new AutoRosterCommitRhythm { EmployeeId = r.EmployeeId, AnchorWeekStart = week, AnchorWorkDays = days, OnRotation = true };
+        }).ToList();
+    }
+
+    /// <summary>
     /// The commit's server-side check: the rows as they stand, with <paramref name="cells"/> applied
     /// on top (upsert / delete), validated with the same rules as the preview. Ghost days are open —
     /// next month's run decides them — so they never make a week short or a run too long here.
-    /// <paramref name="rhythm"/> (the commit's rhythm rows) overrides the anchors it would resolve - but never the
-    /// new-hire rule (R6): each person's W0 comes from their hire date and the setting, not from the client, so a
-    /// week of the new-hire period is judged as a 6-day week whatever anchor was sent.
+    /// <paramref name="rhythm"/> (the commit's rhythm rows, as <see cref="RhythmToSave"/> keeps them) overrides the anchors it
+    /// would resolve - but never the new-hire rule (R6): each person's W0 comes from their hire date and the setting, not from
+    /// the client, so a week of the new-hire period is judged as a 6-day week whatever anchor was sent.
     /// Cells outside the month or the branch are skipped: the procedure refuses them by name.
     /// </summary>
     public static List<AutoRosterIssue> ValidateSubmission(
@@ -96,7 +119,7 @@ public static class RosterPlanValidator
         foreach (var (e, r) in RosterPlanner.ResolveRhythms(input, grid))
             rhythms[e] = r;
 
-        foreach (var r in rhythm ?? [])
+        foreach (var r in RhythmToSave(input, rhythm))
         {
             if (!r.OnRotation)
                 rhythms.Remove(r.EmployeeId);

@@ -71,6 +71,10 @@ A fact is never changed. Plannable days become **rest** or **work**.
     given 6/5 so that, together with the stored rhythms of the branch, the count of 6-day and 5-day
     first weeks differs by at most 1; ties start on 6.
 - `rhythmOverrides` from the drawer set (anchor week, work days) for an employee; they are saved on commit.
+  An override for a week before the person's W0 (the new-hire period, every week a 6-day week) is ignored:
+  the drawer no longer offers one there, and from an old draft or another caller it would only decide W0's
+  parity. W0 then starts the alternation with a 6-day week (or a stored anchor decides). The commit does the
+  same with a rhythm row anchored before W0: it saves the anchor the planner resolves (`RosterPlanValidator.RhythmToSave`).
 - Each new or overridden rhythm is returned in the preview and saved by the commit (`ROSTER_RHYTHM`).
 
 ### 2.3 Rest quota per week
@@ -135,6 +139,16 @@ for each week w in window:
      their options that stays ≥ min; else warning SHORT_STAFFED (rest days are kept). Days of the
      target month only: a ghost day is never saved, so a repair that read it would move a saved rest
      at every regenerate.
+  6b carried holds (R3): somebody whose last shift before the week's open days was not their own (last
+     month's saved evening for a morning person, a locked day, or such a hold that lasted through the
+     weeks already planned) is held on it day by day while their own would come too soon (< min hours
+     after a working day, < min weekly rest after rest days), as inside the month; how long follows from
+     the rest days just chosen. A weekday whose shift is below its minimum WITHOUT the people held
+     elsewhere takes back a rest of somebody who starts on it (not a leader, not one of the held), moved
+     to another weekday that keeps its own minimums, within the person's options (and in ReplanAuto the
+     saved rests: a regenerate moves nothing). Weekend days are left to step 4. In step 5, an option of
+     a held person that ends the hold on a day nothing can keep them on the shift (not covered that day)
+     costs 50 (turnaround) or 20 (short weekly rest).
   7 ledger: add the week's Saturday/Sunday results (facts and plan) to the owed balances.
 ```
 
@@ -161,18 +175,29 @@ holiday needs none; an open one (cover > 0) needs every shift its cover allows.
 draft edit or a leave day's row):
 1. someone who worked a shift to cover yesterday that was not their own (moved, or set by hand) stays on
    it when going back would be a turnaround under `RosterMinHoursBetweenShifts`, if their shift can spare
-   them (the evening's cover does not start at seven the next morning);
-2. the shift furthest below its minimum takes the cheapest person from a shift above its own minimum or a
-   shift nobody has to cover;
-3. then a shift below its target, from a shift above its own target (or minimum), never into a turnaround.
+   them (the evening's cover does not start at seven the next morning). After rest days (going back would
+   be a short weekly rest) they stay only when tomorrow, as projected, could keep them held too: otherwise
+   they would be sent back right after a held day, a turnaround, and the short weekly rest is the lesser breach;
+2. the shift furthest below its minimum takes a person from a shift above its own minimum or a shift nobody
+   has to cover: one whose move breaks no rest rule whenever there is one, then one whose breach is only
+   likely, a certain breach last; the cheapest of those;
+3. then a shift below its target, from a shift above its own target (or minimum), never into a turnaround;
+4. then the people left are spread evenly over the shifts (R5, `WORK_SHIFT_BALANCE`), never by a move that
+   breaks a rest rule - including on the day the hold the move starts ends: a night covered only at the
+   weekend holds whoever works Saturday's night on Sunday's, and on Monday nothing keeps them there (back
+   on their own shift 8-9 hours after the night, or after one day off a weekly rest of 24-33 hours).
 
 Move cost, largest first: 50 turnaround (the day before, or the day after when the person could not stay
 on the shift then); 20 an evening, one day off, then a morning under `RosterMinWeeklyRestHours`; 10 leaving
 a shift nobody has to cover; 8 leaving the shift the generator saved there (−8 going back to it: a
 regenerate moves the same people); 4 leaving the weekly pattern's shift, and 4 staying on the shift the
 next day too; 3 per day already worked off one's own shift this month (moves are shared); 2 a shift not
-worked in the last 8 weeks. Ties turn with the day. A ghost day is the next month's: it never decides who
-covers, and on the first one after the month a cover from the last day carries on.
+worked in the last 8 weeks. The day a move's hold ends counts too (`HoldAfter`): when nothing can keep the
+person on the shift that day and going back breaks a rest rule, 50 or 20 - a breach for CERTAIN in the month
+(the rest days are decided), likely on the next month's first day (read as worked on the person's own shift,
+whatever that month's rows say, so a regenerate gives the same answer once it is saved). Ties turn with the
+day. A ghost day is the next month's: it never decides who covers, and on the first one after the month a
+cover from the last day carries on; the "evening, rest days, then a morning" check reads only the month's days.
 
 ### 2.7 Validator (`RosterPlanValidator`, also run by the commit on the submitted cells)
 

@@ -475,4 +475,122 @@ public class RosterPlannerBalanceTests
         Assert.Equal(RosterPlanner.ReasonShiftCover, tuesday.ReasonCode);
         Assert.DoesNotContain(p.Issues, i => i.Code == "WEEKLY_REST_HOURS" && i.EmployeeId == 1);
     }
+
+    /// <summary>
+    /// Eight weeks before the window on one shift, 6- and 5-day weeks in turn with the rest days moving from week to week (the
+    /// pattern the month-end sweep of the review used), up to <paramref name="until"/>.
+    /// </summary>
+    private static void Rotating(RosterWorld world, int id, int shift, DateOnly windowFrom, DateOnly until, int seed)
+    {
+        var start = windowFrom.AddDays(-56);
+        for (var ws = start; ws <= until; ws = ws.AddDays(7))
+        {
+            var k = (ws.DayNumber - start.DayNumber) / 7;
+            var fiveDays = (k + id + seed) % 2 == 1;
+            var first = (id * 5 + k * 3 + seed) % 7;
+            for (var i = 0; i < 7; i++)
+            {
+                var d = ws.AddDays(i);
+                if (d > until || d < world.People[id].Hire)
+                    continue;
+                if (i == first || (fiveDays && i == (first + 1) % 7))
+                    world.Rest(id, d);
+                else
+                    world.Work(id, d, shift);
+            }
+        }
+    }
+
+    private static TimeSpan Gap(RosterWorld world, int first, DateOnly day, int second)
+    {
+        var a = world.Shifts.Single(s => s.ShiftId == first);
+        var b = world.Shifts.Single(s => s.ShiftId == second);
+        var end = day.ToDateTime(TimeOnly.MinValue) + a.EndTime + (a.CrossesMidnight ? TimeSpan.FromDays(1) : TimeSpan.Zero);
+        return day.AddDays(1).ToDateTime(TimeOnly.MinValue) + b.StartTime - end;
+    }
+
+    [Theory]
+    [InlineData(1)]   // last month's Sunday on the evening, then a day off: back on the morning would be a 32-hour weekly rest
+    [InlineData(4)]   // Thursday to Sunday on the evening, as a cover move in January leaves it: the morning would be 8 hours on
+    public void A_hold_carried_over_the_months_end_lasts_through_the_first_week_with_the_morning_covered_without_him(int heldDays)
+    {
+        // Seven people, a minimum of two on the morning and two on the evening. Employee 1, a morning person, worked the evening
+        // on the last days of January (saved). February's rest days are placed before any shift: counted on the morning after
+        // the first day, the morning was left at its minimum WITH him, and on the day his hold still ran the shift cover had
+        // to send him back - an 8-hour turnaround on 3 February. The hold is projected day by day now and the morning keeps
+        // its minimum without him, so he stays on the evening until a long enough rest, and nobody breaks a rest rule.
+        var feb = new DateOnly(2027, 2, 1);
+        var world = new RosterWorld { Today = new DateOnly(2027, 1, 25) };
+        for (var id = 1; id <= 7; id++)
+        {
+            world.Add(id);
+            Rotating(world, id, id % 2 == 1 ? RosterWorld.Morning : RosterWorld.Evening, feb, new DateOnly(2027, 1, 31), seed: 1);
+        }
+        world.Min(2, shiftId: RosterWorld.Morning);
+        world.Min(2, shiftId: RosterWorld.Evening);
+        for (var i = 0; i < heldDays; i++)
+            world.Work(1, new DateOnly(2027, 1, 31).AddDays(-i), RosterWorld.Evening);
+
+        var (run, _) = world.PlanAndCommit(feb);
+
+        for (var id = 1; id <= 7; id++)
+            for (var d = feb.AddDays(-1); d < feb.AddDays(6); d = d.AddDays(1))
+                if (world.RowAt(id, d) is { IsWork: true, ShiftId: { } first } && world.RowAt(id, d.AddDays(1)) is { IsWork: true, ShiftId: { } second })
+                    Assert.True(Gap(world, first, d, second) >= TimeSpan.FromHours(11), $"employee {id}: {d:ddd dd MMM} {first} -> {second}");
+        Assert.DoesNotContain(run.Preview.Issues, i => i.Code is "TURNAROUND" or "WEEKLY_REST_HOURS" or "SHIFT_UNCOVERED" && i.Date < feb.AddDays(7));
+        var firstWeek = RosterCalendar.Days(feb, feb.AddDays(6)).Where(d => world.IsWork(1, d)).ToList();
+        Assert.NotEmpty(firstWeek);
+        Assert.All(firstWeek, d => Assert.Equal(RosterWorld.Evening, world.RowAt(1, d)!.Value.ShiftId));
+    }
+
+    [Fact]
+    public void Nobody_is_balanced_onto_a_night_covered_only_at_the_weekend_when_the_way_back_breaks_a_rest_rule()
+    {
+        // Seven people with history (odd ones on the morning, even ones on the evening), two new hires (9 and 14 December) with
+        // no rows and no default shift - 6-day weeks for three months. The morning is covered Monday to Friday, the evening every
+        // day, the night only on Saturday and Sunday (a minimum of one each). Somebody balanced onto Saturday's night is held on
+        // it on Sunday (their own shift would come too soon), and on Monday nothing can keep them there: back on their own shift
+        // that is 8 or 9 hours after the night, or after one day off a weekly rest of 33 hours. The hold's end is a breach for
+        // certain, so balancing never makes that move; the night's minimum still takes somebody (the cover comes first), the one
+        // whose way back breaks no rule when there is one. December to March, every month saved before the next is planned.
+        var world = new RosterWorld { Today = new DateOnly(2026, 11, 25) };
+        for (var id = 1; id <= 7; id++)
+        {
+            world.Add(id);
+            Rotating(world, id, id % 2 == 1 ? RosterWorld.Morning : RosterWorld.Evening, WindowFrom, WindowFrom.AddDays(-1), seed: id);
+        }
+        world.Add(10, hire: new DateOnly(2026, 12, 9));
+        world.Add(11, hire: new DateOnly(2026, 12, 14));
+        world.Min(1, shiftId: RosterWorld.Morning);
+        world.Min(0, dayOfWeek: 6, shiftId: RosterWorld.Morning);
+        world.Min(0, dayOfWeek: 7, shiftId: RosterWorld.Morning);
+        world.Min(1, shiftId: RosterWorld.Evening);
+        world.Min(0, shiftId: RosterWorld.Night);
+        world.Min(1, dayOfWeek: 6, shiftId: RosterWorld.Night);
+        world.Min(1, dayOfWeek: 7, shiftId: RosterWorld.Night);
+
+        var issues = new List<AutoRosterIssue>();
+        var balanced = new List<(int Employee, DateOnly Date)>();
+        foreach (var month in new[] { Dec, new DateOnly(2027, 1, 1), new DateOnly(2027, 2, 1), new DateOnly(2027, 3, 1) })
+        {
+            var (run, _) = world.PlanAndCommit(month);
+            Assert.Empty(run.Preview.Errors());
+            issues.AddRange(run.Preview.Issues);
+            balanced.AddRange(run.Preview.Cells
+                .Where(c => c.ReasonCode == RosterPlanner.ReasonShiftBalance && c.ShiftId == RosterWorld.Night)
+                .Select(c => (c.EmployeeId, c.WorkDate)));
+        }
+
+        // Every weekend night is covered; no balancing move onto it ends in a breach (Sunday's night, then Monday or Tuesday).
+        Assert.DoesNotContain(issues, i => i.Code == "SHIFT_UNCOVERED");
+        foreach (var (e, d) in balanced)
+            Assert.DoesNotContain(issues, i => i.EmployeeId == e && i.Code is "TURNAROUND" or "WEEKLY_REST_HOURS"
+                                               && i.Date > d && i.Date <= d.AddDays(4));
+
+        // The new hires: never a turnaround, and a 6-day week every full week of their first three months.
+        Assert.DoesNotContain(issues, i => i.Code == "TURNAROUND" && i.EmployeeId is 10 or 11);
+        foreach (var (e, hire) in new[] { (10, new DateOnly(2026, 12, 9)), (11, new DateOnly(2026, 12, 14)) })
+            for (var ws = RosterCalendar.WeekStart(hire).AddDays(7); ws.AddDays(6) < hire.AddMonths(3); ws = ws.AddDays(7))
+                Assert.True(world.RestsInWeek(e, ws) == 1, $"employee {e}, week of {ws:dd MMM}: {world.RestsInWeek(e, ws)} rests");
+    }
 }

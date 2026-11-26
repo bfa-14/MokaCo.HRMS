@@ -156,13 +156,15 @@ public class AutoRosterService : IAutoRosterService
     public async Task<AutoRosterCommitResult> CommitAsync(AutoRosterCommitRequest request, int? callerUserId)
     {
         var input = await InputAsync(request, callerUserId);
-        var issues = RosterPlanValidator.ValidateSubmission(input, request.Cells, request.Rhythm);
+        // R6: an anchor sent for a week of the new-hire period is saved as the planner resolves it (RhythmToSave).
+        var rhythm = RosterPlanValidator.RhythmToSave(input, request.Rhythm);
+        var issues = RosterPlanValidator.ValidateSubmission(input, request.Cells, rhythm);
         if (RosterPlanValidator.HasErrors(issues))
             throw new AutoRosterRefusedException(RefusalSentence(issues), issues);
 
         // The mode as parsed, so the run row says "ReplanAuto" however the client spelled it.
         return await WorkflowSqlErrors.MapAsync(() => _repo.CommitAsync(
-            input.BranchId, input.MonthStart, input.Mode.ToString(), request.Cells, request.Rhythm,
+            input.BranchId, input.MonthStart, input.Mode.ToString(), request.Cells, rhythm,
             AutoRosterSetupFactory.SerializeParams(request), issues.Count, callerUserId));
     }
 
