@@ -2524,8 +2524,10 @@ public static class RosterPlanner
                 shortRest = true;
             }
 
+            // The day after as decided - inside the month only: the next month's days are its run's to decide (a saved row there
+            // read here would change the answer once that month is saved, D11); HoldAfter reads its first day as that run will.
             var next = date.AddDays(1);
-            if (ShiftOn(e, next) is { } after)
+            if ((next <= _in.MonthEnd ? ShiftOn(e, next) : null) is { } after)
             {
                 if (after.Shift.StartOn(next) - shift.EndOn(date) < minGap)
                 {
@@ -2641,9 +2643,9 @@ public static class RosterPlanner
         /// <paramref name="date"/> is shorter than the weekly minimum AND the week it belongs to (by its midpoint, as the validator
         /// reads it) has no other rest that long. The validator asks for the week's LONGEST rest, so a short rest in a week that
         /// keeps a long one elsewhere (a 5-day week's other day off) breaks nothing. Only a long rest that is KNOWN counts: a day
-        /// nobody has decided yet (a ghost day, a day after the window with no row) is taken as worked on the person's own shift,
-        /// or next month's run would find the breach. <paramref name="worked"/>: days to read on these shifts instead of as
-        /// decided (a hold being projected).
+        /// nobody has decided yet (a ghost day, any day after the month's end, <see cref="RestRead"/>) is taken as worked on the
+        /// person's own shift, or next month's run would find the breach. <paramref name="worked"/>: days to read on these shifts
+        /// instead of as decided (a hold being projected).
         /// </summary>
         private bool ShortWeeklyRest(int e, ShiftInfo last, DateOnly lastDate, DateOnly date, int to, IReadOnlyDictionary<DateOnly, int>? worked)
         {
@@ -2657,7 +2659,7 @@ public static class RosterPlanner
             var week = RosterCalendar.WeekStart(DateOnly.FromDateTime(end + (start - end) / 2));
             return LongestRestInWeek(week, d => d == date ? shift
                 : worked is not null && worked.TryGetValue(d, out var id) ? _in.HoursOn(id, d)
-                : ShiftOn(e, d)?.Shift ?? (Unknown(e, d) && HomeShift(e, d) is { } own ? _in.HoursOn(own, d) : null)) < weekly;
+                : RestRead(e, d)) < weekly;
         }
 
         /// <summary>
@@ -2669,22 +2671,30 @@ public static class RosterPlanner
         private bool TakesWeeklyRest(int e, DateOnly date, int from, int to)
         {
             var weekly = TimeSpan.FromHours(_in.Settings.MinWeeklyRestHours);
-            ShiftInfo? Read(DateOnly d) => ShiftOn(e, d)?.Shift ?? (Unknown(e, d) && HomeShift(e, d) is { } own ? _in.HoursOn(own, d) : null);
             foreach (var week in new[] { date.AddDays(-3), date, date.AddDays(3) }.Select(RosterCalendar.WeekStart).Distinct())
-                if (LongestRestInWeek(week, d => d == date ? _in.HoursOn(from, d) : Read(d)) >= weekly
-                    && LongestRestInWeek(week, d => d == date ? _in.HoursOn(to, d) : Read(d)) < weekly)
+                if (LongestRestInWeek(week, d => d == date ? _in.HoursOn(from, d) : RestRead(e, d)) >= weekly
+                    && LongestRestInWeek(week, d => d == date ? _in.HoursOn(to, d) : RestRead(e, d)) < weekly)
                     return true;
             return false;
         }
 
         /// <summary>
-        /// Nobody has decided the day yet: a ghost day, the same day once today has passed it unsaved (a window day outside the
-        /// month with no row - read the same either way, or a regenerate would move somebody), or a day after the window with no row.
+        /// The shift a weekly-rest check (<see cref="ShortWeeklyRest"/>, <see cref="TakesWeeklyRest"/>) reads on a day: as decided
+        /// (<see cref="ShiftOn"/>), or - for a day nobody has decided yet (<see cref="Unknown"/>) - worked on the person's own shift.
+        /// </summary>
+        private ShiftInfo? RestRead(int e, DateOnly d)
+            => (d > _in.MonthEnd ? null : ShiftOn(e, d)?.Shift) ?? (Unknown(e, d) && HomeShift(e, d) is { } own ? _in.HoursOn(own, d) : null);
+
+        /// <summary>
+        /// Nobody has decided the day yet, as far as this run is concerned: a ghost day, the same day once today has passed it
+        /// unsaved (a window day outside the month with no row - read the same either way, or a regenerate would move somebody), and
+        /// EVERY day after the month's end, whatever its rows say. Those are the next month's run's to decide, and that month may
+        /// be saved only after this one: read from its rows, the answer would change once it is saved, and a regenerate of this
+        /// month would then move somebody (D11). That run reads this month's last days itself when it plans its first ones.
         /// </summary>
         private bool Unknown(int e, DateOnly date)
-            => date > _in.WindowTo
-                ? _in.RowOf(e, date) is null
-                : date >= _in.WindowFrom && _grid[e, date] is { Kind: CellKind.Ghost } or { Kind: CellKind.Outside, Current: null };
+            => date > _in.MonthEnd
+               || (date >= _in.WindowFrom && _grid[e, date] is { Kind: CellKind.Ghost } or { Kind: CellKind.Outside, Current: null });
 
         /// <summary>
         /// The longest rest between shifts that belongs to the week of <paramref name="weekStart"/> (its midpoint falls in it), as

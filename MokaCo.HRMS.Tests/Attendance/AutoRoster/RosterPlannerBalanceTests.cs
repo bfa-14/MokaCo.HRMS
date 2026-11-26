@@ -593,4 +593,100 @@ public class RosterPlannerBalanceTests
             for (var ws = RosterCalendar.WeekStart(hire).AddDays(7); ws.AddDays(6) < hire.AddMonths(3); ws = ws.AddDays(7))
                 Assert.True(world.RestsInWeek(e, ws) == 1, $"employee {e}, week of {ws:dd MMM}: {world.RestsInWeek(e, ws)} rests");
     }
+
+    /// <summary>
+    /// Nine weeks before the window up to <paramref name="until"/> (30 November by default) on one shift: 6- and 5-day weeks in
+    /// turn by id and seed (a new hire: 6-day weeks from the hire date), the rest days moving from week to week, a 5-day week's
+    /// two days off together or two days apart.
+    /// </summary>
+    private static void History(RosterWorld world, int id, int shift, int seed, bool newHire = false, DateOnly? until = null)
+    {
+        var start = new DateOnly(2026, 10, 5);
+        var last = until ?? WindowFrom;
+        for (var k = 0; k < 9; k++)
+        {
+            var ws = start.AddDays(7 * k);
+            var fiveDays = !newHire && (k + id + seed) % 2 == 1;
+            var first = (id * 5 + k * 3 + seed) % 7;
+            var second = (first + ((id + seed) % 2 == 0 ? 1 : 2)) % 7;
+            for (var i = 0; i < 7; i++)
+            {
+                var d = ws.AddDays(i);
+                if (d > last || d < world.People[id].Hire)
+                    continue;
+                if (i == first || (fiveDays && i == second))
+                    world.Rest(id, d);
+                else
+                    world.Work(id, d, shift);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData("night Friday to Sunday")]
+    [InlineData("night Saturday and Sunday")]
+    public void A_saved_month_regenerates_unchanged_once_the_next_month_is_saved_with_a_night_covered_only_at_the_weekend(string cover)
+    {
+        // D11: a regenerate with nothing changed moves nobody - also once the next month is saved. Where the night is covered only
+        // at the weekend, whether a move onto it ends in a breach is read up to two days past the month's end (the day the hold
+        // ends, the weekly rest of the week it falls in). Those days are the next month's run's to decide, so they are read as
+        // worked on the person's own shift whatever its saved rows say: read from the rows, the same move came out a certain
+        // breach before February was saved and none after it (or the other way round), and January regenerated with three
+        // people moved on 22 to 24 January; February, after March was saved, with two moved on 20 and 21 February.
+        var world = new RosterWorld { Today = new DateOnly(2026, 11, 25) };
+        if (cover == "night Friday to Sunday")
+        {
+            // Morning and evening every day (two each), night Friday to Sunday (one); eight long-serving people (odd ones on the
+            // morning, even ones on the evening), two evening leaders, a new hire with evening history and two with nothing.
+            for (var id = 1; id <= 8; id++)
+            {
+                world.Add(id);
+                History(world, id, id % 2 == 1 ? RosterWorld.Morning : RosterWorld.Evening, seed: 0);
+            }
+            world.Add(9, hire: new DateOnly(2026, 11, 2));
+            History(world, 9, RosterWorld.Evening, seed: 0, newHire: true);
+            world.Add(10, hire: new DateOnly(2026, 12, 16));
+            world.Add(11, hire: new DateOnly(2027, 1, 20));
+            world.ShiftLeaders.AddRange([2, 4]);
+            world.Min(2, shiftId: RosterWorld.Morning);
+            world.Min(2, shiftId: RosterWorld.Evening);
+            world.Min(0, shiftId: RosterWorld.Night);
+            foreach (var day in new[] { 5, 6, 7 })
+                world.Min(1, dayOfWeek: day, shiftId: RosterWorld.Night);
+        }
+        else
+        {
+            // The morning Monday to Friday, the evening every day, the night on Saturday and Sunday (one each); seven people with
+            // history and two new hires (9 and 14 December) with nothing to go by.
+            for (var id = 1; id <= 7; id++)
+            {
+                world.Add(id);
+                History(world, id, id % 2 == 1 ? RosterWorld.Morning : RosterWorld.Evening, seed: id);
+            }
+            world.Add(10, hire: new DateOnly(2026, 12, 9));
+            world.Add(11, hire: new DateOnly(2026, 12, 14));
+            world.Min(1, shiftId: RosterWorld.Morning);
+            world.Min(0, dayOfWeek: 6, shiftId: RosterWorld.Morning);
+            world.Min(0, dayOfWeek: 7, shiftId: RosterWorld.Morning);
+            world.Min(1, shiftId: RosterWorld.Evening);
+            world.Min(0, shiftId: RosterWorld.Night);
+            world.Min(1, dayOfWeek: 6, shiftId: RosterWorld.Night);
+            world.Min(1, dayOfWeek: 7, shiftId: RosterWorld.Night);
+        }
+
+        // December to March, each month saved before the next is planned; after each save every month saved so far is regenerated.
+        var saved = new List<DateOnly>();
+        foreach (var month in new[] { Dec, new DateOnly(2027, 1, 1), new DateOnly(2027, 2, 1), new DateOnly(2027, 3, 1) })
+        {
+            var (run, _) = world.PlanAndCommit(month);
+            Assert.Empty(run.Preview.Errors());
+            saved.Add(month);
+            foreach (var earlier in saved)
+            {
+                var again = world.Plan(earlier, "ReplanAuto").Preview;
+                Assert.True(again.Changes() == 0, $"{earlier:MMMM} regenerated after {month:MMMM} was saved: "
+                    + string.Join(", ", again.Cells.Where(c => c.Change is "insert" or "update" or "delete").Select(c => $"employee {c.EmployeeId} {c.WorkDate:dd MMM}")));
+            }
+        }
+    }
 }

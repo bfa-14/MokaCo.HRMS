@@ -197,7 +197,11 @@ person on the shift that day and going back breaks a rest rule, 50 or 20 - a bre
 (the rest days are decided), likely on the next month's first day (read as worked on the person's own shift,
 whatever that month's rows say, so a regenerate gives the same answer once it is saved). Ties turn with the
 day. A ghost day is the next month's: it never decides who covers, and on the first one after the month a
-cover from the last day carries on; the "evening, rest days, then a morning" check reads only the month's days.
+cover from the last day carries on. More generally, no rest check reads the next month's saved rows: the move's
+turnaround with the day after and the "evening, rest days, then a morning" check read only the month's days,
+and the weekly-rest checks (the week's longest rest, which can reach two days past the month's end) read every
+day after the month as worked on the person's own shift. That month may be saved only after this one, and a
+rule read from its rows gave a different answer once it was - a regenerate then moved people (D11).
 
 ### 2.7 Validator (`RosterPlanValidator`, also run by the commit on the submitted cells)
 
@@ -456,7 +460,9 @@ Departures (kept on purpose):
   pattern can take effect).
 
 - D16's repair works on the target month's days only, and the turnaround check never reads a ghost
-  day: both made a regenerate move people. A shift that changes only because the day before did
+  day: both made a regenerate move people. Likewise the rest checks never read the next month's saved
+  rows (§2.6): regenerating January after February was saved moved people where the night is covered
+  only at the weekend. A shift that changes only because the day before did
   (someone stays on a covered night) follows that day's change.
 
 Open:
