@@ -327,6 +327,7 @@ public sealed class RosterWorld
     public List<AutoRosterIssue> Commit(Run run)
     {
         var commit = CommitRequestFor(run.Request, run.Preview);
+        commit.Rhythm = RosterPlanValidator.RhythmToSave(run.Input, commit.Rhythm);   // as AutoRosterService.CommitAsync saves them
         var issues = RosterPlanValidator.ValidateSubmission(run.Input, commit.Cells, commit.Rhythm);
         Apply(commit);
         return issues;

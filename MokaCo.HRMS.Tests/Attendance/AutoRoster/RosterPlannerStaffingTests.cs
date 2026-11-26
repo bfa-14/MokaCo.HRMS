@@ -79,7 +79,9 @@ public class RosterPlannerStaffingTests
             for (byte dow = 1; dow <= 7; dow++)
                 world.Patterns.Add(new AutoRosterPatternRow { EmployeeId = e, DayOfWeek = dow, ShiftId = RosterWorld.Evening });
         world.Min(2, shiftId: RosterWorld.Evening);
-        var p = world.Plan(Dec).Preview;
+        // The third person starts on the drawer's default, the day shift (with nothing to go by they would start on the
+        // evening, the only shift to cover, and nobody would need moving).
+        var p = world.Plan(Dec, "FillEmpty", r => r.DefaultShiftId = RosterWorld.Day).Preview;
 
         // The two evening people keep their evenings; on their rest days the third one covers it.
         Assert.All(p.Cells.Where(c => c.EmployeeId <= 2 && c.State == "work" && c.Origin == "planned"), c => Assert.Equal(RosterWorld.Evening, c.ShiftId));

@@ -50,10 +50,17 @@ public static class AutoRosterSetupFactory
             LastParams = ParseParams(context.LastRun.OrderByDescending(r => r.RunId).FirstOrDefault()?.ParamsJson),
         };
 
+        // The window's weeks: the Monday on or before the 1st to the Monday of the week holding the month's last day.
+        var weekStarts = new List<DateOnly>();
+        for (var ws = RosterCalendar.WeekStart(monthStart); ws <= monthStart.AddMonths(1).AddDays(-1); ws = ws.AddDays(7))
+            weekStarts.Add(ws);
+
         foreach (var s in input.Staff)
         {
             stored.TryGetValue(s.EmployeeId, out var row);
             var valid = row is { AnchorWorkDays: 5 or 6 };
+            rhythms.TryGetValue(s.EmployeeId, out var rhythm);
+            var w0 = input.AlternateFrom(s.EmployeeId);
             setup.Staff.Add(new AutoRosterSetupStaff
             {
                 EmployeeId = s.EmployeeId,
@@ -62,7 +69,11 @@ public static class AutoRosterSetupFactory
                 OnRotation = row?.OnRotation ?? true,
                 AnchorWeekStart = valid ? RosterCalendar.WeekStart(DateOnly.FromDateTime(row!.AnchorWeekStart)) : null,
                 AnchorWorkDays = valid ? row!.AnchorWorkDays : null,
-                FirstWeekWorkDays = rhythms.TryGetValue(s.EmployeeId, out var r) ? r.WorkDaysIn(monthStart) : 6,
+                FirstWeekWorkDays = rhythm?.WorkDaysIn(monthStart) ?? 6,
+                SixDayWeeksUntil = w0 is { } until && until > weekStarts[0] ? until : null,
+                Weeks = rhythm is null
+                    ? new List<AutoRosterSetupWeek>()
+                    : weekStarts.Select(ws => new AutoRosterSetupWeek { WeekStart = ws, WorkDays = rhythm.WorkDaysIn(ws) }).ToList(),
             });
         }
 

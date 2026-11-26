@@ -105,6 +105,37 @@ public class RosterPlannerNewHireTests
         Assert.Equal((new DateOnly(2026, 12, 14), 5, true), (rhythm.AnchorWeekStart, rhythm.AnchorWorkDays, rhythm.IsNew));
     }
 
+    [Theory]
+    [InlineData(5)]
+    [InlineData(6)]
+    public void A_first_week_override_for_a_week_of_the_new_hire_period_is_ignored_and_W0_starts_the_alternation(int workDays)
+    {
+        // W0 = 14 December. An old draft (or another API caller) still sends a 6/5 choice for the first week, 30 November, which
+        // is a week of the new-hire period: the drawer no longer offers it there. It changes nothing before W0, and it must not
+        // decide W0's parity either: W0 is a 6-day week, and the anchor the preview returns - the one the commit saves - is W0.
+        var world = new RosterWorld().WithStaff(2);
+        world.Add(9, hire: new DateOnly(2026, 9, 9));
+        var p = world.Plan(Dec, "FillEmpty", r => r.RhythmOverrides.Add(new RhythmOverrideDto { EmployeeId = 9, WeekStart = new DateOnly(2026, 12, 2), WorkDays = workDays })).Preview;
+
+        Assert.Equal(new[] { 6, 6, 6, 5, 6 }, p.PerEmployee.Single(e => e.EmployeeId == 9).Weeks.Select(w => w.WorkDays));
+        var rhythm = p.Rhythm.Single(r => r.EmployeeId == 9);
+        Assert.Equal((new DateOnly(2026, 12, 14), 6), (rhythm.AnchorWeekStart, rhythm.AnchorWorkDays));
+
+        // The commit saves what the planner resolves for an anchor sent for a week before W0, whatever the client sends; a row
+        // for W0 or later, and a row taking somebody off the rotation, are saved as sent.
+        var run = world.Plan(Dec);
+        var sent = new List<AutoRosterCommitRhythm>
+        {
+            new() { EmployeeId = 9, AnchorWeekStart = new DateOnly(2026, 11, 30), AnchorWorkDays = 5 },
+            new() { EmployeeId = 1, AnchorWeekStart = new DateOnly(2026, 11, 30), AnchorWorkDays = 5 },
+            new() { EmployeeId = 2, AnchorWeekStart = new DateOnly(2026, 11, 30), AnchorWorkDays = 6, OnRotation = false },
+        };
+        var saved = RosterPlanValidator.RhythmToSave(run.Input, sent);
+        Assert.Equal((new DateOnly(2026, 12, 14), 6, true), (saved[0].AnchorWeekStart, saved[0].AnchorWorkDays, saved[0].OnRotation));
+        Assert.Same(sent[1], saved[1]);
+        Assert.Same(sent[2], saved[2]);
+    }
+
     [Fact]
     public void The_commit_judges_a_new_hire_week_as_a_6_day_week_whatever_anchor_the_client_sends()
     {

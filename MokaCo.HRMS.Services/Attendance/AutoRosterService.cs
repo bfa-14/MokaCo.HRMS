@@ -77,17 +77,35 @@ public class AutoRosterService : IAutoRosterService
     /// </summary>
     public const string LeadersNotAvailableCode = "leaders_not_ready";
 
+    /// <summary>
+    /// The code beside a save refused because somebody on the list is not one of the branch's people today (or has left
+    /// the company): the web says it in the reader's language, with the person's name the sentence starts with.
+    /// </summary>
+    public const string LeaderNotInBranchCode = "leader_not_in_branch";
+
+    /// <summary>How usp_AutoRoster_SaveLeaders ends that refusal; the person's name comes before it.</summary>
+    private const string NotInBranchEnding = " is not in this branch: only its own people can be its shift leaders.";
+
+    /// <summary>The person a leaders refusal names as not being in the branch; null for any other sentence.</summary>
+    public static string? LeaderNotInBranch(string? message)
+        => message is { Length: > 0 } && message.EndsWith(NotInBranchEnding, StringComparison.Ordinal)
+               && message.Length > NotInBranchEnding.Length
+            ? message[..^NotInBranchEnding.Length]
+            : null;
+
     public async Task<RosterLeadersDto> GetLeadersAsync(int branchId, int? callerUserId)
     {
         if (branchId <= 0)
             throw new WorkflowException(400, "Choose a branch.");
 
         var rows = await LeadersCallAsync(() => _repo.GetLeadersAsync(branchId, callerUserId));
+        var candidates = await LeadersCallAsync(() => _repo.GetLeaderCandidatesAsync(branchId, callerUserId));
         return new RosterLeadersDto
         {
             BranchId = branchId,
             EmployeeIds = rows.Where(r => r.IsStored).Select(r => r.EmployeeId).ToList(),
             Leaders = rows.ToList(),
+            Candidates = (candidates ?? []).ToList(),
         };
     }
 
@@ -138,13 +156,15 @@ public class AutoRosterService : IAutoRosterService
     public async Task<AutoRosterCommitResult> CommitAsync(AutoRosterCommitRequest request, int? callerUserId)
     {
         var input = await InputAsync(request, callerUserId);
-        var issues = RosterPlanValidator.ValidateSubmission(input, request.Cells, request.Rhythm);
+        // R6: an anchor sent for a week of the new-hire period is saved as the planner resolves it (RhythmToSave).
+        var rhythm = RosterPlanValidator.RhythmToSave(input, request.Rhythm);
+        var issues = RosterPlanValidator.ValidateSubmission(input, request.Cells, rhythm);
         if (RosterPlanValidator.HasErrors(issues))
             throw new AutoRosterRefusedException(RefusalSentence(issues), issues);
 
         // The mode as parsed, so the run row says "ReplanAuto" however the client spelled it.
         return await WorkflowSqlErrors.MapAsync(() => _repo.CommitAsync(
-            input.BranchId, input.MonthStart, input.Mode.ToString(), request.Cells, request.Rhythm,
+            input.BranchId, input.MonthStart, input.Mode.ToString(), request.Cells, rhythm,
             AutoRosterSetupFactory.SerializeParams(request), issues.Count, callerUserId));
     }
 

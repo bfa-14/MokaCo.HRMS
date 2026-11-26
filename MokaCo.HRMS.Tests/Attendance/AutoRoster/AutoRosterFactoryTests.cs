@@ -210,6 +210,19 @@ public class AutoRosterFactoryTests
         Assert.Equal(6, setup.Staff.Single(s => s.EmployeeId == 2).FirstWeekWorkDays);
         Assert.Equal(5, setup.Staff.Single(s => s.EmployeeId == 2).AnchorWorkDays);
         Assert.Equal(6, setup.Staff.Single(s => s.EmployeeId == 3).FirstWeekWorkDays);
+
+        // The roster grid judges a saved month by these: the new hire's weeks are all 6, the alternation of the others
+        // goes 6,5,6,5 (or 5,6,...), and only the new hire carries the date their 6-day weeks end.
+        var hire = setup.Staff.Single(s => s.EmployeeId == 2);
+        Assert.Equal(new DateOnly(2026, 11, 30), hire.Weeks[0].WeekStart);
+        Assert.Equal(5, hire.Weeks.Count);   // 30 Nov, 7, 14, 21, 28 Dec
+        Assert.All(hire.Weeks, w => Assert.Equal(6, w.WorkDays));
+        Assert.NotNull(hire.SixDayWeeksUntil);
+        Assert.Equal(DayOfWeek.Monday, hire.SixDayWeeksUntil!.Value.DayOfWeek);
+
+        var longServing = setup.Staff.Single(s => s.EmployeeId == 1);
+        Assert.Null(longServing.SixDayWeeksUntil);
+        Assert.Equal(new[] { 6, 5, 6, 5, 6 }, longServing.Weeks.Select(w => w.WorkDays).ToArray());
     }
 
     [Fact]
@@ -220,6 +233,10 @@ public class AutoRosterFactoryTests
         Assert.Equal(2, AutoRosterInputFactory.ReadSettings([new AutoRosterSettingRow { SettingKey = "rosternewhiresixdaymonths", SettingValue = " 2 " }]).NewHireSixDayMonths);
         Assert.Equal(120, AutoRosterInputFactory.ReadSettings([new AutoRosterSettingRow { SettingKey = "RosterNewHireSixDayMonths", SettingValue = "9999" }]).NewHireSixDayMonths);
         Assert.Equal(3, AutoRosterInputFactory.ReadSettings([new AutoRosterSettingRow { SettingKey = "RosterNewHireSixDayMonths", SettingValue = "0" }]).NewHireSixDayMonths);
+        // The drawer says it in words ("for their first 2 months"): the setup sends the value the planner uses.
+        Assert.Equal(2, AutoRosterInputFactory.ToDto(AutoRosterInputFactory.ReadSettings(
+            [new AutoRosterSettingRow { SettingKey = "RosterNewHireSixDayMonths", SettingValue = "2" }])).RosterNewHireSixDayMonths);
+        Assert.Equal(3, AutoRosterInputFactory.ToDto(PlannerSettings.Default).RosterNewHireSixDayMonths);
     }
 
     [Fact]

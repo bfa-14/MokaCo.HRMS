@@ -43,6 +43,13 @@ public static class RosterPlanValidator
     public const string RotationNotSet = "ROTATION_NOT_SET";
     public const string LeadsSameShift = "LEADS_SAME_SHIFT";
 
+    /// <summary>
+    /// More leaders work on some days than the branch has shifts to cover, so on those days leaders share a shift. ONE
+    /// warning for the month (dated on the first such day), not one per day: the cause is the setup (too few shifts
+    /// ticked to cover, or too many leaders), and a list of thirty identical lines hides every other issue.
+    /// </summary>
+    public const string LeadsTooFewShifts = "LEADS_TOO_FEW_SHIFTS";
+
     /// <summary>Every issue of a decided grid, sorted (errors first, then by date, employee, code).</summary>
     public static List<AutoRosterIssue> Validate(PlannerInput input, RosterGrid grid, IReadOnlyDictionary<int, ResolvedRhythm> rhythms)
     {
@@ -73,12 +80,35 @@ public static class RosterPlanValidator
     }
 
     /// <summary>
+    /// The rhythm rows a commit saves (R6): the client's, except that a row anchored on a week before the person's W0 (a week of
+    /// the new-hire period - an old draft's "first week" override, or a preview from before the rule) is replaced by the anchor
+    /// the planner resolves for them (<see cref="RosterPlanner.ResolveRhythms(PlannerInput)"/>: the stored one, or W0 as a 6-day
+    /// week). Such a row changes nothing before W0, where every week is a 6-day week, but saved as it is it would decide the
+    /// alternation from W0 - next month's run would start W0 on whatever parity that old week gives. Rows for W0 or later, and
+    /// rows taking somebody off the rotation, are saved as sent.
+    /// </summary>
+    public static List<AutoRosterCommitRhythm> RhythmToSave(PlannerInput input, IEnumerable<AutoRosterCommitRhythm>? rhythm)
+    {
+        var rows = (rhythm ?? []).ToList();
+        if (!rows.Any(r => r.OnRotation && RosterPlanner.IsNewHireWeek(input.AlternateFrom(r.EmployeeId), r.AnchorWeekStart)))
+            return rows;
+        var resolved = RosterPlanner.ResolveRhythms(input);
+        return rows.Select(r =>
+        {
+            if (!r.OnRotation || input.AlternateFrom(r.EmployeeId) is not { } w0 || !RosterPlanner.IsNewHireWeek(w0, r.AnchorWeekStart))
+                return r;
+            var (week, days) = resolved.TryGetValue(r.EmployeeId, out var own) ? (own.AnchorWeekStart, own.AnchorWorkDays) : (w0, 6);
+            return new AutoRosterCommitRhythm { EmployeeId = r.EmployeeId, AnchorWeekStart = week, AnchorWorkDays = days, OnRotation = true };
+        }).ToList();
+    }
+
+    /// <summary>
     /// The commit's server-side check: the rows as they stand, with <paramref name="cells"/> applied
     /// on top (upsert / delete), validated with the same rules as the preview. Ghost days are open —
     /// next month's run decides them — so they never make a week short or a run too long here.
-    /// <paramref name="rhythm"/> (the commit's rhythm rows) overrides the anchors it would resolve - but never the
-    /// new-hire rule (R6): each person's W0 comes from their hire date and the setting, not from the client, so a
-    /// week of the new-hire period is judged as a 6-day week whatever anchor was sent.
+    /// <paramref name="rhythm"/> (the commit's rhythm rows, as <see cref="RhythmToSave"/> keeps them) overrides the anchors it
+    /// would resolve - but never the new-hire rule (R6): each person's W0 comes from their hire date and the setting, not from
+    /// the client, so a week of the new-hire period is judged as a 6-day week whatever anchor was sent.
     /// Cells outside the month or the branch are skipped: the procedure refuses them by name.
     /// </summary>
     public static List<AutoRosterIssue> ValidateSubmission(
@@ -89,7 +119,7 @@ public static class RosterPlanValidator
         foreach (var (e, r) in RosterPlanner.ResolveRhythms(input, grid))
             rhythms[e] = r;
 
-        foreach (var r in rhythm ?? [])
+        foreach (var r in RhythmToSave(input, rhythm))
         {
             if (!r.OnRotation)
                 rhythms.Remove(r.EmployeeId);
@@ -310,6 +340,18 @@ public static class RosterPlanValidator
     private static void CheckShiftTiming(PlannerInput input, RosterGrid grid, int e, List<AutoRosterIssue> issues)
     {
         var minBetween = TimeSpan.FromHours(input.Settings.MinHoursBetweenShifts);
+
+        // The window's first day after the saved day before it. Only a month that starts on a Monday writes that day, and the
+        // previous month's run never sees it, so this is the one run that can report the turnaround.
+        var firstDay = grid[e, input.WindowFrom];
+        var dayBefore = input.WindowFrom.AddDays(-1);
+        if (firstDay.IsWritten && firstDay.CountsAsWorkForRun && ShiftOf(input, firstDay) is { } firstShift
+            && input.WorksOutsideWindow(e, dayBefore) && input.RowOf(e, dayBefore) is { ShiftId: { } beforeId }
+            && input.HoursOn(beforeId, dayBefore) is { } beforeShift
+            && firstShift.StartOn(firstDay.Date) - beforeShift.EndOn(dayBefore) is var firstGap && firstGap < minBetween)
+            issues.Add(Issue(Warning, Turnaround, e, firstDay.Date,
+                $"{Hours(firstGap)} hours between {beforeShift.Name} and {firstShift.Name}; the minimum is {input.Settings.MinHoursBetweenShifts}."));
+
         for (var d = input.WindowFrom; d < input.WindowTo; d = d.AddDays(1))
         {
             var a = grid[e, d];
@@ -449,6 +491,8 @@ public static class RosterPlanValidator
         if (input.MonthLocked || input.ShiftLeads.Count < 2)
             return;
 
+        var tooFew = new List<DateOnly>();
+        var fewestShifts = int.MaxValue;
         foreach (var date in RosterCalendar.Days(input.MonthStart, input.MonthEnd))
         {
             if (date < input.Today)
@@ -457,17 +501,31 @@ public static class RosterPlanValidator
                 .Where(c => input.ShiftLeads.Contains(c.EmployeeId) && c.InBranch && c.CountsAsWorkForRun && c.ShiftId is not null)
                 .ToList();
             var shifts = input.CoverRulesFor(date).Count;
-            foreach (var group in leads.GroupBy(c => c.ShiftId!.Value).Where(g => g.Count() >= 2).OrderBy(g => g.Key))
+            var shared = leads.GroupBy(c => c.ShiftId!.Value).Where(g => g.Count() >= 2).OrderBy(g => g.Key).ToList();
+            if (shared.Count == 0)
+                continue;
+
+            // More leaders than shifts that day: they cannot all be apart. Counted, and said once below.
+            if (shifts > 0 && leads.Count > shifts)
+            {
+                tooFew.Add(date);
+                fewestShifts = Math.Min(fewestShifts, shifts);
+                continue;
+            }
+
+            foreach (var group in shared)
             {
                 var name = input.Shifts.TryGetValue(group.Key, out var s) ? s.Name : $"shift {group.Key}";
-                var message = shifts > 0 && leads.Count > shifts
-                    ? $"{leads.Count} shift leaders work on {RosterPlanner.Day(date)} and the day has only {shifts} shift(s) to cover: {group.Count()} are on {name}."
-                    : $"{group.Count()} shift leaders are on {name}; each shift should keep one.";
-                var issue = Issue(Warning, LeadsSameShift, null, date, message);
+                var issue = Issue(Warning, LeadsSameShift, null, date, $"{group.Count()} shift leaders are on {name}; each shift should keep one.");
                 issue.ShiftId = group.Key;
                 issues.Add(issue);
             }
         }
+
+        if (tooFew.Count > 0)
+            issues.Add(Issue(Warning, LeadsTooFewShifts, null, tooFew[0],
+                $"On {tooFew.Count} day(s) from {RosterPlanner.Day(tooFew[0])} more shift leaders work than there are shifts to cover " +
+                $"({fewestShifts}), so leaders share a shift. Tick more shifts under 'Shifts to cover every day', or take a leader off the list."));
     }
 
     /// <summary>Staff working a given shift in the branch that day (a full-day leave is not on duty).</summary>

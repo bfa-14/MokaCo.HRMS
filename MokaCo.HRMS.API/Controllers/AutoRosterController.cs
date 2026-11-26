@@ -195,14 +195,19 @@ public class AutoRosterController : ControllerBase
     }
 
     /// <summary>
-    /// A leaders refusal: its status and sentence. The 503 (script 123 not applied, the only 503 these two calls refuse
-    /// with) also carries <see cref="AutoRosterService.LeadersNotAvailableCode"/>, so the web says it in the reader's
-    /// language: the database being too slow is a 503 as well.
+    /// A leaders refusal: its status and sentence. Two also carry a code, so the web says them in the reader's language:
+    /// the 503 (script 123 not applied, the only 503 these two calls refuse with - the database being too slow is a 503
+    /// as well) <see cref="AutoRosterService.LeadersNotAvailableCode"/>, and a save naming somebody who is not one of the
+    /// branch's people <see cref="AutoRosterService.LeaderNotInBranchCode"/> with that person's name.
     /// </summary>
     private ObjectResult LeadersRefusal(WorkflowException ex)
-        => ex.StatusCode == StatusCodes.Status503ServiceUnavailable
-            ? StatusCode(ex.StatusCode, new { error = ex.Message, code = AutoRosterService.LeadersNotAvailableCode })
-            : StatusCode(ex.StatusCode, new { error = ex.Message });
+    {
+        if (ex.StatusCode == StatusCodes.Status503ServiceUnavailable)
+            return StatusCode(ex.StatusCode, new { error = ex.Message, code = AutoRosterService.LeadersNotAvailableCode });
+        if (ex.StatusCode == StatusCodes.Status400BadRequest && AutoRosterService.LeaderNotInBranch(ex.Message) is { } name)
+            return StatusCode(ex.StatusCode, new { error = ex.Message, code = AutoRosterService.LeaderNotInBranchCode, name });
+        return StatusCode(ex.StatusCode, new { error = ex.Message });
+    }
 
     /// <summary>The drawer's staff list: on rotation, and optionally a new 6/5 anchor ("this week is a 5-day week").</summary>
     [HttpPut("rhythm")]

@@ -134,6 +134,23 @@ public class RosterPlanValidatorTests
     }
 
     [Fact]
+    public void A_turnaround_after_the_saved_day_before_a_month_that_starts_on_a_Monday_is_a_warning()
+    {
+        // February 2027 starts on a Monday, so its window starts on the 1st and the evening saved on Sunday 31 January lies
+        // before it. January's run never sees 1 February: only February's can report the turnaround.
+        var feb = new DateOnly(2027, 2, 1);
+        var world = new RosterWorld { Today = new DateOnly(2027, 1, 20) }.WithStaff(3);
+        world.Work(1, new DateOnly(2027, 1, 31), RosterWorld.Evening);
+        var drafts = new List<DraftCellDto> { new() { EmployeeId = 1, WorkDate = feb, ShiftId = RosterWorld.Morning } };
+
+        var p = world.Plan(feb, "FillEmpty", r => r.DraftCells = drafts).Preview;
+
+        var issue = Assert.Single(p.Issues, i => i.Code == "TURNAROUND" && i.EmployeeId == 1);
+        Assert.Equal(("warning", (DateOnly?)feb), (issue.Severity, issue.Date));
+        Assert.Contains("8 hours between Evening and Morning", issue.Message);
+    }
+
+    [Fact]
     public void A_weekly_rest_shorter_than_36_hours_is_a_warning()
     {
         var (_, run, commit) = Clean(1);
