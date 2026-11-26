@@ -201,7 +201,9 @@ cover from the last day carries on. More generally, no rest check reads the next
 turnaround with the day after and the "evening, rest days, then a morning" check read only the month's days,
 and the weekly-rest checks (the week's longest rest, which can reach two days past the month's end) read every
 day after the month as worked on the person's own shift. That month may be saved only after this one, and a
-rule read from its rows gave a different answer once it was - a regenerate then moved people (D11).
+rule read from its rows gave a different answer once it was - a regenerate then moved people (D11). Two
+REST-DAY reads still take the next month's saved rows, as before: the cap on days in a row (`RunAfter`) and a saved
+day inside the window treated as fixed. Both give the same answer at the first run and at a regenerate.
 
 ### 2.7 Validator (`RosterPlanValidator`, also run by the commit on the submitted cells)
 
@@ -470,6 +472,11 @@ Open:
   not send it yet.
 - `ValidateSubmission` raises WORK_WITHOUT_SHIFT for an unchanged submitted day on a retired shift
   (the SQL accepts it). The web never sends such a day.
+- `PUT api/roster/auto/rhythm` saves the rows as sent, also an anchor in a new hire's 6-day period (the preview
+  and the commit resolve such an anchor, §2.2). No page calls it.
+- Where a shift is covered only at the weekend (a weekend-only night), nobody is balanced onto it, so it stays at
+  its minimum and the other shifts are less even; turnarounds after it almost disappear (§10). Making it even needs
+  the rest-day step to give two days off after a Sunday night.
 
 
 ---
@@ -520,3 +527,54 @@ places with somebody on the shift that holds none (`WORK_LEAD_APART`), so both s
 moved onto an earlier shift stays on it on their next working days while it is a shift to cover and holds no other
 leader: sent home, they would need moving again, often right after one day off, when the move would break the weekly
 rest. A day where both leaders were placed by hand is left alone and reported (`LEADS_SAME_SHIFT`, a warning).
+
+---
+
+## 10. The owner's rules (script 123, both methods)
+
+The owner asked for four things on top of the plan above. Each is a rule of the planner, so both the preview and
+a regenerate follow it, and the validator reports what could not be kept.
+
+**1. Working hours come from the shift, by date.** Every rest calculation (11 hours between shifts, the weekly
+rest, a night's end) measures a day with the hours its shift had ON that day (`usp_AutoRoster_GetShiftHours`:
+every version in force inside the window; `PlannerInput` picks the one for the date). A shift changed in March
+does not change how February is judged. The change itself is logged by script 122 (`attendance.SHIFT_CHANGE`).
+
+**2. New employees work 6-day weeks first** (R6). For `RosterNewHireSixDayMonths` months after the hire date
+(setting, default 3) every week is a 6-day week. W0 = the first Monday on or after hire date + that many months;
+from W0 the weeks go 6, 5, 6, 5, starting with 6 (`PlannerInput.AlternateFrom`, `ResolvedRhythm.WorkDaysIn`).
+A drawer override or a commit row for a week before W0 is ignored (§2.2), so the alternation always starts at W0.
+The drawer shows "New: 6-day weeks until ..." and the Roster page judges those weeks by the same rule. No hire
+date: no new-hire period.
+
+**3. Shift leaders are never on the same shift.** Leaders are a list per branch (`attendance.ROSTER_SHIFT_LEADER`,
+GET/PUT `api/roster/auto/leaders`, ATTENDANCE_MANAGE); the fixed rotation's Lead 1 and Lead 2 count too
+(`PlannerInput.ShiftLeads`). Only people working in the branch today can be chosen
+(`usp_AutoRoster_GetLeaderCandidates`; the save checks the same). After the cover, a leader on a shift that already
+holds one changes places with somebody on a shift that holds none (`WORK_LEAD_APART`), unless that breaks a rest
+rule: the rest rules come first. More leaders working on a day than shifts to cover: one warning for the month
+(`LEADS_TOO_FEW_SHIFTS`), and the manager ticks more shifts under "Shifts to cover every day". Leaders placed
+together by hand are left alone and warned (`LEADS_SAME_SHIFT`).
+
+**4. Every shift is covered every day, and people are spread over the shifts.** The shifts to cover are the
+drawer's stored staffing rows, else the shifts the branch really worked, else every active shift (§2.6, D16).
+The cover runs first (`WORK_SHIFT_COVER`); then the people left are spread evenly (`WORK_SHIFT_BALANCE`).
+A balancing move is made only when it evens out ALL the days it holds the person on the new shift: going back
+the next day can break the 11 hours or the weekly rest, so a move to the evening holds them there until a rest
+day lets them return (`HeldAfter`). One move therefore never strands someone on the evening for weeks. A person
+with no usual shift in the last 8 weeks starts on a shift the branch covers. A hold carried across the month's end
+(last month's saved evening) is protected in the new month: the morning keeps its minimum without the held person,
+by moving a weekday rest of somebody else on the morning (step 6b).
+
+**The rest days still fill the month**: the 6/5 (or 6/6/6) rhythm decides the number of rest days per week (§2.3),
+the shift rules only choose which shift a working day is on.
+
+**Known trade.** Where a shift is covered only at the weekend (a weekend-only night), moving someone onto it
+breaks a rest rule on Monday unless they then have two days off, so nobody is balanced onto it: it stays at its
+minimum, the other shifts are less even there, and turnarounds after it almost disappear (measured on 20 such
+test worlds: 317 → 60 turnarounds; days 3+ apart between the fullest and emptiest shift 24 → 234). The cover's
+minimum still forces a person there when needed, then the least-bad one (a short weekly rest before a turnaround).
+
+**Tests.** `RosterPlannerNewHireTests` (W0, 6/6/6 then 6/5, overrides before W0), `RosterPlannerLeaderTests`, `RosterLeadersTests`,
+`RosterPlannerBalanceTests` (holds, month-end holds, weekend-only nights, regenerate = 0 changes with the next
+month saved), `AutoRosterServiceTests` (leaders list, candidates, a pre-W0 anchor saved as W0).

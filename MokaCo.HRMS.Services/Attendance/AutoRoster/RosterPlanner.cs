@@ -1046,14 +1046,14 @@ public static class RosterPlanner
             // Step 6 — repair: a day below its minimum takes back one rest that can move to a day that stays at or above its own.
             Repair(persons, onDuty, min, placed);
 
-            // Step 7 — R3: a hold carried into the week keeps its people off their own shift; that shift keeps its minimum without them.
+            // Step 6b — R3: a hold carried into the week keeps its people off their own shift; that shift keeps its minimum without them.
             if (_carried.Count > 0)
                 ProtectHeld(ws, persons, onDuty, min);
             return persons;
         }
 
         /// <summary>
-        /// Step 7, R3: a HOLD CARRIED INTO THE WEEK (<see cref="CarriedHold"/>: last month's saved evening for a morning person, a
+        /// Step 6b, R3: a HOLD CARRIED INTO THE WEEK (<see cref="CarriedHold"/>: last month's saved evening for a morning person, a
         /// locked day, or a hold such a row started that lasted through the weeks already planned) keeps its people on that shift
         /// day by day while their own would come too soon - less than the minimum hours after a working day, less than the weekly
         /// rest after rest days - as <see cref="HeldAfter"/> reads a hold inside the month, and how long depends on the rest days
